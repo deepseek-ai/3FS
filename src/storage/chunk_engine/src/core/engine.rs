@@ -896,8 +896,8 @@ mod tests {
         // 2. write chunks.
         let engine = Engine::open(&config).unwrap();
         const N: usize = 512;
-        for i in 0..N {
-            let mut data = create_aligned_vec(Size::from(i * 1024));
+        for i in 1..=N {
+            let mut data = create_aligned_buf(Size::from(i * 1024));
             data.fill(i as u8);
             let checksum = crc32c::crc32c(&data);
             let chunk = engine
@@ -911,9 +911,9 @@ mod tests {
         let engine = Engine::open(&config).unwrap();
         let chunks = engine.query_chunks([], [], u64::MAX).unwrap();
         assert_eq!(chunks.len(), N);
-        let mut buffer = create_aligned_vec(CHUNK_SIZE_LARGE);
+        let mut buffer = create_aligned_buf(CHUNK_SIZE_LARGE);
         for (i, (chunk_id, chunk_meta)) in chunks.iter().enumerate() {
-            let i = N - 1 - i; // reversed order.
+            let i = N - i; // reversed order.
             assert_eq!(&i.to_be_bytes(), &chunk_id[..]);
             let offset = i * 512;
             let data_len = i * 1024;
@@ -961,7 +961,7 @@ mod tests {
         // 2. write chunks.
         let engine = Engine::open(&config).unwrap();
 
-        let mut data = create_aligned_vec(CHUNK_SIZE_SMALL);
+        let mut data = create_aligned_buf(CHUNK_SIZE_SMALL);
         for i in 0..512u32 {
             data.fill(i as u8);
             let checksum = crc32c::crc32c(&data);
@@ -984,7 +984,7 @@ mod tests {
         drop(engine);
         let engine = Engine::open(&config).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));
-        let mut buf = create_aligned_vec(CHUNK_SIZE_SMALL);
+        let mut buf = create_aligned_buf(CHUNK_SIZE_SMALL);
         for i in 0..512u32 {
             let chunk = engine.get(&i.to_le_bytes()).unwrap();
             if i < 256 {
@@ -1046,7 +1046,7 @@ mod tests {
         // 2. write chunks.
         let engine = Engine::open(&config).unwrap();
 
-        let mut data = create_aligned_vec(CHUNK_SIZE_SMALL);
+        let mut data = create_aligned_buf(CHUNK_SIZE_SMALL);
         for i in 0..512u32 {
             data.fill(i as u8);
             let checksum = crc32c::crc32c(&data);
@@ -1077,7 +1077,7 @@ mod tests {
             let engine = engine_clone;
             let stop = stop_clone;
             while !stop.load(Ordering::Acquire) {
-                let mut buf = create_aligned_vec(CHUNK_SIZE_SMALL);
+                let mut buf = create_aligned_buf(CHUNK_SIZE_SMALL);
                 for i in 0..512u32 {
                     let chunk = engine.get(&i.to_le_bytes()).unwrap();
                     if i % 2 == 0 || i == 255 || i == 511 {
@@ -1128,7 +1128,7 @@ mod tests {
 
         // 2. write chunks.
         let engine = Engine::open(&config).unwrap();
-        let mut data = create_aligned_vec(CHUNK_SIZE_SMALL);
+        let mut data = create_aligned_buf(CHUNK_SIZE_SMALL);
         for i in 0..512u32 {
             data.fill(i as u8);
             let checksum = crc32c::crc32c(&data);
@@ -1148,7 +1148,7 @@ mod tests {
         }
 
         // 4. truncate and check.
-        let mut buf = create_aligned_vec(CHUNK_SIZE_NORMAL);
+        let mut buf = create_aligned_buf(CHUNK_SIZE_NORMAL);
         for i in 0..512u32 {
             let length = i * 137;
             let chunk = engine.truncate(&i.to_le_bytes(), length).unwrap();

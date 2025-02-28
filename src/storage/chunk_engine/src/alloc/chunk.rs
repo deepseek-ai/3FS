@@ -14,8 +14,8 @@ pub struct Chunk {
 pub type ChunkArc = Arc<Chunk>;
 
 lazy_static! {
-    static ref ZERO: Vec<u8> = {
-        let mut vec = create_aligned_vec(CHUNK_SIZE_ULTRA);
+    static ref ZERO: AlignedBuffer = {
+        let mut vec = create_aligned_buf(CHUNK_SIZE_ULTRA);
         vec.fill(0);
         vec
     };
@@ -23,7 +23,7 @@ lazy_static! {
 
 impl Chunk {
     thread_local! {
-        static BUFFER: RefCell<Vec<u8>> = RefCell::new(create_aligned_vec(CHUNK_SIZE_ULTRA));
+        static BUFFER: RefCell<AlignedBuffer> = RefCell::new(create_aligned_buf(CHUNK_SIZE_ULTRA));
     }
 
     pub fn new(meta: ChunkMeta, allocator: Arc<Allocator>) -> Self {

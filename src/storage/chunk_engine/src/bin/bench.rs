@@ -48,7 +48,7 @@ fn main() -> Result<()> {
             let bytes = bytes.clone();
             let running = running.clone();
 
-            let mut vec = create_aligned_vec(CHUNK_SIZE_NORMAL);
+            let mut vec = create_aligned_buf(CHUNK_SIZE_NORMAL);
             vec.fill(i as u8);
             let checksum = crc32c::crc32c(&vec);
             running.fetch_add(1, Ordering::SeqCst);

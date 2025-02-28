@@ -159,7 +159,7 @@ mod tests {
             .map(|i| {
                 let chunks = chunks.clone();
                 std::thread::spawn(move || {
-                    let mut vec = create_aligned_vec(ALIGN_SIZE);
+                    let mut vec = create_aligned_buf(ALIGN_SIZE);
                     vec.fill(0);
                     for chunk in chunks.iter() {
                         if chunk.meta().pos.index() as usize % T == i {
