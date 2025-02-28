@@ -277,7 +277,7 @@ File chunks are stored in the chunk engine. On each SSD, the persistent storage 
 
 1.  *open/close* Initializes the engine by loading metadata from RocksDB and reconstructing chunk allocator states.
 
-2.  get: Retrieves chunk metadata and reference-counted handle through a hashmap cache, enabling concurrent access with O(1) average complexity.
+2.  *get* Retrieves chunk metadata and reference-counted handle through a hashmap cache, enabling concurrent access with O(1) average complexity.
 
 3.  *update* Implements copy-on-write (COW) semantics by allocating new chunks before modifying data. Old chunks remain readable until all handles are released.
 
