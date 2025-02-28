@@ -171,7 +171,7 @@ static_assert(serde::SerializableToBytes<IBConnectRsp> && serde::SerializableToJ
 
 template <>
 struct hf3fs::serde::SerdeMethod<ibv_gid> {
-  static constexpr std::string_view serdeTo(const ibv_gid &gid) {
+  static std::string_view serdeTo(const ibv_gid &gid) {
     return std::string_view((const char *)&gid.raw[0], sizeof(ibv_gid::raw));
   }
   static Result<ibv_gid> serdeFrom(std::string_view s) {

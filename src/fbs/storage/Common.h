@@ -205,7 +205,7 @@ static_assert(serde::Serializable<ChecksumInfo>);
 
 template <>
 struct ::hf3fs::serde::SerdeMethod<::hf3fs::storage::ChunkId> {
-  static constexpr std::string_view serdeTo(const storage::ChunkId &chunkId) { return chunkId.data(); }
+  static std::string_view serdeTo(const storage::ChunkId &chunkId) { return chunkId.data(); }
   static Result<storage::ChunkId> serdeFrom(std::string_view str) { return storage::ChunkId(str); }
   static std::string serdeToReadable(const storage::ChunkId &chunkId) { return chunkId.describe(); };
   static Result<storage::ChunkId> serdeFromReadable(std::string_view s) { return storage::ChunkId::fromString(s); }
