@@ -2,7 +2,7 @@
 
 ## Design and implementation
 
-The 3FS system has four components: cluster manager, metadata service, storage service and client. All components are connected in a RDMA network (InfiniBand or RoCE).
+The 3FS system has four components: cluster manager, metadata service, storage service and client. All components are connected in an RDMA network (InfiniBand or RoCE).
 
 Metadata and storage services send heartbeats to cluster manager. Cluster manager handles membership changes and distributes cluster configuration to other services and clients. Multiple cluster managers are deployed and one of them is elected as the primary. Another manager is promoted as primary when the primary fails. Cluster configuration is typically stored in a reliable distributed coordination service, such as ZooKeeper or etcd. In our production environment, we use the same key-value store as file metadata to reduce dependencies.
 
@@ -245,7 +245,7 @@ When a previously offline storage service starts:
 
 When a storage service finds a previously offline successor is online:
 
-1. The service starts to forward normal write requests to the successor. Clients may only update a portion of the chunk, but the forwarded write requests should contains the whole chunk, i.e. a full-chunk-replace write.
+1. The service starts to forward normal write requests to the successor. Clients may only update a portion of the chunk, but the forwarded write requests should contain the whole chunk, i.e. a full-chunk-replace write.
 
 2. The service sends a dump-chunkmeta request to the successor. Once the metadata of all chunks on the successor target are received, it collects the chunk metadata on its local target. Then it compares the two copies of chunk metadata to decide which chunks should be transferred.
 

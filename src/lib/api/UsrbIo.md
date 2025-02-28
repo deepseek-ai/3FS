@@ -4,11 +4,11 @@
 User Space Ring Based IO, or USRBIO, is a set of high-speed I/O functions on 3FS. User applications can directly submit I/O requests to the 3FS I/O queue in the FUSE process via the USRBIO API, thereby bypassing certain limitations inherent to FUSE itself. For example, this approach avoids the maximum single I/O size restriction, which is notoriously unfriendly to network file systems. It also makes the data exchange between the user and FUSE processes.
 
 ## Concepts
-**Iov**: A large shared memory region for zero-copy read/write operations, shared between the user and FUSE processes, with InfiniBand (IB) memory registration managed by the FUSE process. In the USRBIO API, all read data will be read into Iov, and all write data should be writen to Iov by user first.
+**Iov**: A large shared memory region for zero-copy read/write operations, shared between the user and FUSE processes, with InfiniBand (IB) memory registration managed by the FUSE process. In the USRBIO API, all read data will be read into Iov, and all write data should be written to Iov by user first.
 
 **Ior**: A small shared memory ring for communication between user process and FUSE process. The usage of Ior is similar to Linux [io-uring](https://unixism.net/loti/index.html), where the user application enqueues read/write requests, and the FUSE process dequeues these requests for completion. The I/Os are executed in batches controlled by the `io_depth` parameter, and multiple batches will be executed in parallel, be they from different rings, or even from the same ring. However, multiple rings are still recommended for multi-threaded applications, as synchronization is unavoidable when sharing a ring.
 
-**File descriptor Registration**: Functions are provided for file descriptor registration and deregistration. Only registered fds can be used for the USRBIO. The file descriptors in the user applicaiton are managed by the Linux kernel and the FUSE process has no way to know how they're actually associated with inode IDs it manages. The registration makes the I/O preparation function look more like the [uring counterpart](https://unixism.net/loti/ref-liburing/submission.html).
+**File descriptor Registration**: Functions are provided for file descriptor registration and deregistration. Only registered fds can be used for the USRBIO. The file descriptors in the user application are managed by the Linux kernel and the FUSE process has no way to know how they're actually associated with inode IDs it manages. The registration makes the I/O preparation function look more like the [uring counterpart](https://unixism.net/loti/ref-liburing/submission.html).
 
 ## Functions
 
@@ -131,7 +131,7 @@ int hf3fs_reg_fd(int fd, uint64_t flags);
 ### hf3fs_dereg_fd
 
 #### Summary
-Deegister a file descriptor.
+Deregister a file descriptor.
 
 #### Syntax
 ```c

@@ -2,7 +2,7 @@
 
 ## Build prerequisites
 
-Follow the [offcial guide](https://p-org.github.io/P/getstarted/install/) to install the [P](https://github.com/p-org/P) framework.
+Follow the [official guide](https://p-org.github.io/P/getstarted/install/) to install the [P](https://github.com/p-org/P) framework.
 
 Or if `dotnet` has been installed, run the following command to store the `p` command.
 ```
