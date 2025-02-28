@@ -32,7 +32,7 @@ FUSE (Filesystem in Userspace) simplifies file system client development by redi
 
 Most applications, e.g. data analytics, perform large block writes on 3FS or they can buffer data in memory and flush it to 3FS when write buffer is full. However, FUSE on Linux 5.x does not support concurrent writes to the same file[^1]. Applications overcome this limitation by writing to multiple files concurrently, maximizing the total throughput.
 
-Read operations exhibit more complex patterns. Some training jobs require random access to dataset samples, with read sizes varying from a few kilobytes to several megabytes per sample. And samples are typically not 4K-aligned in files. Data loaders are specifically designed to fetch batches of samples. But they performs poorly when handling small random reads on FUSE-mounted 3FS. Bandwidth of SSDs and RDMA network are not fully utilized.
+Read operations exhibit more complex patterns. Some training jobs require random access to dataset samples, with read sizes varying from a few kilobytes to several megabytes per sample. And samples are typically not 4K-aligned in files. Data loaders are specifically designed to fetch batches of samples. But they perform poorly when handling small random reads on FUSE-mounted 3FS. Bandwidth of SSDs and RDMA network are not fully utilized.
 
 ### Asynchronous zero-copy API
 
@@ -174,7 +174,7 @@ When a read request arrives at a storage service:
 
 ### Failure detection
 
-The cluster manager relies on heartbeats to detect fail-stop failures. Cluster manager declares a service failed if it does not receive heartbeats from it for a configurable interval (e.g. T seconds). A service stop processing requests and exits if it cannot communicate with cluster manager for T/2 seconds. The heartbeat can be seen as a request to \*renew a lease\* granted by the manager.
+The cluster manager relies on heartbeats to detect fail-stop failures. Cluster manager declares a service failed if it does not receive heartbeats from it for a configurable interval (e.g. T seconds). A service stops processing requests and exits if it cannot communicate with cluster manager for T/2 seconds. The heartbeat can be seen as a request to \*renew a lease\* granted by the manager.
 
 The metadata services are stateless. The list of online meta services provided by cluster manager is a simple service discovery mechanism that helps clients create connections to metadata services. If one meta service is down, the clients may switch to any other metadata service.
 
@@ -285,6 +285,6 @@ File chunks are stored in the chunk engine. On each SSD, the persistent storage 
 
 The chunk data will ultimately be stored on physical blocks. Physical block sizes range from 64KiB to 64MiB in increments of powers of two, totaling 11 distinct sizes. The allocator will assign physical blocks whose sizes most closely match the actual chunk size. A resource pool is constructed for each physical block size, with each pool containing 256 physical files. The usage status of physical blocks is maintained in memory using bitmaps. When a physical block is reclaimed, its bitmap flag is set to 0. The actual storage space of the block remains preserved and will be prioritized for subsequent allocations. When no available physical blocks remain, `fallocate()` will be used to allocate a contiguous large space in physical files, creating 256 new physical blocks - this approach helps reduce disk fragmentation.
 
-When performing write operations on a chunk, the allocator first assigns a new physical block. The system then reads existing chunk data into a buffer, apply the update, and writes the updated buffer to the newly allocated block. An optimized process is implemented for appends, where data is directly added in-place at the end of the existing block. A new copy of metadata is constructed from the new block's location and existing chunk metadata. Subsequently, both the new chunk metadata and statuses of new and old physical blocks are atomically updated in RocksDB.
+When performing write operations on a chunk, the allocator first assigns a new physical block. The system then reads existing chunk data into a buffer, applies the update, and writes the updated buffer to the newly allocated block. An optimized process is implemented for appends, where data is directly added in-place at the end of the existing block. A new copy of metadata is constructed from the new block's location and existing chunk metadata. Subsequently, both the new chunk metadata and statuses of new and old physical blocks are atomically updated in RocksDB.
 
 [^1]: https://elixir.bootlin.com/linux/v5.4.284/source/fs/fuse/file.c#L1573
