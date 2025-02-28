@@ -587,7 +587,7 @@ static void refreshMultiLine(struct linenoiseState *l, int flags) {
   int rows = (plen + l->len + l->cols - 1) / l->cols; /* rows used by current buf. */
   int rpos = (plen + l->oldpos + l->cols) / l->cols;  /* cursor relative row. */
   int rpos2;                                          /* rpos after refresh. */
-  int col;                                            /* colum position, zero-based. */
+  int col;                                            /* column position, zero-based. */
   int old_rows = l->oldrows;
   int fd = l->ofd, j;
   struct abuf ab;
