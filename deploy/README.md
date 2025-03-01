@@ -267,10 +267,11 @@ Install `storage` service on **storage** node.
    ```bash
    /opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.1.1:8000"]' "user-add --root --admin 0 root"
    ```
-   Save the admin token to `/opt/3fs/etc/token.txt`.
+   The admin token is printed to the console, save it to `/opt/3fs/etc/token.txt`.
 2. Generate `admin_cli` commands to create storage targets on 5 storage nodes (16 SSD per node, 6 targets per SSD).
    - Follow instructions at [here](data_placement/README.md) to install Python packages.
    ```bash
+   pip install -r ~/3fs/deploy/data_placement/requirements.txt
    python ~/3fs/deploy/data_placement/src/model/data_placement.py \
       -ql -relax -type CR --num_nodes 5 --replication_factor 3 --min_targets_per_disk 6
    python ~/3fs/deploy/data_placement/src/setup/gen_chain_table.py \
