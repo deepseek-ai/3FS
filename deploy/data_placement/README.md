@@ -6,9 +6,21 @@ Suppose we are going to setup a small 3FS cluster:
 - 16 SSDs attached to each node
 - 6 storage targets on each SSD
 
+## Install dependencies
+
+The data placement problem is formulated using [Pyomo](https://www.pyomo.org/) and solved with the [HiGHS](https://highs.dev/) solver. Install them and other dependencies:
+
+```bash
+$ cd deploy/data_placement
+$ pip install -r requirements.txt
+```
+
+## Generate chain table
+
 First generate a solution of the data placement problem.
 
 ```bash
+$ cd deploy/data_placement
 $ python src/model/data_placement.py -ql -relax -type CR --num_nodes 5 --replication_factor 3 --min_targets_per_disk 6 --init_timelimit 600
 
 ...
@@ -45,7 +57,7 @@ $ python src/model/data_placement.py -ql -relax -type CR --num_nodes 5 --replica
 
 Note that some combinations of `--num_nodes` and `--replication_factor` may have no solution.
 
-Then generate commands to create/remove storage targets.
+Then generate commands to create/remove storage targets and the chain table.
 
 ```bash
 $ python src/setup/gen_chain_table.py --chain_table_type CR --node_id_begin 10001 --node_id_end 10005 --num_disks_per_node 16 --num_targets_per_disk 6 --incidence_matrix_path output/DataPlacementModel-v_5-b_10-r_6-k_3-λ_2-lb_1-ub_1/incidence_matrix.pickle
