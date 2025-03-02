@@ -12,6 +12,7 @@
 #include <folly/Utility.h>
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/logging/xlog.h>
+#include <fstream>
 #include <fuse3/fuse_lowlevel.h>
 #include <iostream>
 #include <linux/fs.h>

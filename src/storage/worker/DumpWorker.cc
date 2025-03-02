@@ -1,6 +1,7 @@
 #include "storage/worker/DumpWorker.h"
 
 #include <gperftools/profiler.h>
+#include <fstream>
 #include <memory>
 #include <sys/times.h>
 

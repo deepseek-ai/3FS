@@ -2,6 +2,7 @@
 
 #include <boost/filesystem/operations.hpp>
 #include <folly/experimental/symbolizer/Symbolizer.h>
+#include <fstream>
 #include <sys/stat.h>
 
 #include "common/monitor/Recorder.h"

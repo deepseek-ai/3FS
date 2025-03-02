@@ -1,6 +1,7 @@
 #include "DumpChunkMeta.h"
 
 #include <folly/logging/xlog.h>
+#include <fstream>
 #include <vector>
 
 #include "AdminEnv.h"

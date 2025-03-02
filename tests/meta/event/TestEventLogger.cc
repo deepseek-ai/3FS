@@ -12,6 +12,7 @@
 #include <folly/logging/Logger.h>
 #include <folly/logging/LoggerDB.h>
 #include <folly/logging/xlog.h>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <string_view>
 #include <sys/stat.h>

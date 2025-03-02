@@ -1,6 +1,7 @@
 #include "DumpChains.h"
 
 #include <folly/Conv.h>
+#include <fstream>
 
 #include "AdminEnv.h"
 #include "client/cli/common/Dispatcher.h"

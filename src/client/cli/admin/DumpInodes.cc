@@ -8,6 +8,7 @@
 #include <folly/experimental/coro/Invoke.h>
 #include <folly/futures/Future.h>
 #include <folly/logging/xlog.h>
+#include <fstream>
 #include <memory>
 #include <utility>
 #include <vector>

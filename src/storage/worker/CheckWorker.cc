@@ -1,5 +1,7 @@
 #include "storage/worker/CheckWorker.h"
 
+#include <fstream>
+
 #include "common/monitor/Recorder.h"
 #include "common/utils/Duration.h"
 #include "common/utils/UtcTime.h"

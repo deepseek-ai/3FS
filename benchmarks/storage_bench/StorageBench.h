@@ -2,6 +2,7 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/core/ignore_unused.hpp>
+#include <boost/filesystem/string_file.hpp>
 #include <common/utils/UtcTime.h>
 #include <folly/experimental/coro/Collect.h>
 #include <folly/futures/Barrier.h>
