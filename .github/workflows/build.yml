@@ -34,3 +34,4 @@ jobs:
           cargo build --release
           cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           cmake --build build -j 32
+          ls -all build
