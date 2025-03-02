@@ -50,7 +50,7 @@ auto createStorageEventTrace(size_t id) {
                       ClientId::zero(),
                       storage::RequestId{id},
                       storage::UpdateChannel{
-                          .id = storage::ChannelId{id},
+                          .id = (storage::ChannelId)id,
                           .seqnum = storage::ChannelSeqNum{id},
                       },
                   },

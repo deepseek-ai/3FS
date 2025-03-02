@@ -12,8 +12,8 @@ static monitor::CountRecorder num_update_channels_total{"storage_client.num_upda
 UpdateChannelAllocator::UpdateChannelAllocator(size_t numChannels)
     : numChannels_(std::min(kMaxNumChannels, numChannels)) {
   std::scoped_lock lock(availableChannelMutex_);
-  for (uint32_t id = numChannels_; id > 0; id--) {
-    availableChannelIds_.push(ChannelId{id});
+  for (auto id = (ChannelId)numChannels_; id > 0; id--) {
+    availableChannelIds_.push(id);
     num_update_channels_total.addSample(1);
   }
 }

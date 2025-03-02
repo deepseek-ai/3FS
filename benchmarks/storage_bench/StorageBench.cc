@@ -124,7 +124,7 @@ bool runBenchmarks() {
     auto nodeIdStr = nodeEndpointStrs[0];
     auto endpointStr = nodeEndpointStrs[1];
 
-    NodeId nodeId{std::stoul(nodeIdStr)};
+    auto nodeId = (NodeId)std::stoul(nodeIdStr);
     auto endpoint = net::Address::fromString(endpointStr);
     storageEndpoints[nodeId] = endpoint;
     XLOGF(WARN, "Add storage endpoint: {} @ {}", nodeId, endpoint);

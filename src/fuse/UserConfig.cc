@@ -141,7 +141,7 @@ Result<meta::Inode> UserConfig::statConfig(meta::InodeId iid, const meta::UserIn
   auto key = isSys ? systemKeys[kidx] : userKeys[kidx];
   return meta::Inode{iid,
                      {meta::Symlink{config.find(key).value()->toString()},
-                      meta::Acl{ui.uid, ui.gid, meta::Permission{isSys ? 0444 : 0400}}}};
+                      meta::Acl{ui.uid, ui.gid, meta::Permission{isSys ? 0444u : 0400u}}}};
 }
 
 std::pair<std::shared_ptr<std::vector<meta::DirEntry>>, std::shared_ptr<std::vector<std::optional<meta::Inode>>>>

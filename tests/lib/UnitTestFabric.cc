@@ -375,7 +375,7 @@ bool UnitTestFabric::setUpStorageSystem() {
 
   if (!setupConfig_.start_storage_server()) {
     for (auto &[key, value] : storageEndpoints) {
-      nodeEndpoints[storage::NodeId{std::stoul(key)}] = value;
+      nodeEndpoints[(storage::NodeId)std::stoul(key)] = value;
     }
   } else {
     for (uint32_t nodeIndex = 0; nodeIndex < numStorageNodes; nodeIndex++) {
