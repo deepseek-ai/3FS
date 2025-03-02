@@ -109,9 +109,9 @@ template <hf3fs::StrongTyped T>
 struct formatter<T> : formatter<typename T::UnderlyingType> {
   template <typename FormatContext>
   auto format(const T &strongTyped, FormatContext &ctx) const {
-    format_to(ctx.out(), "{}(", T::kTypeName);
+    fmt::format_to(ctx.out(), "{}(", T::kTypeName);
     formatter<typename T::UnderlyingType>::format(strongTyped.toUnderType(), ctx);
-    return format_to(ctx.out(), ")");
+    return fmt::format_to(ctx.out(), ")");
   }
 };
 
@@ -120,11 +120,11 @@ struct formatter<std::optional<T>> : formatter<typename T::UnderlyingType> {
   template <typename FormatContext>
   auto format(const std::optional<T> &strongTyped, FormatContext &ctx) const {
     if (strongTyped.has_value()) {
-      format_to(ctx.out(), "{}(", T::kTypeName);
+      fmt::format_to(ctx.out(), "{}(", T::kTypeName);
       formatter<typename T::UnderlyingType>::format(strongTyped->toUnderType(), ctx);
-      return format_to(ctx.out(), ")");
+      return fmt::format_to(ctx.out(), ")");
     } else {
-      return format_to(ctx.out(), "{}(std::nullopt)", T::kTypeName);
+      return fmt::format_to(ctx.out(), "{}(std::nullopt)", T::kTypeName);
     }
   }
 };

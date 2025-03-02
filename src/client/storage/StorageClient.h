@@ -578,15 +578,15 @@ template <>
 struct formatter<hf3fs::storage::client::RoutingTarget> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::storage::client::RoutingTarget &routingTarget, FormatContext &ctx) const {
-    return format_to(ctx.out(),
-                     "{}@{}@{}:{}@{}:{}#{}",
-                     routingTarget.chainId,
-                     routingTarget.chainVer,
-                     routingTarget.routingInfoVer,
-                     routingTarget.targetInfo.targetId,
-                     routingTarget.targetInfo.nodeId,
-                     routingTarget.channel.id,
-                     routingTarget.channel.seqnum);
+    return fmt::format_to(ctx.out(),
+                          "{}@{}@{}:{}@{}:{}#{}",
+                          routingTarget.chainId,
+                          routingTarget.chainVer,
+                          routingTarget.routingInfoVer,
+                          routingTarget.targetInfo.targetId,
+                          routingTarget.targetInfo.nodeId,
+                          routingTarget.channel.id,
+                          routingTarget.channel.seqnum);
   }
 };
 

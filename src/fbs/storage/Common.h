@@ -744,7 +744,7 @@ template <>
 struct formatter<hf3fs::storage::ChunkId> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::storage::ChunkId &chunkId, FormatContext &ctx) const {
-    return format_to(ctx.out(), "ChunkId({})", chunkId.describe());
+    return fmt::format_to(ctx.out(), "ChunkId({})", chunkId.describe());
   }
 };
 
@@ -753,13 +753,13 @@ struct formatter<hf3fs::storage::ChunkIdRange> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::storage::ChunkIdRange &range, FormatContext &ctx) const {
     if (range.maxNumChunkIdsToProcess == 1) {
-      return format_to(ctx.out(), "{}", range.begin);
+      return fmt::format_to(ctx.out(), "{}", range.begin);
     } else {
-      return format_to(ctx.out(),
-                       "ChunkIdRange[{}, {}){{{}}}",
-                       range.begin.describe(),
-                       range.end.describe(),
-                       range.maxNumChunkIdsToProcess);
+      return fmt::format_to(ctx.out(),
+                            "ChunkIdRange[{}, {}){{{}}}",
+                            range.begin.describe(),
+                            range.end.describe(),
+                            range.maxNumChunkIdsToProcess);
     }
   }
 };
@@ -768,7 +768,7 @@ template <>
 struct formatter<hf3fs::storage::ChecksumInfo> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::storage::ChecksumInfo &checksum, FormatContext &ctx) const {
-    return format_to(ctx.out(), "{}#{:08X}", magic_enum::enum_name(checksum.type), ~checksum.value);
+    return fmt::format_to(ctx.out(), "{}#{:08X}", magic_enum::enum_name(checksum.type), ~checksum.value);
   }
 };
 
@@ -776,13 +776,13 @@ template <>
 struct formatter<hf3fs::storage::IOResult> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::storage::IOResult &result, FormatContext &ctx) const {
-    return format_to(ctx.out(),
-                     "length{{{}}} version{{{}/{}}} checksum{{{}}} {{{}}}",
-                     result.lengthInfo,
-                     result.updateVer,
-                     result.commitVer,
-                     result.checksum,
-                     result.commitChainVer);
+    return fmt::format_to(ctx.out(),
+                          "length{{{}}} version{{{}/{}}} checksum{{{}}} {{{}}}",
+                          result.lengthInfo,
+                          result.updateVer,
+                          result.commitVer,
+                          result.checksum,
+                          result.commitChainVer);
   }
 };
 
@@ -790,7 +790,7 @@ template <>
 struct formatter<hf3fs::storage::UpdateChannel> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::storage::UpdateChannel &channel, FormatContext &ctx) const {
-    return format_to(ctx.out(), "@{}#{}", channel.id, channel.seqnum);
+    return fmt::format_to(ctx.out(), "@{}#{}", channel.id, channel.seqnum);
   }
 };
 
@@ -798,7 +798,7 @@ template <>
 struct formatter<hf3fs::storage::MessageTag> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::storage::MessageTag &tag, FormatContext &ctx) const {
-    return format_to(ctx.out(), "@{}#{}:{}", tag.clientId, tag.requestId, tag.channel);
+    return fmt::format_to(ctx.out(), "@{}#{}:{}", tag.clientId, tag.requestId, tag.channel);
   }
 };
 

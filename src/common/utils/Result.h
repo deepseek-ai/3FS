@@ -151,7 +151,7 @@ template <typename T>
 struct formatter<hf3fs::Result<T>> : formatter<T> {
   template <typename FormatContext>
   auto format(const hf3fs::Result<T> &result, FormatContext &ctx) const {
-    if (result.hasError()) return format_to(ctx.out(), "{}", result.error());
+    if (result.hasError()) return fmt::format_to(ctx.out(), "{}", result.error());
     return formatter<T>::format(result.value(), ctx);
   }
 };

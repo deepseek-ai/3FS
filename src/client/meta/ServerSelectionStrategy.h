@@ -139,7 +139,7 @@ template <>
 struct formatter<hf3fs::meta::client::ServerSelectionStrategy::NodeInfo> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::meta::client::ServerSelectionStrategy::NodeInfo &node, FormatContext &ctx) const {
-    return format_to(ctx.out(), "[{}]@{}.{}", node.address, node.nodeId, node.hostname);
+    return fmt::format_to(ctx.out(), "[{}]@{}.{}", node.address, node.nodeId, node.hostname);
   }
 };
 

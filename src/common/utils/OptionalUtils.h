@@ -37,9 +37,9 @@ struct formatter<hf3fs::OptionalFmt<T>> : formatter<T> {
   template <typename FormatContext>
   auto format(const hf3fs::OptionalFmt<T> &op, FormatContext &ctx) const {
     if (op.val_.has_value()) {
-      return format_to(ctx.out(), "{}", *op.val_);
+      return fmt::format_to(ctx.out(), "{}", *op.val_);
     } else {
-      return format_to(ctx.out(), "std::nullopt");
+      return fmt::format_to(ctx.out(), "std::nullopt");
     }
   }
 };

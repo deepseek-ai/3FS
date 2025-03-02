@@ -51,7 +51,7 @@ template <>
 struct formatter<hf3fs::ClientId> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::ClientId &clientId, FormatContext &ctx) const {
-    return format_to(ctx.out(), "ClientId({})@{}", clientId.uuid.toHexString(), clientId.hostname);
+    return fmt::format_to(ctx.out(), "ClientId({})@{}", clientId.uuid.toHexString(), clientId.hostname);
   }
 };
 

@@ -42,7 +42,7 @@ struct formatter<hf3fs::flat::ChainRef> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::flat::ChainRef &ref, FormatContext &ctx) const {
     auto [id, v, i] = ref.decode();
-    return format_to(ctx.out(), "ChainRef({}@{}-{})", id.toUnderType(), v.toUnderType(), i);
+    return fmt::format_to(ctx.out(), "ChainRef({}@{}-{})", id.toUnderType(), v.toUnderType(), i);
   }
 };
 

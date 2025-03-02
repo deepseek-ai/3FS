@@ -167,9 +167,9 @@ struct formatter<hf3fs::Status> : formatter<hf3fs::status_code_t> {
   auto format(const hf3fs::Status &status, FormatContext &ctx) const {
     auto msg = status.message();
     if (msg.empty()) {
-      return format_to(ctx.out(), "{}({})", hf3fs::StatusCode::toString(status.code()), status.code());
+      return fmt::format_to(ctx.out(), "{}({})", hf3fs::StatusCode::toString(status.code()), status.code());
     }
-    return format_to(ctx.out(), "{}({}) {}", hf3fs::StatusCode::toString(status.code()), status.code(), msg);
+    return fmt::format_to(ctx.out(), "{}({}) {}", hf3fs::StatusCode::toString(status.code()), status.code(), msg);
   }
 };
 

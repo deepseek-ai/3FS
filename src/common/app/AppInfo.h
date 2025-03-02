@@ -139,7 +139,7 @@ template <>
 struct formatter<hf3fs::flat::ReleaseVersion> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::flat::ReleaseVersion val, FormatContext &ctx) const -> decltype(ctx.out()) {
-    return format_to(ctx.out(), "{}", val.toString());
+    return fmt::format_to(ctx.out(), "{}", val.toString());
   }
 };
 
@@ -148,9 +148,9 @@ struct formatter<hf3fs::flat::TagPair> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::flat::TagPair val, FormatContext &ctx) const -> decltype(ctx.out()) {
     if (val.value.empty()) {
-      return format_to(ctx.out(), "{}", val.key);
+      return fmt::format_to(ctx.out(), "{}", val.key);
     }
-    return format_to(ctx.out(), "{}={}", val.key, val.value);
+    return fmt::format_to(ctx.out(), "{}={}", val.key, val.value);
   }
 };
 

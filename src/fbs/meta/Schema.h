@@ -436,7 +436,7 @@ template <>
 struct formatter<hf3fs::meta::InodeType> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(hf3fs::meta::InodeType type, FormatContext &ctx) const {
-    return format_to(ctx.out(), "{}", magic_enum::enum_name(type));
+    return fmt::format_to(ctx.out(), "{}", magic_enum::enum_name(type));
   }
 };
 
@@ -444,7 +444,7 @@ template <>
 struct formatter<hf3fs::meta::ChunkId> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(hf3fs::meta::ChunkId chunk, FormatContext &ctx) const {
-    return format_to(ctx.out(), "{}-{}-{}", chunk.inode(), chunk.track(), chunk.chunk());
+    return fmt::format_to(ctx.out(), "{}-{}-{}", chunk.inode(), chunk.track(), chunk.chunk());
   }
 };
 
@@ -452,7 +452,7 @@ template <>
 struct formatter<hf3fs::meta::Layout::ChunkSize> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(hf3fs::meta::Layout::ChunkSize chunk, FormatContext &ctx) const {
-    return format_to(ctx.out(), "{}", (uint64_t)chunk);
+    return fmt::format_to(ctx.out(), "{}", (uint64_t)chunk);
   }
 };
 
@@ -460,7 +460,7 @@ template <>
 struct formatter<hf3fs::meta::VersionedLength> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(hf3fs::meta::VersionedLength v, FormatContext &ctx) const {
-    return format_to(ctx.out(), "{}@{}", v.length, v.truncateVer);
+    return fmt::format_to(ctx.out(), "{}@{}", v.length, v.truncateVer);
   }
 };
 

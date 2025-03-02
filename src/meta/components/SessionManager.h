@@ -134,11 +134,11 @@ template <>
 struct formatter<hf3fs::meta::server::FileSession> : formatter<std::string_view> {
   template <typename FormatContext>
   auto format(const hf3fs::meta::server::FileSession &session, FormatContext &ctx) const {
-    return format_to(ctx.out(),
-                     "{{inodeId {}, client {}, session {}}}",
-                     session.inodeId,
-                     session.clientId,
-                     session.sessionId);
+    return fmt::format_to(ctx.out(),
+                          "{{inodeId {}, client {}, session {}}}",
+                          session.inodeId,
+                          session.clientId,
+                          session.sessionId);
   }
 };
 

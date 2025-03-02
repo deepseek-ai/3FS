@@ -80,11 +80,11 @@ struct formatter<hf3fs::flat::UserInfo> : formatter<std::string_view> {
   auto format(const hf3fs::flat::UserInfo &user, FormatContext &ctx) const {
     auto groups = transformTo<std::vector>(std::span{user.groups.begin(), user.groups.size()},
                                            [](hf3fs::flat::Gid gid) { return gid.toUnderType(); });
-    return format_to(ctx.out(),
-                     "(uid {}, gid {}, groups ({}))",
-                     user.uid.toUnderType(),
-                     user.gid.toUnderType(),
-                     fmt::join(groups.begin(), groups.end(), ","));
+    return fmt::format_to(ctx.out(),
+                          "(uid {}, gid {}, groups ({}))",
+                          user.uid.toUnderType(),
+                          user.gid.toUnderType(),
+                          fmt::join(groups.begin(), groups.end(), ","));
   }
 };
 
