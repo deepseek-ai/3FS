@@ -60,7 +60,7 @@ Result<Void> StorageTargets::init(CPUExecutorGroup &executor) {
                       if (!error.empty()) {
                         co_return makeError(StorageCode::kStorageStatFailed, std::move(error));
                       }
-                      co_return engine;
+                      co_return rust::Box<chunk_engine::Engine>::from_raw(engine);
                     }).scheduleOn(&executor.pickNext()));
   }
 

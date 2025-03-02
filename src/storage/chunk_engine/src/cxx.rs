@@ -7,25 +7,27 @@ use std::sync::Arc;
 use crate::*;
 pub use ::cxx::CxxString;
 
-fn create(path: &str, create: bool, prefix_len: usize, error: Pin<&mut CxxString>) -> Box<Engine> {
+fn create(path: &str, create: bool, prefix_len: usize, error: Pin<&mut CxxString>) -> *mut Engine {
     let config = EngineConfig {
         path: PathBuf::from(path),
         create,
         prefix_len,
     };
     match Engine::open(&config) {
-        Ok(engine) => Box::new(engine),
+        Ok(engine) => Box::into_raw(Box::new(engine)),
         Err(e) => {
             error.push_str(&e.to_string());
-            unsafe { Box::from_raw(std::ptr::null_mut()) }
+            std::ptr::null_mut()
         }
     }
 }
 
+fn release(_engine: Box<Engine>) {}
+
 #[allow(dead_code)]
 struct LogGuard(tracing_appender::non_blocking::WorkerGuard);
 
-fn init_log(path: &str, error: Pin<&mut CxxString>) -> Box<LogGuard> {
+fn init_log(path: &str, error: Pin<&mut CxxString>) -> *mut LogGuard {
     match rolling_file::BasicRollingFileAppender::new(
         path,
         rolling_file::RollingConditionBasic::new().max_size(Size::mebibyte(500).into()),
@@ -38,11 +40,11 @@ fn init_log(path: &str, error: Pin<&mut CxxString>) -> Box<LogGuard> {
                 .with_writer(non_blocking)
                 .with_ansi(false)
                 .init();
-            Box::new(LogGuard(guard))
+            Box::into_raw(Box::new(LogGuard(guard)))
         }
         Err(e) => {
             error.push_str(&e.to_string());
-            unsafe { Box::from_raw(std::ptr::null_mut()) }
+            std::ptr::null_mut()
         }
     }
 }
@@ -456,7 +458,8 @@ pub mod ffi {
             create: bool,
             prefix_len: usize,
             error: Pin<&mut CxxString>,
-        ) -> Box<Engine>;
+        ) -> *mut Engine;
+        fn release(engine: Box<Engine>);
 
         fn raw_used_size(&self) -> RawUsedSize;
         fn allocate_groups(&self, min_remain: usize, max_remain: usize, batch_size: usize)
@@ -546,7 +549,7 @@ pub mod ffi {
 
     extern "Rust" {
         type LogGuard;
-        fn init_log(path: &str, error: Pin<&mut CxxString>) -> Box<LogGuard>;
+        fn init_log(path: &str, error: Pin<&mut CxxString>) -> *mut LogGuard;
     }
 
     extern "Rust" {
