@@ -21,7 +21,7 @@ jobs:
 
     - name: Prepare
       run: |
-        sudo apt install -y cmake libuv1-dev liblz4-dev liblzma-dev libdouble-conversion-dev libprocps-dev libdwarf-dev libunwind-dev
+        sudo apt install -y cmake libuv1-dev liblz4-dev liblzma-dev libdouble-conversion-dev libdwarf-dev libunwind-dev
         sudo apt install -y libaio-dev libgflags-dev libgoogle-glog-dev libgtest-dev libgmock-dev clang-format-14 clang-14 clang-tidy-14 lld-14
         sudo apt install -y libgoogle-perftools-dev google-perftools libssl-dev gcc-12 g++-12 libboost-all-dev meson rustc cargo
         wget https://github.com/apple/foundationdb/releases/download/7.1.61/foundationdb-clients_7.1.61-1_amd64.deb && sudo dpkg -i foundationdb-clients_7.1.61-1_amd64.deb
