@@ -101,7 +101,7 @@ class [[nodiscard]] Status {
 
  private:
   static_assert(StatusCode::kOK == 0, "StatusCode::kOK must be 0!");
-  static_assert(__x86_64__, "The platform must be 64bit!");
+  static_assert(__x86_64__ || __aarch64__, "The platform must be 64bit!");
   static_assert(sizeof(status_code_t) == 2, "The width of status_code_t must be 16b");
 
   static constexpr auto kPtrBits = 48u;
