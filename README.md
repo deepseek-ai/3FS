@@ -43,7 +43,7 @@ The test cluster comprised 25 storage nodes (2 NUMA domains/node, 1 storage serv
 ### 3. KVCache
 
 KVCache is a technique used to optimize the LLM inference process. It avoids redundant computations by caching the key and value vectors of previous tokens in the decoder layers.
-The top figure demonstrates the read throughput of all KVCache clients, highlighting both peak and average values, with peak throughput reaching up to 40 GiB/s. The bottom figure presents the IOPS of removing ops from garbage collection (GC) during the same time period.
+The top figure demonstrates the read throughput of all KVCache clients (1×400Gbps NIC/node), highlighting both peak and average values, with peak throughput reaching up to 40 GiB/s. The bottom figure presents the IOPS of removing ops from garbage collection (GC) during the same time period.
 
 ![KVCache Read Throughput](./docs/images/kvcache_read_throughput.png)
 ![KVCache GC IOPS](./docs/images/kvcache_gc_iops.png)
