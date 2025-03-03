@@ -123,9 +123,10 @@ class MemTransaction : public IReadWriteTransaction {
     if (canceled_) {
       co_return makeError(TransactionCode::kCanceled, "Canceled transaction!");
     }
-    if (offset + 10 > key.size()) {
-      co_return makeError(StatusCode::kInvalidArg,
-                          fmt::format("setVersionstampedKey: {} + 10 > key.size {}", offset, key.size()));
+    if (offset + sizeof(kv::Versionstamp) > key.size()) {
+      co_return makeError(
+          StatusCode::kInvalidArg,
+          fmt::format("setVersionstampedKey: {} + sizeof(kv::Versionstamp) > key.size {}", offset, key.size()));
     }
     versionstampedChanges_.push_back(
         mem::MemKV::VersionstampedKV::versionstampedKey(std::string(key), offset, std::string(value)));
@@ -137,9 +138,10 @@ class MemTransaction : public IReadWriteTransaction {
     if (canceled_) {
       co_return makeError(TransactionCode::kCanceled, "Canceled transaction!");
     }
-    if (offset + 10 > value.size()) {
-      co_return makeError(StatusCode::kInvalidArg,
-                          fmt::format("setVersionstampedValue: {} + 10 > value.size {}", offset, value.size()));
+    if (offset + sizeof(kv::Versionstamp) > value.size()) {
+      co_return makeError(
+          StatusCode::kInvalidArg,
+          fmt::format("setVersionstampedValue: {} + sizeof(kv::Versionstamp) > value.size {}", offset, value.size()));
     }
     versionstampedChanges_.push_back(
         mem::MemKV::VersionstampedKV::versionstampedValue(std::string(key), std::string(value), offset));

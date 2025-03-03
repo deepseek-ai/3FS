@@ -331,9 +331,10 @@ CoTryTask<void> FDBTransaction::set(std::string_view key, std::string_view value
 }
 
 CoTryTask<void> FDBTransaction::setVersionstampedKey(std::string_view key, uint32_t offset, std::string_view value) {
-  if (offset + 10 > key.size()) {
-    co_return makeError(StatusCode::kInvalidArg,
-                        fmt::format("setVersionstampedKey: {} + 10 > key.size {}", offset, key.size()));
+  if (offset + sizeof(kv::Versionstamp) > key.size()) {
+    co_return makeError(
+        StatusCode::kInvalidArg,
+        fmt::format("setVersionstampedKey: {} + sizeof(kv::Versionstamp) > key.size {}", offset, key.size()));
   }
   co_return co_await OpWrapper<Op::SetVersionstampedKey>::run([&](Op) -> CoTryTask<void> {
     tr_.atomicOp(appendOffset(key, offset), value, FDB_MUTATION_TYPE_SET_VERSIONSTAMPED_KEY);
@@ -342,9 +343,10 @@ CoTryTask<void> FDBTransaction::setVersionstampedKey(std::string_view key, uint3
 }
 
 CoTryTask<void> FDBTransaction::setVersionstampedValue(std::string_view key, std::string_view value, uint32_t offset) {
-  if (offset + 10 > value.size()) {
-    co_return makeError(StatusCode::kInvalidArg,
-                        fmt::format("setVersionstampedValue: {} + 10 > value.size {}", offset, value.size()));
+  if (offset + sizeof(kv::Versionstamp) > value.size()) {
+    co_return makeError(
+        StatusCode::kInvalidArg,
+        fmt::format("setVersionstampedValue: {} + sizeof(kv::Versionstamp) > value.size {}", offset, value.size()));
   }
   co_return co_await OpWrapper<Op::SetVersionstampedValue>::run([&](Op) -> CoTryTask<void> {
     tr_.atomicOp(key, appendOffset(value, offset), FDB_MUTATION_TYPE_SET_VERSIONSTAMPED_VALUE);
