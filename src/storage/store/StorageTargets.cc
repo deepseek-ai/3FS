@@ -115,7 +115,7 @@ Result<Void> StorageTargets::create(const CreateConfig &createConfig) {
     targetConfig.only_chunk_engine = createConfig.only_chunk_engine();
     RETURN_AND_LOG_ON_ERROR(storageTarget->create(targetConfig));
     ++idx;
-    RETURN_AND_LOG_ON_ERROR(targetMap_.addStorageTarget(storageTarget));
+    RETURN_AND_LOG_ON_ERROR(targetMap_.addStorageTarget(std::move(storageTarget)));
   }
   return Void{};
 }
@@ -189,7 +189,7 @@ Result<Void> StorageTargets::create(const CreateTargetReq &req) {
   targetConfig.only_chunk_engine = req.onlyChunkEngine;
   RETURN_AND_LOG_ON_ERROR(storageTarget->create(targetConfig));
   XLOGF(INFO, "Create storage target {} at {}", storageTarget->targetId(), targetPath.string());
-  RETURN_AND_LOG_ON_ERROR(targetMap_.addStorageTarget(storageTarget));
+  RETURN_AND_LOG_ON_ERROR(targetMap_.addStorageTarget(std::move(storageTarget)));
   return Void{};
 }
 
@@ -242,7 +242,7 @@ Result<Void> StorageTargets::loadTarget(const Path &targetPath) {
     XLOG(ERR, msg);
     return makeError(StorageCode::kStorageInitFailed, std::move(msg));
   }
-  RETURN_AND_LOG_ON_ERROR(targetMap_.addStorageTarget(storageTarget));
+  RETURN_AND_LOG_ON_ERROR(targetMap_.addStorageTarget(std::move(storageTarget)));
   return Void{};
 }
 

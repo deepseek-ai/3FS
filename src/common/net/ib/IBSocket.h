@@ -570,7 +570,7 @@ class IBSocketManager : public EventLoop::EventHandler, public std::enable_share
 
  private:
   friend class IBSocket::Drainer;
-  void remove(IBSocket::Drainer::Ptr drainer) { drainers_.lock()->erase(drainer); }
+  void remove(const IBSocket::Drainer::Ptr &drainer) { drainers_.lock()->erase(drainer); }
 
   FdWrapper timer_;
   folly::Synchronized<std::set<IBSocket::Drainer::Ptr>, std::mutex> drainers_;

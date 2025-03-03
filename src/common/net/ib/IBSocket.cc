@@ -1107,7 +1107,7 @@ IBSocket::Drainer::Ptr IBSocket::Drainer::create(IBSocket::Ptr socket, std::weak
 
 IBSocket::Drainer::Drainer(IBSocket::Ptr socket, std::weak_ptr<IBSocketManager> manager)
     : socket_(std::move(socket)),
-      manager_(manager) {
+      manager_(std::move(manager)) {
   draining.addSample(1);
 }
 
