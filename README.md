@@ -31,6 +31,8 @@ The following figure demonstrates the throughput of read stress test on a large 
 
 ![Large block read throughput under stress test on a 180-node cluster](docs/images/peak_throughput.jpg)
 
+To benchmark 3FS, please use our [fio engine for USRBIO](benchmarks/fio_usrbio/README.md).
+
 ### 2. GraySort
 
 We evaluated [smallpond](https://github.com/deepseek-ai/smallpond) using the GraySort benchmark, which measures sort performance on large-scale datasets. Our implementation adopts a two-phase approach: (1) partitioning data via shuffle using the prefix bits of keys, and (2) in-partition sorting. Both phases read/write data from/to 3FS.
