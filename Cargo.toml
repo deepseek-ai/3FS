@@ -9,6 +9,7 @@ resolver = "2"
 authors = ["dev <noreply@deepseek.com>"]
 edition = "2021"
 license = "MIT"
+rust-version = "1.75.0" # MSRV
 
 [profile.release-cmake]
 debug = true

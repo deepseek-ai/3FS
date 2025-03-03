@@ -2,6 +2,8 @@
 name = "chunk_engine"
 version = "0.1.11"
 edition = "2021"
+license.workspace = true
+rust-version.workspace = true
 
 [lib]
 crate-type = ["lib", "staticlib"]

@@ -83,7 +83,7 @@ Install other build prerequisites:
 
 - [`libfuse`](https://github.com/libfuse/libfuse/releases/tag/fuse-3.16.1) 3.16.1 or newer version
 - [FoundationDB](https://apple.github.io/foundationdb/getting-started-linux.html) 7.1 or newer version
-- [Rust](https://www.rust-lang.org/tools/install) toolchain
+- [Rust](https://www.rust-lang.org/tools/install) toolchain: minimal 1.75.0, recommanded 1.85.0 or newer version (latest stable version) 
 
 ## Build 3FS
 

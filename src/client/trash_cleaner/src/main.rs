@@ -598,7 +598,11 @@ struct Opt {
     paths: Vec<PathBuf>,
 
     /// Interval in seconds
-    #[structopt(short, long, help = "Scan interval (in seconds), exit after one scan if set to 0")]
+    #[structopt(
+        short,
+        long,
+        help = "Scan interval (in seconds), exit after one scan if set to 0"
+    )]
     interval: u64,
 
     #[structopt(long)]
@@ -615,7 +619,11 @@ struct Opt {
     #[structopt(long, default_value = "info", help = "Log level, default is info")]
     log_level: Level,
 
-    #[structopt(long, default_value = "warn", help = "stdout log level, default is warn")]
+    #[structopt(
+        long,
+        default_value = "warn",
+        help = "stdout log level, default is warn"
+    )]
     stdout_level: Level,
 }
 
