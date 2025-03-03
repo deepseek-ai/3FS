@@ -36,7 +36,7 @@ ExternalProject_Add(
         -DARROW_BUILD_EXAMPLES=OFF \
         -DARROW_PARQUET=ON -DARROW_CSV=ON \
         -DARROW_WITH_ZSTD=ON -DARROW_WITH_LZ4=ON -DARROW_WITH_ZLIB=ON"
-    BUILD_COMMAND bash -x -c "source thirdparty/export.sh && cmake --build ."
+    BUILD_COMMAND bash -x -c "source thirdparty/export.sh && cmake --build . -j 4"
     BUILD_JOB_SERVER_AWARE 1
     INSTALL_COMMAND cmake --install . --prefix "${PREFIX}"
     BUILD_BYPRODUCTS
