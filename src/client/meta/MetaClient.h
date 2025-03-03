@@ -85,7 +85,7 @@ class MetaClient {
     CONFIG_HOT_UPDATED_ITEM(check_server_interval, 5_s);
     CONFIG_HOT_UPDATED_ITEM(max_concurrent_requests, 128u, ConfigCheckers::checkPositive);
     CONFIG_HOT_UPDATED_ITEM(remove_chunks_batch_size, uint32_t(32), ConfigCheckers::checkPositive);
-    CONFIG_HOT_UPDATED_ITEM(remove_chunks_max_iters, uint32_t(1024), ConfigCheckers::checkPositive);  // deperated
+    CONFIG_HOT_UPDATED_ITEM(remove_chunks_max_iters, uint32_t(1024), ConfigCheckers::checkPositive);  // deprecated
 
     CONFIG_HOT_UPDATED_ITEM(dynamic_stripe, false);
 
