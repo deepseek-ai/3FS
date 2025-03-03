@@ -1818,7 +1818,7 @@ CoTryTask<void> StorageClientImpl::batchWriteWithoutRetry(ClientRequestContext &
                                   config_.traffic_control().write().max_batch_bytes(),
                                   config_.traffic_control().write().random_shuffle_requests());
 
-  // create batch read request and communicate with storage service
+  // create batch write request and communicate with storage service
 
   auto sendReq =
       [&, this](size_t batchIndex, const NodeId &nodeId, const std::vector<WriteIO *> &batchIOs) -> CoTask<bool> {
