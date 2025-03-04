@@ -77,12 +77,7 @@ Result<Void> FuseClients::init(const flat::AppInfo &appInfo,
   enableWritebackCache = fuseConfig.enable_writeback_cache();
   memsetBeforeRead = fuseConfig.memset_before_read();
   maxIdleThreads = fuseConfig.max_idle_threads();
-  int logicalCores = std::thread::hardware_concurrency();
-  if (logicalCores != 0) {
-    maxThreads = std::min(fuseConfig.max_threads(), (logicalCores + 1) / 2);
-  } else {
-    maxThreads = fuseConfig.max_threads();
-  }
+  maxThreads = fuseConfig.max_threads();
   bufPool = net::RDMABufPool::create(fuseConfig.io_bufs().max_buf_size(), fuseConfig.rdma_buf_pool_size());
 
   iovs.init(fuseRemountPref.value_or(fuseMountpoint), fuseConfig.iov_limit());
