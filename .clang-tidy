@@ -14,7 +14,7 @@ Checks: >
   bugprone-integer-division,
   bugprone-macro-repeated-side-effects,
   bugprone-misplaced-operator-in-strlen-in-alloc,
-  bugprone-misplaced-pointer-artithmetic-in-alloc,
+  bugprone-misplaced-pointer-arithmetic-in-alloc,
   bugprone-misplaced-widening-cast,
   bugprone-move-forwarding-reference,
   bugprone-multiple-statement-macro,
