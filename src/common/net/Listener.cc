@@ -33,11 +33,11 @@ namespace hf3fs::net {
 static bool checkNicType(std::string_view nic, Address::Type type) {
   switch (type) {
     case Address::TCP:
-      return nic.starts_with("en") || nic.starts_with("eth");
+      return nic.starts_with("en") || nic.starts_with("eth") || nic.starts_with("bond");
     case Address::IPoIB:
       return nic.starts_with("ib");
     case Address::RDMA:
-      return nic.starts_with("en") || nic.starts_with("eth");
+      return nic.starts_with("en") || nic.starts_with("eth") || nic.starts_with("bond");
     case Address::LOCAL:
       return nic.starts_with("lo");
     default:
