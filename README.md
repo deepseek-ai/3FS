@@ -85,7 +85,7 @@ Install other build prerequisites:
 
 - [`libfuse`](https://github.com/libfuse/libfuse/releases/tag/fuse-3.16.1) 3.16.1 or newer version
 - [FoundationDB](https://apple.github.io/foundationdb/getting-started-linux.html) 7.1 or newer version
-- [Rust](https://www.rust-lang.org/tools/install) toolchain: minimal 1.75.0, recommanded 1.85.0 or newer version (latest stable version) 
+- [Rust](https://www.rust-lang.org/tools/install) toolchain: minimal 1.75.0, recommanded 1.85.0 or newer version (latest stable version)
 
 ## Build 3FS
 
@@ -93,6 +93,8 @@ Build 3FS in `build` folder:
 
     cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     cmake --build build -j 32
+
+You can also build with docker, please see [build_with_docker](docs/build_with_docker.md).
 
 ## Run a test cluster
 
