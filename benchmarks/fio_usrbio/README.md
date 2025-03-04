@@ -22,7 +22,12 @@ You will get the external plugin as `hf3fs_usrbio.so`.
 
 To use this plugin, set the `ioengine` args in fio as `external:hf3fs_usrbio.so`. Please refer to [fio documentation] for further explanation.
 
-To benchmarking batched small I/Os, please set these four parameters to `batch_size` simultaneously:
+Since multiple 3FS instances might be mounted, you need to specify the 3FS instance during benchmarking. This can be done by adding the `mountpoint` arguments (in the `.fio`):
+```
+mountpoint=/hf3fs/mount/point
+```
+
+To benchmark batched small I/Os, please set these four parameters to `batch_size` simultaneously:
 ```
 iodepth=1024
 iodepth_batch_submit=1024
