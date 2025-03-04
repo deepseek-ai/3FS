@@ -11,6 +11,12 @@ set(ARROW_RELEASE_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/src/apache-arrow-cpp/cp
 # means no submodules will be initialized or updated.
 cmake_policy(SET CMP0097 NEW)
 
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
+    set(ARROW_BUILD_PARALLEL "")
+else()
+    set(ARROW_BUILD_PARALLEL "-j8")
+endif()
+
 include(ExternalProject)
 ExternalProject_Add(
     apache-arrow-cpp
@@ -36,7 +42,7 @@ ExternalProject_Add(
         -DARROW_BUILD_EXAMPLES=OFF \
         -DARROW_PARQUET=ON -DARROW_CSV=ON \
         -DARROW_WITH_ZSTD=ON -DARROW_WITH_LZ4=ON -DARROW_WITH_ZLIB=ON"
-    BUILD_COMMAND bash -x -c "source thirdparty/export.sh && cmake --build . -j 4"
+    BUILD_COMMAND bash -x -c "source thirdparty/export.sh && cmake --build . ${ARROW_BUILD_PARALLEL}"
     BUILD_JOB_SERVER_AWARE 1
     INSTALL_COMMAND cmake --install . --prefix "${PREFIX}"
     BUILD_BYPRODUCTS
