@@ -67,7 +67,17 @@ endif()
 # Remove project root from the __FILE__ macro variable
 add_compile_options(-fmacro-prefix-map=${CMAKE_SOURCE_DIR}=.)
 
-add_compile_options(-msse4.2 -mavx2)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+    add_compile_options(-msse4.2 -mavx2)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+    # ARM architecture detected:
+    # Clang on ARM uses built-in runtime library (compiler-rt) to provide symbols like '__muloti4'.
+    # Without explicitly specifying '-rtlib=compiler-rt', linking may fail due to missing '__muloti4'.
+    # '-unwindlib=libgcc' ensures proper exception unwinding compatibility.
+    add_compile_options(-march=armv8-a)
+    message(STATUS "ARM architecture detected, linking with compiler-rt and libgcc.")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -rtlib=compiler-rt -unwindlib=libgcc")
+endif()
 add_compile_definitions(ROCKSDB_NAMESPACE=rocksdb_internal)
 include(cmake/Sanitizers.cmake)
 include(cmake/CompileFlags.cmake)

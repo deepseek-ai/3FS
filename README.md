@@ -79,6 +79,11 @@ apt install cmake libuv1-dev liblz4-dev liblzma-dev libdouble-conversion-dev lib
 apt install cmake libuv1-dev liblz4-dev liblzma-dev libdouble-conversion-dev libdwarf-dev libunwind-dev \
   libaio-dev libgflags-dev libgoogle-glog-dev libgtest-dev libgmock-dev clang-format-14 clang-14 clang-tidy-14 lld-14 \
   libgoogle-perftools-dev google-perftools libssl-dev gcc-12 g++-12 libboost-all-dev
+
+# for openEuler 2403sp1
+yum install cmake libuv-devel lz4-devel xz-devel double-conversion-devel libdwarf-devel libunwind-devel \
+    libaio-devel gflags-devel glog-devel gtest-devel gmock-devel clang-tools-extra clang lld \
+    gperftools-devel gperftools openssl-devel gcc gcc-c++ boost-devel
 ```
 
 Install other build prerequisites:
