@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <folly/logging/xlog.h>
 #include <fstream>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 #include "common/serde/Serde.h"
@@ -129,7 +130,10 @@ Result<std::vector<SysResource::DiskInfo>> SysResource::scanDiskInfo() {
     std::string deviceIdStr;
     std::string mountPath;
     std::string devicePath;
-    if (is >> dummy >> dummy >> deviceIdStr >> dummy >> mountPath >> dummy >> dummy >> dummy >> dummy >> devicePath) {
+    is >> dummy >> dummy >> deviceIdStr >> dummy >> mountPath;
+    while((is >> dummy) && dummy != "-")
+      ;
+    if (is >> dummy >> devicePath) {
       unsigned long maj, min;
       auto parseResult = scn::scan(deviceIdStr, "{}:{}", maj, min);
       if (!parseResult) {
@@ -139,7 +143,7 @@ Result<std::vector<SysResource::DiskInfo>> SysResource::scanDiskInfo() {
 
       if (deviceToUUID.count(devicePath)) {
         infos.emplace_back();
-        infos.back().deviceId = maj * 256 + min;
+        infos.back().deviceId = makedev(maj, min);
         infos.back().uuid = deviceToUUID[devicePath];
         infos.back().devicePath = devicePath;
         infos.back().mountPath = mountPath;
