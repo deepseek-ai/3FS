@@ -63,19 +63,18 @@ void hf3fs_destroy(struct hf3fs_ior *ior);
 #### Parameters
 - **ior**: Address for Ior.
 
-### hf3fs_iovcreate2
+### hf3fs_iovcreate
 
 #### Summary
-Create an Iov instance and allocate shared memory for that Iov. All `hf3fs_iovcreate*` functions create Iov instances, but include various configurable parameters due to compatibility considerations.
+Create an Iov instance and allocate shared memory for that Iov.
 
 #### Syntax
 ```c
-int hf3fs_iovcreate2(struct hf3fs_iov *iov,
-                     const char *hf3fs_mount_point,
-                     size_t size,
-                     size_t block_size,
-                     int numa,
-                     const char *shm_path);
+int hf3fs_iovcreate(struct hf3fs_iov *iov,
+                    const char *hf3fs_mount_point,
+                    size_t size,
+                    size_t block_size,
+                    int numa);
 ```
 
 #### Parameters
@@ -84,7 +83,6 @@ int hf3fs_iovcreate2(struct hf3fs_iov *iov,
 - **size**: Shared memory size for this Iov.
 - **block_size**: If not `0`, this function will allocate multiple shared memory blocks, each sized no larger than `block_size`. `0` for allocate a single large shared memory. All IOs on this Iov should not span across the block margin. This parameter is for optimization on IB register time.
 - **numa**: Numa ID for Ior shared memory. `-1` for current process numa ID.
-- **shm_path**: Path of `tmpfs` mount point for shared memory allocation. If `nullptr`, use the default `/dev/shm`.
 
 #### Return Value
 - If success, return 0.
@@ -93,7 +91,7 @@ int hf3fs_iovcreate2(struct hf3fs_iov *iov,
 #### Example
 ```c
 struct hf3fs_iov iov;
-hf3fs_iovcreate2(&iov, "/hf3fs/mount/point", 1 << 30, 0, -1, nullptr);
+hf3fs_iovcreate(&iov, "/hf3fs/mount/point", 1 << 30, 0, -1);
 hf3fs_iovdestroy(&iov);
 ```
 
@@ -254,7 +252,7 @@ int main() {
     hf3fs_iorcreate4(&ior, "/hf3fs/mount/point", NUM_IOS, true, 0, 0, -1, 0);
     
     struct hf3fs_iov iov;
-    hf3fs_iovcreate2(&iov, "/hf3fs/mount/point", NUM_IOS * BLOCK_SIZE, 0, -1, nullptr);
+    hf3fs_iovcreate(&iov, "/hf3fs/mount/point", NUM_IOS * BLOCK_SIZE, 0, -1);
 
     int fd = open("/hf3fs/mount/point/example.bin", O_RDONLY);
     hf3fs_reg_fd(fd, 0);
