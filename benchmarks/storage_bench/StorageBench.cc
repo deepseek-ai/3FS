@@ -169,13 +169,13 @@ bool runBenchmarks() {
   endpointRawStrs.clear();
   boost::split(endpointRawStrs, FLAGS_mgmtdEndpoints, boost::is_any_of(", "));
 
-  std::vector<net::Address> mgmtdEndpoints;
+  std::vector<net::NamedAddress> mgmtdEndpoints;
 
   for (auto str : endpointRawStrs) {
     boost::trim(str);
     if (str.empty()) continue;
 
-    auto endpoint = net::Address::fromString(str);
+    auto endpoint = net::NamedAddress::from(str).value();
     mgmtdEndpoints.push_back(endpoint);
     XLOGF(WARN, "Add mgmtd endpoint: {}", endpoint);
   }

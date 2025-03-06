@@ -16,7 +16,7 @@ struct MgmtdClientWithConfig {
   MgmtdClientWithConfig(String clusterId,
                         stubs::ClientContextCreator clientContextCreator,
                         std::vector<net::Address> mgmtdServerAddrs) {
-    config.set_mgmtd_server_addresses(mgmtdServerAddrs);
+    config.set_mgmtd_server_addresses(to_named(mgmtdServerAddrs));
     config.set_enable_auto_refresh(false);
     config.set_enable_auto_heartbeat(false);
     config.set_enable_auto_extend_client_session(false);

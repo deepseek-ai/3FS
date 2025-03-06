@@ -5,6 +5,7 @@
 #include "RoutingInfo.h"
 #include "common/utils/ConfigBase.h"
 #include "common/utils/Duration.h"
+#include "common/utils/NamedAddress.h"
 #include "stubs/common/IStubFactory.h"
 #include "stubs/mgmtd/IMgmtdServiceStub.h"
 
@@ -12,7 +13,7 @@ namespace hf3fs::client {
 class MgmtdClient {
  public:
   struct Config : public ConfigBase<Config> {
-    CONFIG_ITEM(mgmtd_server_addresses, std::vector<net::Address>{});
+    CONFIG_ITEM(mgmtd_server_addresses, std::vector<net::NamedAddress>{});
     CONFIG_ITEM(work_queue_size, 100, ConfigCheckers::checkPositive);
     CONFIG_ITEM(network_type, std::optional<net::Address::Type>{});
 
