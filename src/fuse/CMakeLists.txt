@@ -1,4 +1,8 @@
-link_directories(/usr/local/lib/x86_64-linux-gnu/)
+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    link_directories(/usr/local/lib/x86_64-linux-gnu/)
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+    link_directories(/usr/local/lib/aarch64-linux-gnu/)
+endif()
 
 target_add_lib(hf3fs_fuse common core-app meta-client storage-client fuse3 client-lib-common)
 target_add_bin(hf3fs_fuse_main hf3fs_fuse.cpp hf3fs_fuse)
