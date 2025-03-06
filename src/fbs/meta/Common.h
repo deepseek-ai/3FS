@@ -59,6 +59,8 @@ enum AccessType {
   READ = 4,
 };
 
+static constexpr auto kRemoveChunkBatchSize = 32u;
+
 BOOST_BITMASK(AccessType)
 
 template <typename C, typename T>
