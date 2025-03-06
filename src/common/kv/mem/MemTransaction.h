@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <boost/core/ignore_unused.hpp>
 #include <cassert>
 #include <folly/Likely.h>
 #include <folly/Synchronized.h>
@@ -243,6 +244,12 @@ class MemTransaction : public IReadWriteTransaction {
     changes_.clear();
     versionstampedChanges_.clear();
     writeConflicts_.clear();
+  }
+
+  Result<Void> enableStaleRead() override { return Void{}; }
+  Result<Void> setPriority(Priority priority) override {
+    boost::ignore_unused(priority);
+    return Void{};
   }
 
   // check txn1 updated txn2's read set

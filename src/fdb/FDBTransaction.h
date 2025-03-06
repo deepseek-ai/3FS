@@ -40,6 +40,8 @@ class FDBTransaction : public IReadWriteTransaction {
   CoTryTask<void> commit() override;
   void reset() override;
 
+  Result<Void> enableStaleRead() override;
+  Result<Void> setPriority(Priority priority) override;
   Result<Void> setOption(FDBTransactionOption option, std::string_view value = {});
   CoTask<bool> onError(fdb_error_t errcode);
 
