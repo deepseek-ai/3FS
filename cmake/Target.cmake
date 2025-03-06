@@ -6,7 +6,7 @@ check_ipo_supported(RESULT HAVE_IPO)
 macro(target_enable_ipo NAME)
     if(NOT CMAKE_BUILD_TYPE_UC STREQUAL "DEBUG" AND HAVE_IPO)
         set_property(TARGET ${NAME} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
-        message (STATUS "Enabled IPO for target: ${NAME}")
+        message(STATUS "Enabled IPO for target: ${NAME}")
     endif()
 endmacro()
 
@@ -93,17 +93,17 @@ macro(target_add_fbs NAME PATH)
         "${CMAKE_CURRENT_BINARY_DIR}/${DIR}"
         ""
         ""
-        )
+    )
 
-      add_library(${NAME} INTERFACE)
-      target_link_libraries(${NAME} INTERFACE common)
-      target_include_directories(${NAME}
-          INTERFACE
-              $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
-              ${PROJECT_SOURCE_DIR}
-              ${PROJECT_BINARY_DIR}/src
-              ${PROJECT_BINARY_DIR}
-      )
+    add_library(${NAME} INTERFACE)
+    target_link_libraries(${NAME} INTERFACE common)
+    target_include_directories(${NAME}
+        INTERFACE
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
+            ${PROJECT_SOURCE_DIR}
+            ${PROJECT_BINARY_DIR}/src
+            ${PROJECT_BINARY_DIR}
+    )
 
     add_dependencies(${NAME} "${NAME_WE}-generated" ${FBS_DEPS})
 endmacro()
