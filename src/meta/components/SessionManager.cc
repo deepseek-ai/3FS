@@ -152,9 +152,11 @@ CoTryTask<size_t> SessionManager::ScanTask::run(SessionManager &manager) {
   }
 
   auto finished = prune_->finished.fetch_add(1) + 1;
+  // only the final scan task should perform session pruning
   if (finished < FileSession::kShard) {
     co_return total;
   }
+  assert(finished == FileSession::kShare);
 
   while (!prune_->sessions.rlock()->empty()) {
     static constexpr size_t kBatch = 64;
@@ -169,13 +171,13 @@ CoTryTask<size_t> SessionManager::ScanTask::run(SessionManager &manager) {
     }
     wlock.unlock();
     auto txn = manager.kvEngine_->createReadWriteTransaction();
-    auto prune = co_await kv::WithTransaction(kv::FDBRetryStrategy{})
-                     .run(std::move(txn), [&](IReadWriteTransaction &txn) -> CoTryTask<Void> {
-                       for (auto &session : batch) {
-                         CO_RETURN_ON_ERROR(co_await session.remove(txn));
-                       }
-                       co_return Void{};
-                     });
+    auto prune =
+        co_await kv::WithTransaction(kv::FDBRetryStrategy{}).run(std::move(txn), [&](auto &txn) -> CoTryTask<Void> {
+          for (auto &session : batch) {
+            CO_RETURN_ON_ERROR(co_await session.remove(txn));
+          }
+          co_return Void{};
+        });
     if (prune.hasError()) {
       pruneFailed.addSample(batch.size());
       XLOGF(WARN, "Prune session failed, error {}", prune.error());
