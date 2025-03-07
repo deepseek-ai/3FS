@@ -239,7 +239,7 @@ Install `storage` service on **storage** node.
    - Add target paths in [`storage_main.toml`](../configs/storage_main.toml):
    ```toml
    [server.mgmtd]
-   mgmtd_server_address = ["RDMA://192.168.1.1:8000"]
+   mgmtd_server_addresses = ["RDMA://192.168.1.1:8000"]
 
    [common.monitor.reporters.monitor_collector]
    remote_ip = "192.168.1.1:10000"
