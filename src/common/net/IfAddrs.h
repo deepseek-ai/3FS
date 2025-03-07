@@ -94,7 +94,7 @@ class IfAddrs {
 
       auto fbs = folly::StringPiece(ifaddrIter->ifa_name);
       XLOGF_IF(INFO,
-               fbs.startsWith("en") || fbs.startsWith("eth") || fbs.startsWith("ib"),
+               fbs.startsWith("en") || fbs.startsWith("eth") || fbs.startsWith("ib") || fbs.startsWith("bond"),
                "Get ifaddr of {}, addr {}, subnet {}, up {}",
                ifaddrIter->ifa_name,
                addr,
