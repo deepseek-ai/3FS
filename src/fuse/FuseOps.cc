@@ -2150,7 +2150,7 @@ void hf3fs_ioctl(fuse_req_t req,
         fuse_reply_err(req, EINVAL);
         return;
       }
-      if (name.has_branch_path()) {
+      if (name.has_parent_path()) {
         fuse_reply_err(req, EINVAL);
         return;
       }

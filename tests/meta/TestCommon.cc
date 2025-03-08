@@ -35,17 +35,17 @@ using hf3fs::meta::InodeId;
 
 static void print(const Path &path) {
   fmt::print("path {}\n", path);
-  fmt::print("abs {}, complete {}, relative {}\n", path.is_absolute(), path.is_complete(), path.is_relative());
+  fmt::print("abs {}, complete {}, relative {}\n", path.is_absolute(), path.is_absolute(), path.is_relative());
   fmt::print("has root {}, {}\n", path.has_root_path(), path.root_path());
   fmt::print("has relative {}, {}\n", path.has_relative_path(), path.relative_path());
-  fmt::print("has branch {}, {}\n", path.has_parent_path(), path.branch_path());
+  fmt::print("has branch {}, {}\n", path.has_parent_path(), path.parent_path());
   fmt::print("has stem {}, {}\n", path.has_stem(), path.stem());
   fmt::print("has filename {}, {}, is dot {}, is dot dot {}\n",
              path.has_filename(),
              path.filename(),
              path.filename_is_dot(),
              path.filename_is_dot_dot());
-  fmt::print("has leaf {}, {}", path.has_leaf(), path.leaf());
+  fmt::print("has leaf {}, {}", !path.empty(), path.filename());
   fmt::print("size {}, components {}, first {}, last {}\n",
              path.size(),
              std::distance(path.begin(), path.end()),
