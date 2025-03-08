@@ -11,6 +11,7 @@
 #include <optional>
 #include <random>
 #include <vector>
+#include <fstream>
 
 #include "common/logging/LogInit.h"
 #include "common/net/ib/IBDevice.h"
@@ -398,12 +399,21 @@ class StorageBench : public test::UnitTestFabric {
 
     if (!boost::filesystem::exists(outFilePath) || boost::filesystem::is_empty(outFilePath)) {
       XLOGF(INFO, "Create a file for perfermance stats at {}", outFilePath);
-      boost::filesystem::save_string_file(
-          outFilePath,
-          "test name,#storages,#chains,#replicas,concurrency,batch size,"
-          "io size (bytes),effective batch size (batch size / #replicas),elapsed time (us),"
-          "QPS,IOPS,bandwidth (MB/s),latency samples,min latency (us),max latency (us),avg latency (us),"
-          "latency P50 (us),latency P75 (us),latency P90 (us),latency P95 (us),latency P99 (us)\n");
+      std::ofstream outFile(outFilePath);
+      if (!outFile) {
+          throw std::runtime_error("Failed to open file: " + outFilePath.string());
+      }
+
+      outFile << "test name,#storages,#chains,#replicas,concurrency,batch size,"
+                 "io size (bytes),effective batch size (batch size / #replicas),elapsed time (us),"
+                 "QPS,IOPS,bandwidth (MB/s),latency samples,min latency (us),max latency (us),avg latency (us),"
+                 "latency P50 (us),latency P75 (us),latency P90 (us),latency P95 (us),latency P99 (us)\n";
+
+      if (!outFile) {
+          throw std::runtime_error("Failed to write to file: " + outFilePath.string());
+      }
+
+      outFile.close();
     }
 
     auto elapsedMicro = std::chrono::duration_cast<std::chrono::microseconds>(elapsedTime);

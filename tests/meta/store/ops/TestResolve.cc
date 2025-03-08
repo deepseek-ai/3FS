@@ -196,7 +196,7 @@ TYPED_TEST(TestResolve, pathRange) {
       auto path = PathAt("/a/b/c/d");
       Path trace;
       auto result = co_await PathResolveOp(*txn, aclCache, SUPER_USER, &trace).pathRange(path);
-      std::cout << "resolve " << *path.path << " -> " << trace << " " << trace.normalize() << std::endl;
+      std::cout << "resolve " << *path.path << " -> " << trace << " " << trace.lexically_normal() << std::endl;
       CO_ASSERT_OK(result);
       CO_ASSERT_TRUE(result->missing.empty()) << result->missing;
       CO_ASSERT_EQ(result->getParentId(), c.id);
@@ -208,7 +208,7 @@ TYPED_TEST(TestResolve, pathRange) {
       auto path = Path("/a/b/c/e");
       Path trace;
       auto result = co_await PathResolveOp(*txn, aclCache, SUPER_USER, &trace).pathRange(path);
-      std::cout << "resolve " << path << " -> " << trace << " " << trace.normalize() << std::endl;
+      std::cout << "resolve " << path << " -> " << trace << " " << trace.lexically_normal() << std::endl;
       CO_ASSERT_OK(result);
       CO_ASSERT_TRUE(result->missing.empty()) << result->missing;
       CO_ASSERT_EQ(result->getParentId(), c.id);
@@ -221,7 +221,7 @@ TYPED_TEST(TestResolve, pathRange) {
       Path trace;
       auto result = co_await PathResolveOp(*txn, aclCache, SUPER_USER, &trace).pathRange(path);
       CO_ASSERT_OK(result);
-      std::cout << "resolve " << *path.path << " -> " << trace << " " << trace.normalize() << std::endl;
+      std::cout << "resolve " << *path.path << " -> " << trace << " " << trace.lexically_normal() << std::endl;
       CO_ASSERT_TRUE(result->missing.empty()) << result->missing;
       CO_ASSERT_EQ(result->getParentId(), c.id);
       CO_ASSERT_EQ(result->dirEntry.value(), dEntry);
