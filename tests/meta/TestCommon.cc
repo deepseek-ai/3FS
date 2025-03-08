@@ -35,7 +35,7 @@ using hf3fs::meta::InodeId;
 
 static void print(const Path &path) {
   fmt::print("path {}\n", path);
-  fmt::print("abs {}, complete {}, relative {}\n", path.is_absolute(), path.is_absolute(), path.is_relative());
+  fmt::print("abs {}, relative {}\n", path.is_absolute(), path.is_relative());
   fmt::print("has root {}, {}\n", path.has_root_path(), path.root_path());
   fmt::print("has relative {}, {}\n", path.has_relative_path(), path.relative_path());
   fmt::print("has branch {}, {}\n", path.has_parent_path(), path.parent_path());
