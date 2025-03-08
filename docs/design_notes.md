@@ -140,8 +140,8 @@ To reduce the performance impact, we can have more SSDs share the redirected tra
 |   5   |    1    |      `A3`       |   `C2`   |      `F3`       |
 |   6   |    1    |      `A4`       |   `B3`   |      `E3`       |
 |   7   |    1    |      `B4`       |   `C3`   |      `F4`       |
-|   8   |    1    |      `B5`       |   `C4`   |      `E4`       |
-|   9   |    1    |      `A5`       |   `C5`   |      `D4`       |
+|   8   |    1    |      `B5`       |   `C4`   |      `D4`       |
+|   9   |    1    |      `A5`       |   `C5`   |      `E4`       |
 |  10   |    1    |      `D5`       |   `E5`   |      `F5`       |
 
 To achieve maximum read throughput during recovery, the load balance problem can be formulated as a balanced incomplete block design. The optimal solution is obtained by using integer programming solver.
