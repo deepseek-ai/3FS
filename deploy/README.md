@@ -176,7 +176,7 @@ Install `meta` service on **meta** node.
 2. Update config files:
    - Set meta `node_id = 100` in [`meta_main_app.toml`](../configs/meta_main_app.toml).
      - Each meta service must have a unique node_id (e.g., 101, 102, ...) when deploying multiple nodes.
-   - Set `cluster_id`, `clusterFile` and mgmtd address in [`meta_main_launcher.toml`](../configs/meta_main_launcher.toml):
+   - Set `cluster_id` and mgmtd address in [`meta_main_launcher.toml`](../configs/meta_main_launcher.toml):
    ```toml
    cluster_id = "stage"
 
@@ -193,6 +193,9 @@ Install `meta` service on **meta** node.
 
    [server.fdb]
    clusterFile = '/opt/3fs/etc/fdb.cluster'
+   
+   [server.meta.event_trace_log]
+   trace_file_dir = '/var/log/3fs/trace'
    ```
 3. Config file of meta service is managed by mgmtd service. Use `admin_cli` to upload the config file to mgmtd:
    ```bash
