@@ -193,7 +193,7 @@ Install `meta` service on **meta** node.
 
    [server.fdb]
    clusterFile = '/opt/3fs/etc/fdb.cluster'
-   
+
    [server.meta.event_trace_log]
    trace_file_dir = '/var/log/3fs/trace'
    ```
@@ -251,6 +251,9 @@ Install `storage` service on **storage** node.
 
    [server.targets]
    target_paths = ["/storage/data1/3fs","/storage/data2/3fs","/storage/data3/3fs","/storage/data4/3fs","/storage/data5/3fs","/storage/data6/3fs","/storage/data7/3fs","/storage/data8/3fs","/storage/data9/3fs","/storage/data10/3fs","/storage/data11/3fs","/storage/data12/3fs","/storage/data13/3fs","/storage/data14/3fs","/storage/data15/3fs","/storage/data16/3fs",]
+
+   [server.storage.event_trace_log]
+   trace_file_dir = '/var/log/3fs/trace'
    ```
 5. Config file of storage service is managed by mgmtd service. Use `admin_cli` to upload the config file to mgmtd:
    ```bash
