@@ -129,6 +129,7 @@ Install `mgmtd` service on **meta** node.
    ```
 2. Update config files:
    - Set mgmtd `node_id = 1` in [`mgmtd_main_app.toml`](../configs/mgmtd_main_app.toml).
+     - Each mgmtd node must have a unique node_id (e.g., 2, 3, ...) when deploying multiple nodes.
    - Edit [`mgmtd_main_launcher.toml`](../configs/mgmtd_main_launcher.toml) to set the `cluster_id` and `clusterFile`:
    ```toml
    cluster_id = "stage"
@@ -174,6 +175,7 @@ Install `meta` service on **meta** node.
    ```
 2. Update config files:
    - Set meta `node_id = 100` in [`meta_main_app.toml`](../configs/meta_main_app.toml).
+     - Each meta service must have a unique node_id (e.g., 101, 102, ...) when deploying multiple nodes.
    - Set `cluster_id`, `clusterFile` and mgmtd address in [`meta_main_launcher.toml`](../configs/meta_main_launcher.toml):
    ```toml
    cluster_id = "stage"
