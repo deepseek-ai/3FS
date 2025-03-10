@@ -15,3 +15,6 @@ rust-version = "1.75.0" # MSRV
 debug = true
 inherits = "release"
 lto = true
+
+[build-dependencies]
+bindgen = "0.71.1"  # Use the latest version
