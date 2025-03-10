@@ -1,5 +1,5 @@
 [package]
-name = "3fs-rust-bindings"
+name = "threefs-rust-bindings"  # Changed from "3fs-rust-bindings"
 version = "0.1.0"
 edition = "2021"
 
