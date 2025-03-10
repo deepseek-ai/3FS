@@ -40,12 +40,9 @@ class MetaScan {
     double backoff_total_wait = 60;  // 60s
     // log level
     std::string logging;
-    // create FDB client with given config path
-    std::string fdb_cluster_file;
   };
 
-  MetaScan(Options options,
-           std::shared_ptr<kv::IKVEngine> kvEngine = {} /* create new fdb client if kvEngine is not set */);
+  MetaScan(Options options, std::shared_ptr<kv::IKVEngine> kvEngine);
   ~MetaScan();
 
   std::vector<Inode> getInodes();
@@ -105,7 +102,6 @@ class MetaScan {
 
   std::mutex mutex_;
   Options options_;
-  std::optional<std::jthread> fdbNetwork_;
   std::shared_ptr<kv::IKVEngine> kvEngine_;
   folly::CPUThreadPoolExecutor exec_;
   std::optional<BackgroundTask<Inode>> scanInodeTask_;
