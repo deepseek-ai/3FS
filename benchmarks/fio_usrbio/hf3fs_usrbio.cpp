@@ -266,7 +266,7 @@ void get_ioengine(struct ioengine_ops **ioengine_ptr) {
 
     ioengine.name = "hf3fs_usrbio",
     ioengine.version = FIO_IOOPS_VERSION;
-    ioengine.flags = FIO_SYNCIO | FIO_NODISKUTIL;
+    ioengine.flags = FIO_NODISKUTIL;
     ioengine.init = hf3fs_usrbio_init;
     ioengine.queue = hf3fs_usrbio_queue;
     ioengine.commit = hf3fs_usrbio_commit;
