@@ -24,7 +24,14 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm-dev
+          sudo apt-get install -y clang-14 llvm-14-dev
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-14 100
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-14 100
+
+      - name: Set Environment Variables
+        run: |
+          echo "CC=clang-14" >> $GITHUB_ENV
+          echo "CXX=clang++-14" >> $GITHUB_ENV
 
       - name: Build the Project
         run: cargo build
