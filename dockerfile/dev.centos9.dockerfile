@@ -1,7 +1,8 @@
 FROM quay.io/centos/centos:stream9
 RUN dnf clean all \
     && dnf config-manager --set-enabled crb \
-    && dnf install -y epel-release wget git meson cmake cargo perl lld gcc gcc-c++ autoconf \
+    && dnf install -y epel-release \
+    && dnf install -y wget git meson cmake cargo perl lld gcc gcc-c++ autoconf \
        lz4 lz4-devel xz xz-devel double-conversion-devel libdwarf-devel libunwind-devel libaio-devel \
        gflags-devel glog-devel libuv-devel gmock-devel gperftools gperftools-devel openssl-devel \
        boost-static boost-devel mono-devel libevent-devel libibverbs-devel numactl-devel python3-devel \
