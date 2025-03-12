@@ -77,7 +77,7 @@ enum class FeatureFlags : uint32_t {
   ALLOW_READ_UNCOMMITTED = 8,
 };
 
-constexpr auto kAIOAlignSize = 512ul;
+constexpr auto kAIOAlignSize = 4096ul;
 
 class ChunkId {
  public:

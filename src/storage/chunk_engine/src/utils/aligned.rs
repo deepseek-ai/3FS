@@ -1,7 +1,7 @@
 use super::super::Size;
 use std::alloc::Layout;
 
-pub const ALIGN_SIZE: Size = Size::new(512);
+pub const ALIGN_SIZE: Size = Size::new(4096);
 
 pub struct AlignedBuffer(&'static mut [u8]);
 
