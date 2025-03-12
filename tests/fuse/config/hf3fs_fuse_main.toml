@@ -1,8 +1,7 @@
 attr_timeout = 2
 entry_timeout = 2
 fsync_length_hint = true
-enable_read_cache = {{ env.READCACHE }}
-chunk_size_limit = '64KB'
+enable_read_cache = true
 
 [[common.log.categories]]
 categories = [ '.' ]
@@ -13,13 +12,10 @@ async = true
 name = 'normal'
 start_level = 'NONE'
 writer_type = 'FILE'
-file_path = '{{ env.LOG_FILE }}'
+file_path = '${FUSE_LOG}'
 
 [mgmtd]
 mgmtd_server_addresses = [ 'RDMA://${ADDRESS}:${MGMTD_PORT}' ]
-
-[meta]
-dynamic_stripe = {{ env.DYNAMIC_STRIPE }}
 
 [periodic_sync]
 enable = true
@@ -27,5 +23,4 @@ interval = '500ms'
 limit = 16
 
 [io_bufs]
-write_buf_size = '{{ "1MB" if env.ENABLE_WRITE_BUFFER else "0MB" }}'
 max_buf_size = '1MB'

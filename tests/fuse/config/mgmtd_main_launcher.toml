@@ -4,4 +4,4 @@ cluster_id = '${FS_CLUSTER}'
 default_pkey_index = ${PKEY_INDEX}
 
 [kv_engine.fdb]
-clusterFile = '${FDB_UNITTEST_CLUSTER}'
+clusterFile = '${FDB_TEST_CLUSTER}'

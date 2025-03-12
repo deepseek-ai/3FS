@@ -7,11 +7,11 @@ async = true
 name = 'normal'
 start_level = 'NONE'
 writer_type = 'FILE'
-file_path = '{{ env.LOG_FILE }}'
+file_path = '${META_LOG}'
 
 [[server.base.groups]]
 [server.base.groups.listener]
-listen_port = {{ env.PORT }}
+listen_port = ${META_PORT}
 
 [[server.base.groups]]
 [server.base.groups.listener]
@@ -40,5 +40,5 @@ gc_file_delay = '5s'
 
 [server.fdb]
 casual_read_risky = true
-clusterFile = '${FDB_UNITTEST_CLUSTER}'
+clusterFile = '${FDB_TEST_CLUSTER}'
 externalClientPath = '/lib/libfdb_c.so'

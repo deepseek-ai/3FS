@@ -7,11 +7,11 @@ async = true
 name = 'normal'
 start_level = 'NONE'
 writer_type = 'FILE'
-file_path = '{{ env.LOG_FILE }}'
+file_path = '${MGMTD_LOG}'
 
 [[server.base.groups]]
 [server.base.groups.listener]
-listen_port = {{ env.PORT }}
+listen_port = ${MGMTD_PORT}
 
 [[server.base.groups]]
 [server.base.groups.listener]
