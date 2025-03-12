@@ -6,7 +6,7 @@ RUN dnf clean all \
        double-conversion-devel libdwarf-devel libunwind-devel libaio-devel gflags-devel glog-devel \
        libuv-devel gmock-devel gperftools gperftools-devel openssl-devel boost-static boost-devel mono-devel \
        libevent-devel libibverbs-devel numactl-devel python3-devel \
-    && dnf remove fuse \
+    && dnf remove -y fuse \
     && dnf clean all \
     && echo "alias ll='ls -al'" >> /root/.bashrc
 RUN mkdir -p /tmp/fuse \
