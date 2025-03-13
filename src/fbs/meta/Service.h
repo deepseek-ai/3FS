@@ -351,7 +351,7 @@ struct OpenReq : ReqBase {
         path(std::move(path)),
         session(session),
         flags(flags),
-        removeChunksBatchSize(32),
+        removeChunksBatchSize(kRemoveChunkBatchSize),
         dynStripe(dynStripe) {}
   Result<Void> valid() const {
     RETURN_ON_ERROR(flags.valid());
