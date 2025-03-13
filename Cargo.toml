@@ -4,6 +4,10 @@ members = [
   "src/storage/chunk_engine",
   "src/lib/rs/hf3fs-usrbio-sys"
 ]
+default-members = [
+  "src/client/trash_cleaner",
+  "src/storage/chunk_engine",
+]
 resolver = "2"
 
 [workspace.package]

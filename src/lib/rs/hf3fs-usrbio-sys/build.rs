@@ -7,7 +7,7 @@ fn main() {
     println!("cargo::rustc-link-lib=hf3fs_api_shared");
 
     let bindings = bindgen::Builder::default()
-        .header("include/hf3fs_usrbio.h")
+        .header(PathBuf::from(topdir).join("../../api/hf3fs_usrbio.h").display().to_string())
         .clang_arg("-std=c99")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()
