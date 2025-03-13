@@ -1,0 +1,1 @@
+Make sure to build the CMake target `hf3fs_api_shared` (the usrbio library) before building this rust binding. The CMake build will link the built library to the `lib` directory, which is a prerequisite of the Cargo build.
