@@ -29,5 +29,11 @@ mgmtd_server_addresses = [ 'RDMA://${ADDRESS}:${MGMTD_PORT}' ]
 target_paths = [ ${TARGETS} ]
 allow_disk_without_uuid = true
 
+[server.aio_read_worker]
+enable_io_uring = false
+
 [server.buffer_pool]
-rdmabuf_count = 256
+big_rdmabuf_count = 16
+big_rdmabuf_size = '16MB'
+rdmabuf_count = 32
+rdmabuf_size = '4MB'
