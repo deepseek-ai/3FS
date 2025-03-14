@@ -1,4 +1,4 @@
-allow_other = true # echo user_allow_other | sudo tee -a /etc/fuse.conf
+allow_other = false
 token_file = '${TOKEN_FILE}'
 cluster_id = '${FS_CLUSTER}'
 
