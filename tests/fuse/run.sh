@@ -151,7 +151,7 @@ ${ADMIN_CLI} init-cluster \
     --meta "${CONFIG}/meta_main.toml" \
     --storage "${CONFIG}/storage_main.toml" \
     --fuse "${CONFIG}/hf3fs_fuse_main.toml" \
-    --skip-config-check 1 524288 8
+    --skip-config-check 1 524288 1
 
 # ======== Start Services ========
 echo "### Start mgmtd"
