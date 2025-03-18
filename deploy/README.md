@@ -215,7 +215,7 @@ Install `storage` service on **storage** node.
    ```bash
    mkdir -p /storage/data{1..16}
    mkdir -p /var/log/3fs
-   for i in {1..16};do mkfs.xfs -L data${i} /dev/nvme${i}n1;mount -o noatime,nodiratime -L data${i} /storage/data${i};done
+   for i in {1..16};do mkfs.xfs -L data${i} -s size=4096 /dev/nvme${i}n1;mount -o noatime,nodiratime -L data${i} /storage/data${i};done
    mkdir -p /storage/data{1..16}/3fs
    ```
 2. Increase the max number of asynchronous aio requests:
