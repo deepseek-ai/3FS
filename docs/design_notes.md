@@ -257,7 +257,7 @@ When a storage service finds a previously offline successor is online:
 
    -   The chunk lock is released.
 
-   4\. When all required chunks have been transferred, a sync-done message is sent to the successor.
+4. When all required chunks have been transferred, a sync-done message is sent to the successor.
 
 The rules used to decide which chunks should be transferred are:
 
