@@ -32,6 +32,9 @@ option(SAVE_ALLOCATE_SIZE "Use more memory to save allocate size" OFF)
 
 option(ENABLE_FUSE_APPLICATION "" ON)
 
+option(WITH_TESTS "Enable the build of tests" OFF)
+option(WITH_BENCHMARKS "Enable the build of benchmarks" OFF)
+
 if (DEFINED SANITIZER AND SANITIZER)
     set(OVERRIDE_CXX_NEW_DELETE OFF)
 endif()
@@ -78,14 +81,16 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
     message(STATUS "ARM architecture detected, linking with compiler-rt and libgcc.")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -rtlib=compiler-rt -unwindlib=libgcc")
 endif()
-add_compile_definitions(ROCKSDB_NAMESPACE=rocksdb_internal)
+
 include(cmake/Sanitizers.cmake)
 include(cmake/CompileFlags.cmake)
-
-# folly can't work normally under -Werror
 store_compile_flags()
+
+# fmt
 add_subdirectory("third_party/fmt" EXCLUDE_FROM_ALL)
 restore_compile_flags()
+
+# zstd
 set(ZSTD_BUILD_STATIC ON)
 add_subdirectory("third_party/zstd/build/cmake" EXCLUDE_FROM_ALL)
 set(zstd_INCLUDE_DIRS "${PROJECT_SOURCE_DIR}/third_party/zstd/lib")
@@ -95,16 +100,27 @@ set(ZSTD_FOUND ON)
 set(zstd_LIBRARIES "${PROJECT_BINARY_DIR}/third_party/zstd/build/cmake/lib/libzstd.a")
 set(ZSTD_LIBRARY "${PROJECT_BINARY_DIR}/third_party/zstd/build/cmake/lib/libzstd.a")
 restore_compile_flags()
+
+# googletest
 add_subdirectory("third_party/googletest" EXCLUDE_FROM_ALL)
 restore_compile_flags()
+
+# folly
+# folly can't work normally under -Werror
 set(FOLLY_NO_EXCEPTION_TRACER ON)
 add_subdirectory("third_party/folly" EXCLUDE_FROM_ALL)
 restore_compile_flags()
+
+# leveldb
 set(LEVELDB_BUILD_TESTS OFF CACHE BOOL "Disable LevelDB tests")
 set(LEVELDB_BUILD_BENCHMARKS OFF CACHE BOOL "Disable LevelDB benchmarks")
 set(LEVELDB_INSTALL OFF CACHE BOOL "Disable LevelDB install")
 add_subdirectory("third_party/leveldb" EXCLUDE_FROM_ALL)
 restore_compile_flags()
+
+# rocksdb
+set(ORIGINAL_WITH_TESTS ${WITH_TESTS})
+add_compile_definitions(ROCKSDB_NAMESPACE=rocksdb_internal)
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 set(WITH_LZ4 ON)
 set(WITH_ZSTD ON)
@@ -113,9 +129,11 @@ set(WITH_TESTS OFF)
 set(WITH_BENCHMARK_TOOLS OFF)
 set(WITH_TOOLS OFF)
 set(WITH_ALL_TESTS OFF)
-
 add_subdirectory("third_party/rocksdb" EXCLUDE_FROM_ALL)
 restore_compile_flags()
+set(WITH_TESTS ${ORIGINAL_WITH_TESTS})
+
+# scnlib
 set(SCN_TESTS OFF)
 set(SCN_EXAMPLES OFF)
 set(SCN_BENCHMARKS OFF)
@@ -124,13 +142,21 @@ set(SCN_INSTALL OFF)
 set(SCN_PEDANTIC OFF)
 add_subdirectory("third_party/scnlib" EXCLUDE_FROM_ALL)
 restore_compile_flags()
+
+# pybind11
 add_subdirectory("third_party/pybind11" EXCLUDE_FROM_ALL)
 restore_compile_flags()
+
+# toml11
 add_subdirectory("third_party/toml11" EXCLUDE_FROM_ALL)
 restore_compile_flags()
+
+# mimalloc
 set (MI_OVERRIDE OFF)
 add_subdirectory("third_party/mimalloc" EXCLUDE_FROM_ALL)
 restore_compile_flags()
+
+# clickhouse-cpp
 add_subdirectory("third_party/clickhouse-cpp" EXCLUDE_FROM_ALL)
 TARGET_INCLUDE_DIRECTORIES(clickhouse-cpp-lib
     PUBLIC ${PROJECT_SOURCE_DIR}/third_party/clickhouse-cpp
@@ -142,6 +168,8 @@ TARGET_INCLUDE_DIRECTORIES (absl-lib
     PUBLIC ${PROJECT_SOURCE_DIR}/third_party/clickhouse-cpp/contrib
 )
 restore_compile_flags()
+
+# liburing
 add_subdirectory("third_party/liburing-cmake" EXCLUDE_FROM_ALL)
 restore_compile_flags()
 
@@ -178,5 +206,9 @@ include(cmake/AddCrate.cmake)
 configure_file(cmake/CTestCustom.cmake ${CMAKE_BINARY_DIR} @ONLY)
 
 add_subdirectory(src)
-add_subdirectory(tests)
-add_subdirectory(benchmarks)
+if(WITH_TESTS)
+    add_subdirectory(tests)
+endif()
+if(WITH_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
