@@ -99,6 +99,12 @@ Build 3FS in `build` folder:
     cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     cmake --build build -j 32
 
+### Build tests && benchmarks
+
+Build `tests` requires you to add the `-DWITH_TESTS` option to the cmake in the first step above.
+
+For `benchmarks`, it's -DWITH_BENCHMARKS.
+
 ## Run a test cluster
 
 Follow instructions in [setup guide](deploy/README.md) to run a test cluster.
