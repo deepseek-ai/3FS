@@ -32,6 +32,8 @@ option(SAVE_ALLOCATE_SIZE "Use more memory to save allocate size" OFF)
 
 option(ENABLE_FUSE_APPLICATION "" ON)
 
+option(WITH_TESTS "Enable the build of tests" OFF)
+
 if (DEFINED SANITIZER AND SANITIZER)
     set(OVERRIDE_CXX_NEW_DELETE OFF)
 endif()
@@ -116,6 +118,7 @@ add_subdirectory("third_party/leveldb" EXCLUDE_FROM_ALL)
 restore_compile_flags()
 
 # rocksdb
+set(ORIGINAL_WITH_TESTS ${WITH_TESTS})
 add_compile_definitions(ROCKSDB_NAMESPACE=rocksdb_internal)
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 set(WITH_LZ4 ON)
@@ -127,6 +130,7 @@ set(WITH_TOOLS OFF)
 set(WITH_ALL_TESTS OFF)
 add_subdirectory("third_party/rocksdb" EXCLUDE_FROM_ALL)
 restore_compile_flags()
+set(WITH_TESTS ${ORIGINAL_WITH_TESTS})
 
 # scnlib
 set(SCN_TESTS OFF)
@@ -201,5 +205,7 @@ include(cmake/AddCrate.cmake)
 configure_file(cmake/CTestCustom.cmake ${CMAKE_BINARY_DIR} @ONLY)
 
 add_subdirectory(src)
-add_subdirectory(tests)
+if(WITH_TESTS)
+    add_subdirectory(tests)
+endif()
 add_subdirectory(benchmarks)
