@@ -238,7 +238,6 @@ void add_entry(const Inode &inode, struct fuse_entry_param *e) {
   auto it = d.inodes.find(inode.id);
   if (it != d.inodes.end()) {
     auto &rcinode = it->second;
-    //    rcinode->inode = inode;
     rcinode->refcount++;
     rcinode->update(inode);
   } else {
@@ -349,16 +348,10 @@ void hf3fs_init(void *userdata, struct fuse_conn_info *conn) {
 
 void hf3fs_destroy(void *userdata) { (void)userdata; }
 
-// // 2023/6/1 as virtual inode timestamps
-// const auto virtInodeTime = UtcTime(std::chrono::microseconds(1685548800ull * 1000 * 1000));
-
 // /3fs-virt dir to contain all virtual dirs and files
 const std::string virtDir = "3fs-virt";
 const auto virtDirInode =
     Inode{InodeId::virt(), InodeData{Directory{InodeId{InodeId::root()}}, Acl{Uid{0}, Gid{0}, Permission{0555}}}};
-// virtInodeTime,
-// virtInodeTime,
-// virtInodeTime}};
 
 struct NameInode {
   std::string name;
@@ -779,21 +772,10 @@ void hf3fs_getattr(fuse_req_t req, fuse_ino_t fino, struct fuse_file_info *fi) {
     return;
   }
 
-  // fuse_file_info fi2{};
-  // auto ptr = inodeOf(fi2, ino);
-
   auto res = withRequestInfo(
       req,
-      d.metaClient->stat(userInfo, ino, std::nullopt, false));  // [&userInfo, &ptr, ino]() -> CoTryTask<Inode> {
-  //   auto syncver = ptr->synced.load();
-  //   auto writever = ptr->written.load();
-  //   if (syncver < writever) {
-  //     CO_RETURN_ON_ERROR(co_await d.metaClient->sync(userInfo, ino, true, true));
-  //     ptr->synced.store(writever);
-  //   }
+      d.metaClient->stat(userInfo, ino, std::nullopt, false));
 
-  //   co_return co_await d.metaClient->stat(userInfo, ino, std::nullopt, false);
-  // }());
   if (res.hasError()) {
     handle_error(req, res);
   } else {
@@ -944,15 +926,6 @@ void hf3fs_readlink(fuse_req_t req, fuse_ino_t fino) {
       return;
     }
   }
-
-  /*
-  auto res = folly::coro::blocking_wait(d.metaClient->stat(userInfo, ino, std::nullopt, false));
-  if (res.hasError()) {
-    if (res.error().code() == MetaCode::kNotFound) {
-      fuse_lowlevel_notify_inval_inode(d.se, ino, 0, 0);
-    }
-  }
-  */
 
   fuse_file_info fi{};
   auto ptr = inodeOf(fi, ino);
@@ -1136,7 +1109,6 @@ Result<NameInode> extractServerDirPath(fuse_req_t req, const char *link, const U
                                  remountPref.value_or("")));
   }
 
-  // auto svrp = Path(pm, p.end());
   auto svrp = Path("/");
   for (auto it = pm; it != p.end(); ++it) {
     svrp /= *it;
@@ -1201,8 +1173,6 @@ void hf3fs_symlink(fuse_req_t req, const char *link, fuse_ino_t fparent, const c
         if (res2.hasError()) {
           handle_error(req, res2);
         } else {
-          //          add_entry(Inode{InodeId{-(100ull << 30) - res->inode.id.u64()}, InodeData{meta::Symlink{link}}},
-          //          &e);
           fillLinuxStat(e.attr, Inode{InodeId::virtTemporary(res->inode.id), InodeData{meta::Symlink{link}}});
           e.ino = e.attr.st_ino;
 
@@ -1239,7 +1209,7 @@ void hf3fs_symlink(fuse_req_t req, const char *link, fuse_ino_t fparent, const c
           // record the ior index for later removal
           res->second->iorIndex = *res2;
         }
-        //        add_entry(inode, &e);
+
         fillLinuxStat(e.attr, inode);
         e.ino = e.attr.st_ino;
         fuse_reply_entry(req, &e);
@@ -1255,10 +1225,6 @@ void hf3fs_symlink(fuse_req_t req, const char *link, fuse_ino_t fparent, const c
         e.ino = e.attr.st_ino;
         fuse_reply_entry(req, &e);
         XLOGF(DBG, "replied entry");
-
-        // // invalidate the link after replying, we don't actually want a link under the set conf dir
-        // fuse_lowlevel_notify_inval_entry(d.se, e.ino, name, strlen(name));
-        // fuse_lowlevel_notify_inval_inode(d.se, e.ino, -1, 0);
       }
     } else {
       fuse_reply_err(req, EPERM);
@@ -1280,15 +1246,12 @@ void hf3fs_symlink(fuse_req_t req, const char *link, fuse_ino_t fparent, const c
     } else {
       auto res2 = withRequestInfo(req, [&userInfo, &res, parent, name]() -> CoTryTask<Inode> {
         co_return co_await d.metaClient->rename(userInfo, res->inode.id, res->name, parent, name);
-        //        co_return co_await (d.metaClient->stat(userInfo, parent, name, false));
       }());
 
       if (res2.hasError()) {
         handle_error(req, res2);
       } else {
         auto viid = InodeId::virtTemporary(res->inode.id);
-        //        add_entry(Inode{viid, InodeData{meta::Symlink{rlink}}}, &e);
-        // add_entry(*res2, &e);
         fillLinuxStat(e.attr, Inode{viid, InodeData{meta::Symlink{rlink}}});
         e.ino = e.attr.st_ino;
 
@@ -1355,7 +1318,7 @@ void hf3fs_rename(fuse_req_t req,
       if (res.hasError()) {
         handle_error(req, res);
       } else {
-        fuse_reply_err(req, 0);  // ENOENT);
+        fuse_reply_err(req, 0);
         d.notifyInvalExec->add([newparent, name = std::string(name)]() { notify_inval_entry(newparent, name); });
       }
     } else {
@@ -1438,14 +1401,6 @@ void hf3fs_open(fuse_req_t req, fuse_ino_t fino, struct fuse_file_info *fi) {
     return;
   }
 
-  // if (ptr->opened.fetch_add(1) != 0) {
-  //   auto res = withRequestInfo(req, d.metaClient->sync(userInfo, ino, true, std::nullopt,
-  //   std::nullopt)); if (res.hasError()) {
-  //     handle_error(req, res);
-  //     return;
-  //   }
-  // }
-
   Uuid session;
   if ((fi->flags & O_ACCMODE) == O_WRONLY || (fi->flags & O_ACCMODE) == O_RDWR) {
     session = meta::client::SessionId::random();
@@ -1454,8 +1409,6 @@ void hf3fs_open(fuse_req_t req, fuse_ino_t fino, struct fuse_file_info *fi) {
       handle_error(req, res);
       return;
     }
-
-    //    fi->direct_io = 1;
   }
 
   // O_DIRECT open means direc io
@@ -1495,21 +1448,7 @@ void hf3fs_read(fuse_req_t req, fuse_ino_t fino, size_t size, off_t off, struct 
   }
 
   auto &inode = pi->inode;
-  /*
-    if (!d.buf) {
-      XLOGF(INFO, "  hf3fs_read register buffer");
-      d.buf.reset(std::make_unique<std::vector<uint8_t>>(d.maxBufsize));
-      auto ret = d.storageClient->registerIOBuffer(d.buf->data(), d.maxBufsize);
-      if (ret.hasError()) {
-        handle_error(req, ret);
-        return;
-      } else {
-        d.memh.reset(std::make_unique<IOBuffer>(std::move(*ret)));
-      }
-    }
-  */
   auto memh = IOBuffer(folly::coro::blocking_wait(d.bufPool->allocate()));
-
   auto userInfo = UserInfo(flat::Uid(fuse_req_ctx(req)->uid), flat::Gid(fuse_req_ctx(req)->gid), d.fuseToken);
   auto &config = d.userConfig.getConfig(userInfo);
   if (config.dryrun_bench_mode()) {
@@ -1585,7 +1524,6 @@ void hf3fs_write(fuse_req_t req, fuse_ino_t fino, const char *buf, size_t size, 
 
   auto odir = ((FileHandle *)fi->fh)->oDirect;
   auto pi = inodeOf(*fi, ino);
-  //  auto &inode = pi->inode;
 
   std::unique_lock lock(pi->wbMtx);
   auto wb = pi->writeBuf;
@@ -1603,19 +1541,7 @@ void hf3fs_write(fuse_req_t req, fuse_ino_t fino, const char *buf, size_t size, 
         wb->len = 0;
       }
     }
-    /*
-        if (!d.buf) {
-          XLOGF(INFO, "  hf3fs_write register buffer");
-          d.buf.reset(std::make_unique<std::vector<uint8_t>>(d.maxBufsize));
-          auto ret = d.storageClient->registerIOBuffer(d.buf->data(), d.maxBufsize);
-          if (ret.hasError()) {
-            handle_error(req, ret);
-            return;
-          } else {
-            d.memh.reset(std::make_unique<IOBuffer>(std::move(*ret)));
-          }
-        }
-    */
+
     auto memh = IOBuffer(folly::coro::blocking_wait(d.bufPool->allocate()));
 
     memcpy((char *)memh.data(), buf, size);
@@ -1638,13 +1564,12 @@ void hf3fs_write(fuse_req_t req, fuse_ino_t fino, const char *buf, size_t size, 
       return;
     }
     wb2->memh.reset(new storage::client::IOBuffer(std::move(*ret)));
-    pi->writeBuf = wb2;  //.compare_exchange_strong(wb, wb2);
+    pi->writeBuf = wb2;
     if (!wb) {
       wb = wb2;
     }
   }
 
-  // std::lock_guard lock(wb->mtx);
   {
     if (wb->len && wb->off + (ssize_t)wb->len != off) {
       XLOGF(DBG, "to flush due to inconsecutive off {} prev off {} len {}", off, wb->off, wb->len);
@@ -1703,35 +1628,6 @@ void hf3fs_fsync(fuse_req_t req, fuse_ino_t fino, int datasync, struct fuse_file
 
 void hf3fs_flush(fuse_req_t req, fuse_ino_t fino, struct fuse_file_info *fi) {
   hf3fs_fsync(req, fino, false, fi);
-
-  // auto pi = inodeOf(*fi, ino);
-  // auto wb = pi->writeBuf.load();
-  // if (wb && wb->len) {
-  //   if (flushBuf(req, pi, wb->off, *wb->memh, wb->len, true) < 0) {
-  //     return;
-  //   }
-  // }
-
-  // auto ino = real_ino(fino);
-
-  // XLOGF(OP_LOG_LEVEL, "hf3fs_flush(ino={}, pid={})", ino, fuse_req_ctx(req)->pid);
-  // record("flush", fuse_req_ctx(req)->uid);
-
-  // auto userInfo = UserInfo(flat::Uid(fuse_req_ctx(req)->uid), flat::Gid(fuse_req_ctx(req)->gid), d.fuseToken);
-  // auto ptr = inodeOf(*fi, ino);
-  // auto syncver = ptr->synced.load();
-  // auto writever = ptr->written.load();
-  // if (syncver < writever) {
-  //   auto res = withRequestInfo(req, d.metaClient->sync(userInfo, ino, true, true));
-  //   if (res.hasError()) {
-  //     handle_error(req, res);
-  //   } else {
-  //     ptr->synced.store(writever);
-  //     fuse_reply_err(req, 0);
-  //   }
-  // } else {
-  //   fuse_reply_err(req, 0);
-  // }
 }
 
 void hf3fs_release(fuse_req_t req, fuse_ino_t fino, struct fuse_file_info *fi) {
@@ -1750,8 +1646,6 @@ void hf3fs_release(fuse_req_t req, fuse_ino_t fino, struct fuse_file_info *fi) {
     fuse_reply_err(req, ENOENT);
     return;
   }
-
-  //  ptr->opened--;
 
   {
     std::lock_guard lock(ptr->wbMtx);
@@ -1794,14 +1688,6 @@ void hf3fs_releasedir(fuse_req_t req, fuse_ino_t fino, struct fuse_file_info *fi
 
   XLOGF(OP_LOG_LEVEL, "hf3fs_releasedir(ino={}, fh={}, pid={})", ino, fi->fh, fuse_req_ctx(req)->pid);
   record("releasedir", fuse_req_ctx(req)->uid);
-
-  // {
-  //   std::lock_guard lock{d.readdirResultsMutex};
-  //   auto it = d.readdirResults.find(fi->fh);
-  //   if (it != d.readdirResults.end()) {
-  //     d.readdirResults.erase(it);
-  //   }
-  // }
 
   auto dh = (DirHandle *)fi->fh;
 
@@ -1893,7 +1779,6 @@ void hf3fs_create(fuse_req_t req, fuse_ino_t fparent, const char *name, mode_t m
     auto ptr = inodeOf(*fi, res.value().id);
 
     fi->direct_io = (!d.userConfig.getConfig(userInfo).enable_read_cache() || fi->flags & O_DIRECT) ? 1 : 0;
-    // fi->direct_io = 1;  // newly created file, has to write, or read from remote
     fi->fh = (uintptr_t)(new FileHandle{ptr, (bool)(fi->flags & O_DIRECT), session});
     XLOGF(DBG, "{}created in o direct mode", fi->flags & O_DIRECT ? "" : "not ");
     fuse_reply_create(req, &e, fi);
@@ -2019,10 +1904,6 @@ void hf3fs_ioctl(fuse_req_t req,
       break;
     }
     case hf3fs::lib::fuse::HF3FS_IOC_RECURSIVE_RM: {
-      // if (!out_bufsz) {
-      //   struct iovec iov = {arg, sizeof(uint32_t)};
-      //   fuse_reply_ioctl_retry(req, nullptr, 0, &iov, 1);
-      // } else {
       auto res = withRequestInfo(req, [&userInfo, ino]() -> CoTryTask<void> {
         auto res = co_await d.metaClient->getRealPath(userInfo, ino, std::nullopt, true);
         if (res.hasError()) {
@@ -2035,7 +1916,7 @@ void hf3fs_ioctl(fuse_req_t req,
       } else {
         fuse_reply_ioctl(req, 0, nullptr, 0);
       }
-      //      }
+
       break;
     }
     case hf3fs::lib::fuse::HF3FS_IOC_FSYNC: {
@@ -2599,9 +2480,7 @@ const fuse_lowlevel_ops hf3fs_oper = {
     .release = hf3fs_release,
     .fsync = hf3fs_fsync,
     .opendir = hf3fs_opendir,
-    //    .readdir = hf3fs_readdir,
     .releasedir = hf3fs_releasedir,
-    //.fsyncdir = hf3fs_fsyncdir,
     .statfs = hf3fs_statfs,
     .setxattr = hf3fs_setxattr,
     .getxattr = hf3fs_getxattr,
@@ -2610,6 +2489,10 @@ const fuse_lowlevel_ops hf3fs_oper = {
     .create = hf3fs_create,
     .ioctl = hf3fs_ioctl,
     .readdirplus = hf3fs_readdirplus,
+    /* TODO
+    .readdir = hf3fs_readdir,
+    .fsyncdir = hf3fs_fsyncdir,
+    */
 };
 
 const fuse_lowlevel_ops &getFuseOps() { return hf3fs_oper; }
