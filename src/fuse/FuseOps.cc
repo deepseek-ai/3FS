@@ -669,7 +669,6 @@ void hf3fs_lookup(fuse_req_t req, fuse_ino_t fparent, const char *name) {
           }
         }
 
-        //    std::cout << "ino " << parent << " name " << name << std::endl;
         fuse_reply_err(req, ENOENT);
         return;
       } else if (*dname == "iovs") {
@@ -1019,7 +1018,6 @@ void hf3fs_mkdir(fuse_req_t req, fuse_ino_t fparent, const char *name, mode_t mo
 
   auto dname = checkVirtDir(parent);
   if (dname) {
-    //    std::cout << "mkdir in virt dir " << *dname << std::endl;
     fuse_reply_err(req, EPERM);
     return;
   }
@@ -2348,7 +2346,6 @@ void hf3fs_readdirplus(fuse_req_t req, fuse_ino_t fino, size_t size, off_t off, 
       add_entry(realInodes[idx].value(), &e);
       XLOGF(DBG, "entry id {} uid {} permission {}", e.attr.st_ino, e.attr.st_uid, e.attr.st_mode);
 
-      //    std::cout << "adding dentry " << name << " i " << i << " size " << entries.size() << std::endl;
       auto entsize = fuse_add_direntry_plus(req, p, rem, name.data(), &e, i + 1 + kOffsetBegin);
       if (entsize > rem) {
         remove_entry(realInodes[idx]->id, 1);
