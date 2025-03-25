@@ -18,7 +18,7 @@ DynamicCoroutinesPool::DynamicCoroutinesPool(const Config &config, std::string_v
       guard_(config_.addCallbackGuard([&] { setCoroutinesNum(config_.coroutines_num()); })),
       executor_(std::make_pair(config.threads_num(), config.threads_num()),
                 std::make_shared<folly::NamedThreadFactory>(name)),
-      coroutinesNumRecorder_(currentCoroutinesNum.getRecoderWithTag(monitor::instanceTagSet(std::string{name}))) {}
+      coroutinesNumRecorder_(currentCoroutinesNum.getRecorderWithTag(monitor::instanceTagSet(std::string{name}))) {}
 
 Result<Void> DynamicCoroutinesPool::start() { return setCoroutinesNum(config_.coroutines_num()); }
 

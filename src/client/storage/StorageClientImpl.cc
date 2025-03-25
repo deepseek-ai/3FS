@@ -679,7 +679,7 @@ typename hf3fs::storage::BatchReadReq buildBatchRequest(const ClientRequestConte
   payloads.reserve(ops.size());
   size_t requestedBytes = 0;
   auto requestTagSet = monitor::instanceTagSet("batchRead");
-  auto tagged_bytes_per_operation = bytes_per_operation.getRecoderWithTag(requestTagSet);
+  auto tagged_bytes_per_operation = bytes_per_operation.getRecorderWithTag(requestTagSet);
 
   hf3fs::storage::RequestId requestId(nextRequestId.fetch_add(1));
   hf3fs::storage::MessageTag tag{clientId, requestId};

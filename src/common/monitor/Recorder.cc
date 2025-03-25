@@ -50,15 +50,15 @@ void Recorder::setHostname(std::string hostname, std::string podname) {
 }
 
 template <typename T>
-Recorder::TagRef<T> Recorder::getRecoderWithTag(const TagSet &tag) {
+Recorder::TagRef<T> Recorder::getRecorderWithTag(const TagSet &tag) {
   auto iter = map_.find(tag);
   if (UNLIKELY(iter == map_.end())) {
     TagSet new_tag_set = tag_;
     for (const auto &kv : tag) {
       new_tag_set.addTag(kv.first, kv.second);
     }
-    auto newRecoder = std::make_unique<T>(*reinterpret_cast<T *>(this), new_tag_set);
-    auto result = map_.insert(tag, std::move(newRecoder));
+    auto newRecorder = std::make_unique<T>(*reinterpret_cast<T *>(this), new_tag_set);
+    auto result = map_.insert(tag, std::move(newRecorder));
     iter = std::move(result.first);
   }
   return iter;
@@ -72,7 +72,7 @@ CountRecorderWithTLSTag<ThreadLocalTag>::CountRecorderWithTLSTag(std::string_vie
 
 template <class ThreadLocalTag>
 void CountRecorderWithTLSTag<ThreadLocalTag>::addSample(int64_t val, const TagSet &tag) {
-  getRecoderWithTag(tag)->addSample(val);
+  getRecorderWithTag(tag)->addSample(val);
 }
 
 template <class ThreadLocalTag>
@@ -159,7 +159,7 @@ void DistributionRecorder::collect(std::vector<Sample> &samples) {
   }
 }
 
-void DistributionRecorder::addSample(double val, const TagSet &tag) { getRecoderWithTag(tag)->addSample(val); }
+void DistributionRecorder::addSample(double val, const TagSet &tag) { getRecorderWithTag(tag)->addSample(val); }
 
 void DistributionRecorder::logPer30s(const folly::TDigest &digest) {
   XLOGF(DBG3,
@@ -222,10 +222,10 @@ void SimpleDistributionRecorder::collect(std::vector<Sample> &samples) {
   }
 }
 
-void SimpleDistributionRecorder::addSample(int64_t val, const TagSet &tag) { getRecoderWithTag(tag)->addSample(val); }
+void SimpleDistributionRecorder::addSample(int64_t val, const TagSet &tag) { getRecorderWithTag(tag)->addSample(val); }
 
 void LatencyRecorder::addSample(std::chrono::nanoseconds duration, const TagSet &tag) {
-  getRecoderWithTag(tag)->addSample(duration);
+  getRecorderWithTag(tag)->addSample(duration);
 }
 
 void LatencyRecorder::logPer30s(const folly::TDigest &digest) {
@@ -303,7 +303,7 @@ template class OperationRecorderT<SimpleDistributionRecorder>;
 ValueRecorder::ValueRecorder(std::string_view name, std::optional<TagSet> tag, bool resetWhenCollect)
     : ValueRecorder(Monitor::getDefaultInstance(), name, tag, resetWhenCollect) {}
 
-void ValueRecorder::set(int64_t val, const TagSet &tag) { getRecoderWithTag(tag)->set(val); }
+void ValueRecorder::set(int64_t val, const TagSet &tag) { getRecorderWithTag(tag)->set(val); }
 
 void ValueRecorder::collect(std::vector<Sample> &samples) {
   int64_t val = resetWhenCollect_ ? val_.exchange(0) : val_.load();

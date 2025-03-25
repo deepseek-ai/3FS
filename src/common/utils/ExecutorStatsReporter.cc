@@ -18,12 +18,12 @@ monitor::CountRecorder totalTaskCountRecorder{"thread_pool_group.total_task_coun
 template <class T>
 ExecutorStatsReporter<T>::ExecutorStatsReporter(const T &executor)
     : executor_(executor),
-      threadCountRecorder_(threadCountRecorder.getRecoderWithTag(monitor::threadTagSet(executor.getName()))),
-      idleThreadCountRecorder_(idleThreadCountRecorder.getRecoderWithTag(monitor::threadTagSet(executor.getName()))),
+      threadCountRecorder_(threadCountRecorder.getRecorderWithTag(monitor::threadTagSet(executor.getName()))),
+      idleThreadCountRecorder_(idleThreadCountRecorder.getRecorderWithTag(monitor::threadTagSet(executor.getName()))),
       activeThreadCountRecorder_(
-          activeThreadCountRecorder.getRecoderWithTag(monitor::threadTagSet(executor.getName()))),
-      pendingTaskCountRecorder_(pendingTaskCountRecorder.getRecoderWithTag(monitor::threadTagSet(executor.getName()))),
-      totalTaskCountRecorder_(totalTaskCountRecorder.getRecoderWithTag(monitor::threadTagSet(executor.getName()))) {}
+          activeThreadCountRecorder.getRecorderWithTag(monitor::threadTagSet(executor.getName()))),
+      pendingTaskCountRecorder_(pendingTaskCountRecorder.getRecorderWithTag(monitor::threadTagSet(executor.getName()))),
+      totalTaskCountRecorder_(totalTaskCountRecorder.getRecorderWithTag(monitor::threadTagSet(executor.getName()))) {}
 
 template <class T>
 void ExecutorStatsReporter<T>::report() {

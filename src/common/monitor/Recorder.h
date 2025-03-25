@@ -71,7 +71,7 @@ class Recorder {
 
   // Expose recorder associated with a tag set
   template <typename T>
-  TagRef<T> getRecoderWithTag(const TagSet &tag);
+  TagRef<T> getRecorderWithTag(const TagSet &tag);
 
  protected:
   friend class Collector;
@@ -116,8 +116,8 @@ class CountRecorderWithTLSTag final : public Recorder {
   void addSample(int64_t val) { tls_->addSample(val); }
   void addSample(int64_t val, const TagSet &tag);
 
-  TagRef<CountRecorderWithTLSTag> getRecoderWithTag(const TagSet &tag) {
-    return Recorder::getRecoderWithTag<CountRecorderWithTLSTag>(tag);
+  TagRef<CountRecorderWithTLSTag> getRecorderWithTag(const TagSet &tag) {
+    return Recorder::getRecorderWithTag<CountRecorderWithTLSTag>(tag);
   }
 
  private:
@@ -172,8 +172,8 @@ class DistributionRecorder : public Recorder {
   void addSample(double val, const TagSet &tag);
   virtual void logPer30s(const folly::TDigest &digest);
 
-  TagRef<DistributionRecorder> getRecoderWithTag(const TagSet &tag) {
-    return Recorder::getRecoderWithTag<DistributionRecorder>(tag);
+  TagRef<DistributionRecorder> getRecorderWithTag(const TagSet &tag) {
+    return Recorder::getRecorderWithTag<DistributionRecorder>(tag);
   }
 
  protected:
@@ -203,8 +203,8 @@ class LatencyRecorder : public DistributionRecorder {
   void addSample(std::chrono::nanoseconds duration, const TagSet &tag);
   void logPer30s(const folly::TDigest &digest) override;
 
-  TagRef<LatencyRecorder> getRecoderWithTag(const TagSet &tag) {
-    return Recorder::getRecoderWithTag<LatencyRecorder>(tag);
+  TagRef<LatencyRecorder> getRecorderWithTag(const TagSet &tag) {
+    return Recorder::getRecorderWithTag<LatencyRecorder>(tag);
   }
 };
 
@@ -224,8 +224,8 @@ class SimpleDistributionRecorder : public Recorder {
   void addSample(std::chrono::nanoseconds duration) { addSample(duration.count()); }
   void addSample(std::chrono::nanoseconds duration, const TagSet &tag) { addSample(duration.count(), tag); }
 
-  TagRef<SimpleDistributionRecorder> getRecoderWithTag(const TagSet &tag) {
-    return Recorder::getRecoderWithTag<SimpleDistributionRecorder>(tag);
+  TagRef<SimpleDistributionRecorder> getRecorderWithTag(const TagSet &tag) {
+    return Recorder::getRecorderWithTag<SimpleDistributionRecorder>(tag);
   }
 
  protected:
@@ -366,7 +366,7 @@ class ValueRecorder : public Recorder {
   void set(int64_t val, const TagSet &tag);
   auto value() { return val_.load(); }
 
-  TagRef<ValueRecorder> getRecoderWithTag(const TagSet &tag) { return Recorder::getRecoderWithTag<ValueRecorder>(tag); }
+  TagRef<ValueRecorder> getRecorderWithTag(const TagSet &tag) { return Recorder::getRecorderWithTag<ValueRecorder>(tag); }
 
  private:
   ValueRecorder(MonitorInstance &monitor,

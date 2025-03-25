@@ -67,13 +67,13 @@ StorageTarget::StorageTarget(const Config &config,
       engine_(engine),
       diskTag_(monitor::instanceTagSet(std::to_string(diskIndex))),
       targetTag_(monitor::instanceTagSet(std::to_string(0))),
-      readCountPerDisk_(aioReadCountPerDisk.getRecoderWithTag(diskTag_)),
-      readBytesPerDisk_(aioReadBytesPerDisk.getRecoderWithTag(diskTag_)),
-      readSuccBytesPerDisk_(aioReadSuccBytesPerDisk.getRecoderWithTag(diskTag_)),
-      readSuccLatencyPerDisk_(aioReadSuccLatencyPerDisk.getRecoderWithTag(diskTag_)),
-      targetUsedSize_(targetUsedSize.getRecoderWithTag(targetTag_)),
-      targetReservedSize_(targetReservedSize.getRecoderWithTag(targetTag_)),
-      targetUnrecycledSize_(targetUnrecycledSize.getRecoderWithTag(targetTag_)),
+      readCountPerDisk_(aioReadCountPerDisk.getRecorderWithTag(diskTag_)),
+      readBytesPerDisk_(aioReadBytesPerDisk.getRecorderWithTag(diskTag_)),
+      readSuccBytesPerDisk_(aioReadSuccBytesPerDisk.getRecorderWithTag(diskTag_)),
+      readSuccLatencyPerDisk_(aioReadSuccLatencyPerDisk.getRecorderWithTag(diskTag_)),
+      targetUsedSize_(targetUsedSize.getRecorderWithTag(targetTag_)),
+      targetReservedSize_(targetReservedSize.getRecorderWithTag(targetTag_)),
+      targetUnrecycledSize_(targetUnrecycledSize.getRecorderWithTag(targetTag_)),
       chunkStore_(config_, globalFileStore) {}
 
 StorageTarget::~StorageTarget() {
@@ -154,9 +154,9 @@ Result<Void> StorageTarget::create(const PhysicalConfig &config) {
   }
   *chunkSizeList_.lock() = {targetConfig_.chunk_size_list.begin(), targetConfig_.chunk_size_list.end()};
   targetTag_ = monitor::instanceTagSet(std::to_string(targetConfig_.target_id));
-  targetUsedSize_ = targetUsedSize.getRecoderWithTag(targetTag_);
-  targetReservedSize_ = targetReservedSize.getRecoderWithTag(targetTag_);
-  targetUnrecycledSize_ = targetUnrecycledSize.getRecoderWithTag(targetTag_);
+  targetUsedSize_ = targetUsedSize.getRecorderWithTag(targetTag_);
+  targetReservedSize_ = targetReservedSize.getRecorderWithTag(targetTag_);
+  targetUnrecycledSize_ = targetUnrecycledSize.getRecorderWithTag(targetTag_);
   return Void{};
 }
 
@@ -203,9 +203,9 @@ Result<Void> StorageTarget::load(const Path &path) {
   }
   *chunkSizeList_.lock() = {targetConfig_.chunk_size_list.begin(), targetConfig_.chunk_size_list.end()};
   targetTag_ = monitor::instanceTagSet(std::to_string(targetConfig_.target_id));
-  targetUsedSize_ = targetUsedSize.getRecoderWithTag(targetTag_);
-  targetReservedSize_ = targetReservedSize.getRecoderWithTag(targetTag_);
-  targetUnrecycledSize_ = targetUnrecycledSize.getRecoderWithTag(targetTag_);
+  targetUsedSize_ = targetUsedSize.getRecorderWithTag(targetTag_);
+  targetReservedSize_ = targetReservedSize.getRecorderWithTag(targetTag_);
+  targetUnrecycledSize_ = targetUnrecycledSize.getRecorderWithTag(targetTag_);
   return Void{};
 }
 

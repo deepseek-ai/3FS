@@ -146,7 +146,7 @@ CoTryTask<void> ResyncWorker::handleSync(VersionedChainId vChainId) {
   uint32_t currentSyncingSkipCount = 0;
   auto recordGuard = resyncRecorder.record(tag);
 
-  auto remainingChunksCount = syncingRemainingChunksCount.getRecoderWithTag(tag);
+  auto remainingChunksCount = syncingRemainingChunksCount.getRecorderWithTag(tag);
   SCOPE_EXIT { remainingChunksCount->set(0); };
 
   // 3. sync start.
