@@ -84,6 +84,12 @@ apt install cmake libuv1-dev liblz4-dev liblzma-dev libdouble-conversion-dev lib
 yum install cmake libuv-devel lz4-devel xz-devel double-conversion-devel libdwarf-devel libunwind-devel \
     libaio-devel gflags-devel glog-devel gtest-devel gmock-devel clang-tools-extra clang lld \
     gperftools-devel gperftools openssl-devel gcc gcc-c++ boost-devel
+
+# for OpenCloudOS 9
+dnf install epol-release wget git meson cmake perl lld gcc gcc-c++ autoconf lz4 lz4-devel xz xz-devel \
+    double-conversion-devel libdwarf-devel libunwind-devel libaio-devel gflags-devel glog-devel \
+    libuv-devel gmock-devel gperftools gperftools-devel openssl-devel boost-static boost-devel mono-devel \
+    libevent-devel libibverbs-devel numactl-devel python3-devel
 ```
 
 Install other build prerequisites:
