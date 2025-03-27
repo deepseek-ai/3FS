@@ -85,7 +85,7 @@ yum install cmake libuv-devel lz4-devel xz-devel double-conversion-devel libdwar
     libaio-devel gflags-devel glog-devel gtest-devel gmock-devel clang-tools-extra clang lld \
     gperftools-devel gperftools openssl-devel gcc gcc-c++ boost-devel
 
-# for OpenCloudOS 9
+# for OpenCloudOS 9 and TencentOS 4
 dnf install epol-release wget git meson cmake perl lld gcc gcc-c++ autoconf lz4 lz4-devel xz xz-devel \
     double-conversion-devel libdwarf-devel libunwind-devel libaio-devel gflags-devel glog-devel \
     libuv-devel gmock-devel gperftools gperftools-devel openssl-devel boost-static boost-devel mono-devel \
@@ -100,11 +100,16 @@ Install other build prerequisites:
 
 ## Build 3FS
 
-Build 3FS in `build` folder:
+- Build 3FS in `build` folder:
 
+    ```
     cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     cmake --build build -j 32
-
+    ```
+- Build 3FS use Docker
+  - For TencentOS-4:  `docker pull docker.io/tencentos/tencentos4-deepseek3fs-build:latest`
+  - For OpenCloudOS-9:  `docker pull docker.io/opencloudos/opencloudos9-deepseek3fs-build:latest`
+  
 ## Run a test cluster
 
 Follow instructions in [setup guide](deploy/README.md) to run a test cluster.
