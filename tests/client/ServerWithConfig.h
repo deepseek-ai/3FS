@@ -81,7 +81,7 @@ struct MetaServerWithConfig : ServerWithConfig<meta::server::MetaServer> {
   MetaServerWithConfig(String clusterId, flat::NodeId nodeId, std::vector<net::Address> mgmtdServerAddrs)
       : Base(std::move(clusterId), nodeId) {
     auto &mgmtdClientConfig = config.mgmtd_client();
-    mgmtdClientConfig.set_mgmtd_server_addresses(mgmtdServerAddrs);
+    mgmtdClientConfig.set_mgmtd_server_addresses(to_named(mgmtdServerAddrs));
   }
 };
 
