@@ -72,6 +72,8 @@ constexpr auto kMinKey = std::string_view{kMinIns, 1};
 constexpr char kMaxIns[] = {(char)MetaKeyType::MAX, '\0'};
 constexpr auto kMaxKey = std::string_view{kMaxIns, 1};
 
+constexpr uint32_t kKeyValueLogBytes = 64;
+
 // target version list:
 // 1. fix removed and recycled count.
 constexpr uint32_t kTargetVersion = 1u;
@@ -125,7 +127,7 @@ inline auto serializeKey(const auto &o) {
 
 Result<Void> deserializeKey(std::string_view view, auto &o) {
   if (UNLIKELY(view.empty() || view[0] != static_cast<char>(o.type))) {
-    auto msg = fmt::format("deserialize meta key prefix failed: {:02X}", fmt::join(view.substr(0, 64), ","));
+    auto msg = fmt::format("deserialize meta key prefix failed: {:02X}", fmt::join(view.substr(0, kKeyValueLogBytes), ","));
     XLOG(DBG, msg);
     return makeError(StorageCode::kChunkMetadataGetError, std::move(msg));
   }
@@ -291,10 +293,10 @@ Result<Void> ChunkMetaStore::migrate(const kv::KVStore::Config &config, const Ph
   for (oldIt->seekToFirst(), newIt->seekToFirst(); oldIt->valid() && newIt->valid(); oldIt->next(), newIt->next()) {
     if (UNLIKELY(oldIt->key() != newIt->key() || oldIt->value() != newIt->value())) {
       auto msg = fmt::format("meta store migrate failed old {:02X}:{:02X} != new {:02X}:{:02X}",
-                             fmt::join(oldIt->key().substr(0, 64), ","),
-                             fmt::join(oldIt->value().substr(0, 64), ","),
-                             fmt::join(newIt->key().substr(0, 64), ","),
-                             fmt::join(newIt->value().substr(0, 64), ","));
+                             fmt::join(oldIt->key().substr(0, kKeyValueLogBytes), ","),
+                             fmt::join(oldIt->value().substr(0, kKeyValueLogBytes), ","),
+                             fmt::join(newIt->key().substr(0, kKeyValueLogBytes), ","),
+                             fmt::join(newIt->value().substr(0, kKeyValueLogBytes), ","));
       XLOG(ERR, msg);
       return makeError(StorageCode::kMetaStoreInvalidIterator, msg);
     }
@@ -305,8 +307,8 @@ Result<Void> ChunkMetaStore::migrate(const kv::KVStore::Config &config, const Ph
     auto &it = oldIt->valid() ? oldIt : newIt;
     auto msg = fmt::format("meta store migrate failed {} {:02X}:{:02X}",
                            oldIt->valid() ? "old" : "new",
-                           fmt::join(it->key().substr(0, 64), ","),
-                           fmt::join(it->value().substr(0, 64), ","));
+                           fmt::join(it->key().substr(0, kKeyValueLogBytes), ","),
+                           fmt::join(it->value().substr(0, kKeyValueLogBytes), ","));
     XLOG(ERR, msg);
     return makeError(StorageCode::kMetaStoreInvalidIterator, msg);
   }
