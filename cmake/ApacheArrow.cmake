@@ -49,7 +49,7 @@ ExternalProject_Add(
         "${ARROW_RELEASE_BUILD_DIR}/libarrow.a"
         "${ARROW_RELEASE_BUILD_DIR}/libparquet.a"
         "${ARROW_RELEASE_BUILD_DIR}/libarrow_bundled_dependencies.a"
-  )
+)
 
 add_dependencies(arrow_static apache-arrow-cpp)
 add_dependencies(parquet_static apache-arrow-cpp)
