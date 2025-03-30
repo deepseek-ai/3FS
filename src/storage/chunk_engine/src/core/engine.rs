@@ -661,7 +661,7 @@ impl Engine {
         const BATCH_SIZE: Size = Size::mebibyte(1);
         let mut write_batch = RocksDB::new_write_batch();
         for (chunk_id, meta) in &mut chunks {
-            if write_batch.size_in_bytes() >= BATCH_SIZE.0 as _ {
+            if write_batch.size_in_bytes() >= BATCH_SIZE.0 as usize {
                 self.meta_store.write(write_batch, true)?;
                 write_batch = RocksDB::new_write_batch();
             }
