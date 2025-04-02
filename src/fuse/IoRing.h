@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <semaphore.h>
 
-#include "IovTable.h"
 #include "UserConfig.h"
 #include "client/storage/StorageClient.h"
 #include "common/utils/AtomicSharedPtrTable.h"
