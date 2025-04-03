@@ -279,7 +279,7 @@ CoTryTask<void> ResyncWorker::handleSync(VersionedChainId vChainId) {
     XLOG(CRITICAL, msg);
 
     OfflineTargetReq req;
-    req.targetId = targetId;
+    req.targetId = target->successor->targetInfo.targetId;
     req.force = true;
     CO_RETURN_AND_LOG_ON_ERROR(co_await components_.messenger.offlineTarget(*addrResult, req, &options));
 
