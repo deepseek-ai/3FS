@@ -2,20 +2,20 @@ cmake_minimum_required(VERSION 3.12)
 project(3FS VERSION 0.1.5 LANGUAGES C CXX)
 
 set(CMAKE_CONFIGURATION_TYPES "RelWithDebInfo;Debug;Release;MinSizeRel" CACHE STRING "" FORCE)
-if (NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "None")
-    set (CMAKE_BUILD_TYPE "RelWithDebInfo")
-    message (STATUS "CMAKE_BUILD_TYPE is not set, set to default = ${CMAKE_BUILD_TYPE}")
-endif ()
-message (STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
+if(NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "None")
+    set(CMAKE_BUILD_TYPE "RelWithDebInfo")
+    message(STATUS "CMAKE_BUILD_TYPE is not set, set to default = ${CMAKE_BUILD_TYPE}")
+endif()
+message(STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
 
-string (TOUPPER ${CMAKE_BUILD_TYPE} CMAKE_BUILD_TYPE_UC)
+string(TOUPPER ${CMAKE_BUILD_TYPE} CMAKE_BUILD_TYPE_UC)
 
 if(CMAKE_BUILD_TYPE_UC STREQUAL "DEBUG" )
     option(ENABLE_ASSERTIONS "Enable assertions" ON)
 else()
     option(ENABLE_ASSERTIONS "Enable assertions" OFF)
 endif()
-message (STATUS "ENABLE_ASSERTIONS: ${ENABLE_ASSERTIONS}")
+message(STATUS "ENABLE_ASSERTIONS: ${ENABLE_ASSERTIONS}")
 
 if(ENABLE_ASSERTIONS)
     add_definitions(-D_DEBUG)
@@ -32,18 +32,18 @@ option(SAVE_ALLOCATE_SIZE "Use more memory to save allocate size" OFF)
 
 option(ENABLE_FUSE_APPLICATION "" ON)
 
-if (DEFINED SANITIZER AND SANITIZER)
+if(DEFINED SANITIZER AND SANITIZER)
     set(OVERRIDE_CXX_NEW_DELETE OFF)
 endif()
-message (STATUS "OVERRIDE_CXX_NEW_DELETE: ${OVERRIDE_CXX_NEW_DELETE}")
+message(STATUS "OVERRIDE_CXX_NEW_DELETE: ${OVERRIDE_CXX_NEW_DELETE}")
 
-if (OVERRIDE_CXX_NEW_DELETE)
+if(OVERRIDE_CXX_NEW_DELETE)
     add_definitions(-DOVERRIDE_CXX_NEW_DELETE)
-    if (SAVE_ALLOCATE_SIZE)
+    if(SAVE_ALLOCATE_SIZE)
         add_definitions(-DSAVE_ALLOCATE_SIZE)
     endif()
 endif()
-message (STATUS "SAVE_ALLOCATE_SIZE: ${SAVE_ALLOCATE_SIZE}")
+message(STATUS "SAVE_ALLOCATE_SIZE: ${SAVE_ALLOCATE_SIZE}")
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED OFF)
@@ -54,14 +54,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fcoroutines-ts")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fcoroutines-ts")
     set(CMAKE_CXX_LINK_FLAGS "${CMAKE_CXX_LINK_FLAGS} -latomic")
     add_link_options(-fuse-ld=lld)
     # Do not build with libc++ (LLVM's implementation of the C++ standard library) in fdb
     set(USE_LIBCXX OFF)
-elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fcoroutines")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fcoroutines")
 endif()
 
 # Remove project root from the __FILE__ macro variable
@@ -128,36 +128,36 @@ add_subdirectory("third_party/pybind11" EXCLUDE_FROM_ALL)
 restore_compile_flags()
 add_subdirectory("third_party/toml11" EXCLUDE_FROM_ALL)
 restore_compile_flags()
-set (MI_OVERRIDE OFF)
+set(MI_OVERRIDE OFF)
 add_subdirectory("third_party/mimalloc" EXCLUDE_FROM_ALL)
 restore_compile_flags()
 add_subdirectory("third_party/clickhouse-cpp" EXCLUDE_FROM_ALL)
-TARGET_INCLUDE_DIRECTORIES(clickhouse-cpp-lib
+target_include_directories(clickhouse-cpp-lib
     PUBLIC ${PROJECT_SOURCE_DIR}/third_party/clickhouse-cpp
 )
-TARGET_INCLUDE_DIRECTORIES(clickhouse-cpp-lib-static
+target_include_directories(clickhouse-cpp-lib-static
     PUBLIC ${PROJECT_SOURCE_DIR}/third_party/clickhouse-cpp
 )
-TARGET_INCLUDE_DIRECTORIES (absl-lib
+target_include_directories(absl-lib
     PUBLIC ${PROJECT_SOURCE_DIR}/third_party/clickhouse-cpp/contrib
 )
 restore_compile_flags()
 add_subdirectory("third_party/liburing-cmake" EXCLUDE_FROM_ALL)
 restore_compile_flags()
 
-set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror -Wpedantic")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror -Wpedantic")
 
-set (CMAKE_CXX_FLAGS                     "${CMAKE_CXX_FLAGS} ${COMPILER_FLAGS}")
-set (CMAKE_CXX_FLAGS_RELWITHDEBINFO      "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_CXX_FLAGS_ADD}")
-set (CMAKE_CXX_FLAGS_DEBUG               "${CMAKE_CXX_FLAGS_DEBUG} -O0 ${DEBUG_INFO_FLAGS} -fno-inline ${CMAKE_CXX_FLAGS_ADD}")
+set(CMAKE_CXX_FLAGS                     "${CMAKE_CXX_FLAGS} ${COMPILER_FLAGS}")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO      "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_CXX_FLAGS_ADD}")
+set(CMAKE_CXX_FLAGS_DEBUG               "${CMAKE_CXX_FLAGS_DEBUG} -O0 ${DEBUG_INFO_FLAGS} -fno-inline ${CMAKE_CXX_FLAGS_ADD}")
 
-set (CMAKE_C_FLAGS                       "${CMAKE_C_FLAGS} ${COMPILER_FLAGS} ${CMAKE_C_FLAGS_ADD}")
-set (CMAKE_C_FLAGS_RELWITHDEBINFO        "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_C_FLAGS_ADD}")
-set (CMAKE_C_FLAGS_DEBUG                 "${CMAKE_C_FLAGS_DEBUG} -O0 ${DEBUG_INFO_FLAGS} -fno-inline ${CMAKE_C_FLAGS_ADD}")
+set(CMAKE_C_FLAGS                       "${CMAKE_C_FLAGS} ${COMPILER_FLAGS} ${CMAKE_C_FLAGS_ADD}")
+set(CMAKE_C_FLAGS_RELWITHDEBINFO        "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_C_FLAGS_ADD}")
+set(CMAKE_C_FLAGS_DEBUG                 "${CMAKE_C_FLAGS_DEBUG} -O0 ${DEBUG_INFO_FLAGS} -fno-inline ${CMAKE_C_FLAGS_ADD}")
 
-set (CMAKE_ASM_FLAGS                     "${CMAKE_ASM_FLAGS} ${COMPILER_FLAGS} ${CMAKE_ASM_FLAGS_ADD}")
-set (CMAKE_ASM_FLAGS_RELWITHDEBINFO      "${CMAKE_ASM_FLAGS_RELWITHDEBINFO} -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_ASM_FLAGS_ADD}")
-set (CMAKE_ASM_FLAGS_DEBUG               "${CMAKE_ASM_FLAGS_DEBUG} -O0 ${DEBUG_INFO_FLAGS} -fno-inline ${CMAKE_ASM_FLAGS_ADD}")
+set(CMAKE_ASM_FLAGS                     "${CMAKE_ASM_FLAGS} ${COMPILER_FLAGS} ${CMAKE_ASM_FLAGS_ADD}")
+set(CMAKE_ASM_FLAGS_RELWITHDEBINFO      "${CMAKE_ASM_FLAGS_RELWITHDEBINFO} -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_ASM_FLAGS_ADD}")
+set(CMAKE_ASM_FLAGS_DEBUG               "${CMAKE_ASM_FLAGS_DEBUG} -O0 ${DEBUG_INFO_FLAGS} -fno-inline ${CMAKE_ASM_FLAGS_ADD}")
 
 set(Boost_USE_STATIC_LIBS ON)
 set(FDB_VERSION 7.1.5-ibe)
