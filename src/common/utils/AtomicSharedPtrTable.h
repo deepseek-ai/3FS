@@ -32,7 +32,7 @@ struct AvailSlots {
 
     std::lock_guard lock(mutex);
     if (idx == nextAvail - 1) {
-      nextAvail--;
+      --nextAvail;
       while (free.find(nextAvail - 1) != free.end()) {
           // move back next avail as much as possible
           free.erase(--nextAvail);
