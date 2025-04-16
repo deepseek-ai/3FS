@@ -36,7 +36,6 @@ hf3fs::Result<Void> PioV::addRead(size_t idx,
                           len,
                           [this, &memh, &bufOff, idx, buf](storage::ChainId chain,
                                                            storage::ChunkId chunk,
-                                                           uint32_t,
                                                            uint32_t chunkOff,
                                                            uint32_t chunkLen) {
                             rios_.emplace_back(storageClient_.createReadIO(chain,
