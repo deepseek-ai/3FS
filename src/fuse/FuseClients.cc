@@ -405,7 +405,7 @@ CoTask<void> FuseClients::periodicSyncScan() {
     co_return;
   }
 
-  XLOGF(INFO, "periodicSyncScan run");
+  XLOGF(DBG, "periodicSyncScan run");
   std::set<InodeId> dirty;
   {
     auto guard = dirtyInodes.lock();
