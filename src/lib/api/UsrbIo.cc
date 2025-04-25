@@ -330,8 +330,8 @@ struct Hf3fsIorHandle {
 static int cqeSem(sem_t *&sem, const char *hf3fs_mount_point, int prio) {
   auto link = fmt::format("{}/3fs-virt/iovs/submit-ios{}",
                           std::string(hf3fs_mount_point),
-                          prio == 0  ? ""
-                          : prio < 0 ? ".ph"
+                          prio == 1  ? ""
+                          : prio == 0 ? ".ph"
                                      : ".pl");
   std::vector<char> target(256);
 
