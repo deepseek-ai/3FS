@@ -30,18 +30,12 @@
 
 namespace hf3fs::net {
 
-static bool checkNicType(std::string_view nic, Address::Type type) {
-  switch (type) {
-    case Address::TCP:
-      return nic.starts_with("en") || nic.starts_with("eth") || nic.starts_with("bond") || nic.starts_with("xgbe");
-    case Address::IPoIB:
-      return nic.starts_with("ib");
-    case Address::RDMA:
-      return nic.starts_with("en") || nic.starts_with("eth") || nic.starts_with("bond") || nic.starts_with("xgbe");
-    case Address::LOCAL:
-      return nic.starts_with("lo");
-    default:
-      return false;
+static bool checkNicType(Address::Type type) {
+  // listen to all ip address type for some NIC not start with en eth,bond, except for the Unix type
+  if (type == Address::UNIX){
+    return false;
+  } else {
+    return true;
   }
 }
 
@@ -65,7 +59,7 @@ Result<Void> Listener::setup() {
 
   auto &filters = config_.filter_list();
   for (auto [name, addr] : nics.value()) {
-    if (addr.up && (filters.empty() || filters.count(name) != 0) && checkNicType(name, networkType_)) {
+    if (addr.up && (filters.empty() || filters.count(name) != 0) && checkNicType(networkType_)) {
       addressList_.push_back(Address{addr.ip.toLong(),
                                      config_.listen_port(),
                                      networkType_ == Address::LOCAL ? Address::TCP : networkType_});
