@@ -1,10 +1,10 @@
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CARGO_CMD cargo build)
     set(TARGET_DIR "debug")
-else ()
+else()
     set(CARGO_CMD cargo build --release)
     set(TARGET_DIR "release")
-endif ()
+endif()
 
 add_custom_target(
     cargo_build_all ALL
