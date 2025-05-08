@@ -661,9 +661,6 @@ int hf3fs_prep_io(const struct hf3fs_ior *ior,
     }
   }
 
-  hf3fs::Uuid id;
-  memcpy(id.data, ior->iov.id, sizeof(id.data));
-
   return *idx;
 }
 
