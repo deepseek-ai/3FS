@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "common/kv/IKVEngine.h"
 #include "common/serde/Serde.h"
 #include "fbs/meta/Schema.h"
 namespace hf3fs::client::cli {
@@ -21,7 +22,7 @@ struct DirEntryTable {
 };
 static_assert(serde::Serializable<DirEntryTable>);
 
-CoTryTask<Void> dumpDirEntriesFromFdb(const std::string fdbClusterFile,
+CoTryTask<Void> dumpDirEntriesFromFdb(std::shared_ptr<kv::IKVEngine> kvEngine,
                                       const uint32_t numEntriesPerDir,
                                       const std::string dentryDir,
                                       const uint32_t threads);
