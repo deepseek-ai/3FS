@@ -132,7 +132,7 @@ CoTryTask<std::map<flat::ChainId, FileOperation::QueryResult>> FileOperation::qu
       }
 
       XLOGF(ERR,
-            "Failed to quertLastChunk from chain {}, err {}",
+            "Failed to queryLastChunk from chain {}, err {}",
             flat::ChainId(query.routingTarget.chainId),
             result.statusCode.error());
       ADD_FAILED(queryChunksFailed, result.statusCode.error().code());

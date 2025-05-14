@@ -13,7 +13,7 @@ namespace {
 auto getParser() {
   argparse::ArgumentParser parser("set-preferred-target-order");
   parser.add_argument("chainId").scan<'u', uint32_t>();
-  parser.add_argument("targetIds").scan<'u', uint32_t>().remaining();
+  parser.add_argument("targetIds").scan<'u', uint64_t>().remaining();
   return parser;
 }
 
@@ -25,9 +25,9 @@ CoTryTask<Dispatcher::OutputTable> handle(IEnv &ienv,
   Dispatcher::OutputTable table;
 
   auto cid = flat::ChainId(parser.get<uint32_t>("chainId"));
-  auto targetIds = parser.get<std::vector<uint32_t>>("targetIds");
+  auto targetIds = parser.get<std::vector<uint64_t>>("targetIds");
   auto tids = transformTo<std::vector>(std::span{targetIds.begin(), targetIds.size()},
-                                       [](uint32_t id) { return flat::TargetId(id); });
+                                       [](uint64_t id) { return flat::TargetId(id); });
   auto res = co_await env.mgmtdClientGetter()->setPreferredTargetOrder(env.userInfo, cid, tids);
   CO_RETURN_ON_ERROR(res);
 

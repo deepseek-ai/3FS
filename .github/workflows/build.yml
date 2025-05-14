@@ -11,14 +11,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Configure sccache-cache
-      run: |
-        echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-        echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-
-    - name: Run sccache-cache
-      uses: mozilla-actions/sccache-action@v0.0.4
-
     - name: Prepare
       run: |
         sudo apt install -y cmake libuv1-dev liblz4-dev liblzma-dev libdouble-conversion-dev libdwarf-dev libunwind-dev

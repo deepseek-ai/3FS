@@ -48,7 +48,7 @@ struct IoRingJob {
 
 // we allow multiple io workers to process the same ioring, but different ranges
 // so 1 ioring can be used to submit ios processed in parallel
-// howoever, we don't allow multiple threads to prepare ios in the same ioring
+// however, we don't allow multiple threads to prepare ios in the same ioring
 // or batches may be mixed and things may get ugly
 class IoRing : public std::enable_shared_from_this<IoRing> {
  public:
