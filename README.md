@@ -100,7 +100,7 @@ Install other build prerequisites:
 
 ## Build 3FS
 
-- Build 3FS in `build` folder:
+- Build 3FS in root folder:
 
     ```
     cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
