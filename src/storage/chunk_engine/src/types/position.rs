@@ -16,8 +16,7 @@ impl Position {
     }
 
     pub fn group_id(&self) -> GroupId {
-        const MARKS: u64 = (GroupId::COUNT - 1) as u64;
-        const CLEAN: u64 = !(MARKS | MARKS << 32);
+        const CLEAN: u64 = !(GroupId::CLUSTER_MASK | GroupId::CLUSTER_MASK << 32);
         GroupId::from(self.0 & CLEAN | self.cluster() as u64)
     }
 
