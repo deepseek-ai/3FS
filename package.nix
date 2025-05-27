@@ -163,7 +163,7 @@ in stdenv.mkDerivation rec {
     # Fix jemalloc build
     substituteInPlace cmake/Jemalloc.cmake \
       --replace 'ExternalProject_add(' 'return() #ExternalProject_add(' \
-      --replace '${JEMALLOC_DIR}/lib/libjemalloc.so.2' '${jemalloc-custom}/lib/libjemalloc.so'
+      --replace "\''${JEMALLOC_DIR}/lib/libjemalloc.so.2" "\''${jemalloc-custom}/lib/libjemalloc.so"
     
     # Fix Apache Arrow build
     substituteInPlace cmake/ApacheArrow.cmake \

@@ -1,7 +1,7 @@
 # NixOS VM test for 3FS services
 # Run with: nix build .#checks.x86_64-linux.3fs-integration-test
 
-{ pkgs, lib, ... }:
+{ pkgs, lib, self, ... }:
 
 let
   # Test configuration for 3FS cluster
@@ -22,11 +22,6 @@ let
     mgmtd = {
       port = 8000;
       dataDir = "/var/lib/3fs/mgmtd";
-    };
-    
-    foundationdb = {
-      clusterFile = "/etc/foundationdb/fdb.cluster";
-      clusterString = "test:test@127.0.0.1:4500";
     };
   };
   
@@ -71,23 +66,16 @@ in {
           };
         };
         
-        foundationdb = {
-          clusterFile = testConfig.foundationdb.clusterFile;
-        };
+        # FoundationDB configuration is handled by the system service
       };
       
       # Configure FoundationDB
       services.foundationdb = {
         enable = true;
-        clusterFile = testConfig.foundationdb.clusterFile;
+        package = pkgs.foundationdb;
         listenAddress = "127.0.0.1:4500";
         dataDir = "/var/lib/foundationdb";
         logDir = "/var/log/foundationdb";
-        
-        # Initialize the database
-        initialScript = ''
-          configure single ssd
-        '';
       };
       
       # Open firewall ports
@@ -117,21 +105,18 @@ in {
           };
         };
         
-        foundationdb = {
-          clusterFile = testConfig.foundationdb.clusterFile;
-        };
+        # FoundationDB configuration is handled by the system service
       };
       
       # Configure FoundationDB client
       services.foundationdb = {
         enable = true;
-        clusterFile = testConfig.foundationdb.clusterFile;
-        pidFile = "/run/foundationdb.pid";
+        package = pkgs.foundationdb;
       };
       
       # Write cluster file pointing to master
       environment.etc."foundationdb/fdb.cluster" = {
-        text = testConfig.foundationdb.clusterString;
+        text = "test:test@master:4500";
         mode = "0644";
       };
       
@@ -139,7 +124,6 @@ in {
       
       environment.systemPackages = with pkgs; [
         fio
-        iozone
         sysbench
       ];
     };
@@ -151,7 +135,7 @@ in {
     # Wait for FoundationDB to be ready
     master.wait_for_unit("foundationdb.service")
     master.wait_for_open_port(4500)
-    master.succeed("fdbcli --exec 'status' -C ${testConfig.foundationdb.clusterFile}")
+    master.succeed("fdbcli --exec 'status' -C /etc/foundationdb/fdb.cluster")
     
     # Wait for 3FS services to start
     master.wait_for_unit("3fs-mgmtd.service")
@@ -172,7 +156,7 @@ in {
     master.succeed("systemctl is-active 3fs-monitor.service")
     
     # Initialize 3FS cluster
-    master.succeed("${pkgs."3fs"}/bin/admin init-cluster --config ${testConfig.foundationdb.clusterFile}")
+    master.succeed("${pkgs."3fs"}/bin/admin init-cluster --config /etc/foundationdb/fdb.cluster")
     
     # Register storage nodes
     master.succeed("${pkgs."3fs"}/bin/admin register-node --type storage --address master:${toString testConfig.storage.port}")

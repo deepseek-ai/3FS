@@ -9,7 +9,52 @@
   outputs = { self, nixpkgs, flake-utils }:
     let
       overlay = final: prev: {
-        "3fs" = prev.callPackage ./package.nix { };
+        # Build clickhouse-cpp from source if not available in nixpkgs
+        clickhouse-cpp = prev.clickhouse-cpp or (prev.stdenv.mkDerivation rec {
+          pname = "clickhouse-cpp";
+          version = "2.5.1";
+          
+          src = prev.fetchFromGitHub {
+            owner = "ClickHouse";
+            repo = "clickhouse-cpp";
+            rev = "v${version}";
+            sha256 = "sha256-6kqcANO4S9Z1ee4kBPKGCnsPEGDaWPCx2hUi4APPWHU=";
+          };
+          
+          nativeBuildInputs = [ prev.cmake ];
+          buildInputs = [ prev.zlib prev.openssl prev.lz4 ];
+          
+          cmakeFlags = [
+            "-DBUILD_SHARED_LIBS=ON"
+            "-DWITH_OPENSSL=ON"
+          ];
+        });
+        
+        # Build scnlib from source if not available in nixpkgs
+        scnlib = prev.scnlib or (prev.stdenv.mkDerivation rec {
+          pname = "scnlib";
+          version = "2.0.2";
+          
+          src = prev.fetchFromGitHub {
+            owner = "eliaskosunen";
+            repo = "scnlib";
+            rev = "v${version}";
+            sha256 = "sha256-YWlJiHAKKJd7jWv8Z0GmKqIfXI3HwVqA7AgZiHN2W8I=";
+          };
+          
+          nativeBuildInputs = [ prev.cmake ];
+          
+          cmakeFlags = [
+            "-DSCN_TESTS=OFF"
+            "-DSCN_EXAMPLES=OFF"
+            "-DSCN_BENCHMARKS=OFF"
+          ];
+        });
+        
+        "3fs" = prev.callPackage ./package.nix {
+          inherit (final) clickhouse-cpp scnlib;
+          libibverbs = prev.rdma-core;
+        };
       };
       
       nixosModule = { config, lib, pkgs, ... }:
@@ -216,32 +261,79 @@
           inherit system;
           overlays = [ overlay ];
         };
+        
+        isLinux = pkgs.stdenv.isLinux;
       in
       {
-        packages = {
+        packages = pkgs.lib.optionalAttrs isLinux {
           default = pkgs."3fs";
           "3fs" = pkgs."3fs";
         };
 
-        overlays.default = overlay;
+        # Don't export overlays per-system
 
         devShells.default = pkgs.mkShell {
-          inputsFrom = [ pkgs."3fs" ];
+          inputsFrom = pkgs.lib.optionals isLinux [ pkgs."3fs" ];
           buildInputs = with pkgs; [
+            # Build dependencies that are cross-platform
+            cmake
+            pkg-config
+            boost
+            protobuf
+            grpc
+            gtest
+            glog
+            lz4
+            zlib
+            openssl
+            zstd
+            jemalloc
+            libevent
+            thrift
+            bison
+            flex
+            git
+            which
+            fmt
+            folly
+            rocksdb
+            leveldb
+            arrow-cpp
+            mimalloc
+            tomlplusplus
+            rustc
+            cargo
+            rustfmt
+            clippy
+            rustPlatform.bindgenHook
+            clickhouse-cpp
+            scnlib
+            
             # Additional dev tools
             clang-tools_14
             cmake-format
             cmake-language-server
             gdb
-            valgrind
-            perf-tools
             rust-analyzer
             cargo-watch
+          ] ++ pkgs.lib.optionals isLinux [
+            # Linux-only dependencies
+            foundationdb
+            fuse3
+            rdma-core
+            numactl
+            liburing
+            valgrind
+            perf-tools
           ];
           
           shellHook = ''
             echo "3FS development environment"
-            echo "Build with: nix build .#3fs"
+            ${if isLinux then ''
+              echo "Build with: nix build .#3fs"
+            '' else ''
+              echo "Note: 3FS can only be built on Linux systems"
+            ''}
             echo "Enter shell with: nix develop"
             echo ""
             echo "To test locally:"
@@ -250,14 +342,14 @@
             echo "  3. Mount FUSE filesystem"
           '';
         };
-        checks = {
+        checks = pkgs.lib.optionalAttrs isLinux {
           # Package build test
           package = pkgs."3fs";
-          
-          # Integration test using NixOS VM
+        } // pkgs.lib.optionalAttrs isLinux {
+          # Integration test using NixOS VM (Linux only)
           integration-test = pkgs.nixosTest (import ./nixos-module-test.nix {
-            inherit pkgs lib;
-            self = self;
+            inherit pkgs self;
+            lib = pkgs.lib;
           });
         };
       }
@@ -265,10 +357,12 @@
       nixosModules.default = nixosModule;
       nixosModules."3fs" = nixosModule;
       
-      # Hydra job for CI
-      hydraJobs = {
-        inherit (self) packages;
-        tests = self.checks;
-      };
+      overlays.default = overlay;
+      
+      # Hydra job for CI - only for Linux systems
+      hydraJobs = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (system: {
+        packages = self.packages.${system};
+        tests = self.checks.${system} or {};
+      });
     };
 }
