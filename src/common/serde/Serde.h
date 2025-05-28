@@ -408,7 +408,8 @@ class Out<T> {
   std::string toString(bool sortKeys = false, bool prettyFormatting = false);
 
  protected:
-  void add(auto &&v);
+  template<typename U>
+  void add(U &&v);
   bool inTable();
   bool inArray();
 

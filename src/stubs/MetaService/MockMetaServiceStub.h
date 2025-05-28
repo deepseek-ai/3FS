@@ -96,7 +96,7 @@ class DummyMetaServiceStubWithSymlink : public DummyMetaServiceStubWithInode {
 }  // namespace hf3fs::meta
 
 template <>
-struct ::hf3fs::stubs::StubMockContext<hf3fs::meta::IMetaServiceStub> {
+struct hf3fs::stubs::StubMockContext<hf3fs::meta::IMetaServiceStub> {
   std::shared_ptr<meta::MockMetaStubHolder> stub;
 };
 
