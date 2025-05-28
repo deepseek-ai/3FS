@@ -91,7 +91,7 @@ struct formatter<hf3fs::flat::UserInfo> : formatter<std::string_view> {
 FMT_END_NAMESPACE
 
 template <>
-struct ::hf3fs::serde::SerdeMethod<::hf3fs::flat::Token> {
+struct hf3fs::serde::SerdeMethod<hf3fs::flat::Token> {
   static auto serdeTo(const ::hf3fs::flat::Token &o) { return std::string_view{o}; }
   static Result<::hf3fs::flat::Token> serdeFrom(std::string_view in) { return ::hf3fs::flat::Token{in}; }
   static constexpr std::string_view serdeToReadable(const ::hf3fs::flat::Token &) { return "SECRET TOKEN"; };

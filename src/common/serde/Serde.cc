@@ -52,8 +52,8 @@ void Out<JsonObject>::value(Optional has) {
 }
 
 template <>
-template <>
-void Out<JsonObject>::add(auto &&v) {
+template <typename U>
+void Out<JsonObject>::add(U &&v) {
   if (inArray()) {  // in array.
     root_.back().push_back(std::forward<decltype(v)>(v));
   } else if (inTable()) {  // in table.
@@ -98,8 +98,8 @@ void Out<TomlObject>::arrayBegin() {
 }
 
 template <>
-template <>
-void Out<TomlObject>::add(auto &&v) {
+template <typename U>
+void Out<TomlObject>::add(U &&v) {
   using T = decltype(v);
   if (inArray()) {  // in array.
     root_.back().push_back(std::forward<T>(v));

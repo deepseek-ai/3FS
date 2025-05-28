@@ -879,14 +879,14 @@ concept Serializable = requires(const T &o) {
 }  // namespace hf3fs::serde
 
 template <>
-struct ::hf3fs::serde::SerdeMethod<::hf3fs::Void> {
+struct hf3fs::serde::SerdeMethod<hf3fs::Void> {
   static constexpr auto serialize(Void, auto &&) {}                 // DO NOTHING.
   static Result<Void> deserialize(Void, auto &) { return Void{}; }  // DO NOTHING.
   static constexpr std::string_view serdeToReadable(Void) { return "Void"; };
 };
 
 template <>
-struct ::hf3fs::serde::SerdeMethod<::hf3fs::Status> {
+struct hf3fs::serde::SerdeMethod<hf3fs::Status> {
   static constexpr auto serialize(const Status &status, auto &out) {
     std::optional<std::string_view> msg = std::nullopt;
     if (!status.message().empty()) {
@@ -928,7 +928,7 @@ struct ::hf3fs::serde::SerdeMethod<::hf3fs::Status> {
 };
 
 template <class T>
-struct ::hf3fs::serde::SerdeMethod<::hf3fs::Result<T>> {
+struct hf3fs::serde::SerdeMethod<hf3fs::Result<T>> {
   static auto serialize(const ::hf3fs::Result<T> &result, auto &out) {
     bool hasValue = result.hasValue();
     if (hasValue) {
