@@ -218,7 +218,11 @@ struct IoRingTable {
   void init(int cap) {
     for (int prio = 0; prio <= 2; ++prio) {
       auto sp = "/" + semOpenPath(prio);
-      sems.emplace_back(sem_open(sp.c_str(), O_CREAT, 0666, 0), [sp](sem_t *p) {
+      auto ptr = sem_open(sp.c_str(), O_CREAT, 0666, 0);
+      if (SEM_FAILED == ptr) {
+        throw std::runtime_error(fmt::format("Failed create a named semaphore, name {}", sp.c_str()));
+      }
+      sems.emplace_back(ptr, [sp](sem_t *p) {
         sem_close(p);
         sem_unlink(sp.c_str());
       });
