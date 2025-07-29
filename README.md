@@ -80,6 +80,11 @@ apt install cmake libuv1-dev liblz4-dev liblzma-dev libdouble-conversion-dev lib
   libaio-dev libgflags-dev libgoogle-glog-dev libgtest-dev libgmock-dev clang-format-14 clang-14 clang-tidy-14 lld-14 \
   libgoogle-perftools-dev google-perftools libssl-dev gcc-12 g++-12 libboost-all-dev build-essential
 
+# for Ubuntu 24.04.
+apt install cmake libuv1-dev liblz4-dev liblzma-dev libdouble-conversion-dev libdwarf-dev libunwind-dev \
+  libaio-dev libgflags-dev libgoogle-glog-dev libgtest-dev libgmock-dev clang-format-14 clang-14 clang-tidy-14 lld-14 \
+  libgoogle-perftools-dev google-perftools libssl-dev gcc-12 g++-12 libboost-all-dev build-essential
+
 # for openEuler 2403sp1
 yum install cmake libuv-devel lz4-devel xz-devel double-conversion-devel libdwarf-devel libunwind-devel \
     libaio-devel gflags-devel glog-devel gtest-devel gmock-devel clang-tools-extra clang lld \
@@ -104,6 +109,16 @@ Install other build prerequisites:
 
     ```
     cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    cmake --build build -j 32
+    ```
+
+- Build 3FS on Ubuntu 24.04 (requires additional compiler flags):
+
+    ```
+    cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+      -DCMAKE_C_FLAGS="--gcc-toolchain=/usr -isystem /usr/include/c++/12 -isystem /usr/include/x86_64-linux-gnu/c++/12" \
+      -DCMAKE_CXX_FLAGS="--gcc-toolchain=/usr -isystem /usr/include/c++/12 -isystem /usr/include/x86_64-linux-gnu/c++/12" \
+      -DCMAKE_EXE_LINKER_FLAGS="-L/usr/lib/gcc/x86_64-linux-gnu/12"
     cmake --build build -j 32
     ```
 - Build 3FS use Docker
