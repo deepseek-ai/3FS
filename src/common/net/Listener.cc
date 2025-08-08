@@ -37,7 +37,7 @@ static bool checkNicType(std::string_view nic, Address::Type type) {
     case Address::IPoIB:
       return nic.starts_with("ib");
     case Address::RDMA:
-      return nic.starts_with("en") || nic.starts_with("eth") || nic.starts_with("bond") || nic.starts_with("xgbe");
+      return nic.starts_with("en") || nic.starts_with("eth") || nic.starts_with("bond") || nic.starts_with("xgbe") || nic.starts_with("ib");
     case Address::LOCAL:
       return nic.starts_with("lo");
     default:
