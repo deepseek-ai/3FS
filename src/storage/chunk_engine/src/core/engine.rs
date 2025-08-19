@@ -663,7 +663,7 @@ impl Engine {
         const BATCH_SIZE: Size = Size::mebibyte(1);
         let mut write_batch = RocksDB::new_write_batch();
         let mut entries = Vec::<EntryByRef<Bytes, [u8], ChunkArc>>::with_capacity(chunks.len());
-        for (_, (chunk_id, meta)) in chunks.iter().enumerate() {
+        for (chunk_id, meta) in chunks.iter() {
             if write_batch.size_in_bytes() >= BATCH_SIZE.0 as _ {
                 self.meta_store.write(write_batch, true)?;
                 // remove the entries from the cache and clear the vec.
