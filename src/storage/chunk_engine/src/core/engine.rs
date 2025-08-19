@@ -473,8 +473,10 @@ impl Engine {
         let new_chunk: ChunkArc = (&chunk).into();
 
         if chunk.is_remove {
+            let mut entry = self.meta_cache.entry_by_ref(chunk_id);
             self.meta_store.remove(chunk_id, new_chunk.meta(), sync)?;
-            self.meta_cache.remove(chunk_id);
+            entry.remove();
+            drop(entry);
             chunk.commit_succ();
             return Ok(new_chunk);
         }
@@ -657,26 +659,29 @@ impl Engine {
         max_count: u64,
     ) -> Result<u64> {
         let chunks = self.meta_store.query_chunks(begin, end, max_count)?;
-        let mut offset = 0;
 
         const BATCH_SIZE: Size = Size::mebibyte(1);
         let mut write_batch = RocksDB::new_write_batch();
-        for (index, (chunk_id, meta)) in chunks.iter().enumerate() {
+        let mut entries = Vec::<EntryByRef<Bytes, [u8], ChunkArc>>::with_capacity(chunks.len());
+        for (_, (chunk_id, meta)) in chunks.iter().enumerate() {
             if write_batch.size_in_bytes() >= BATCH_SIZE.0 as _ {
                 self.meta_store.write(write_batch, true)?;
-                write_batch = RocksDB::new_write_batch();
-                for (chunk_id, _) in &chunks[offset..index] {
-                    self.meta_cache.remove(chunk_id);
+                // remove the entries from the cache and clear the vec.
+                for mut entry in entries.drain(..) {
+                    entry.remove();
                 }
-                offset = index;
+                write_batch = RocksDB::new_write_batch();
             }
+            // lock it.
+            let entry = self.meta_cache.entry_by_ref(chunk_id);
             self.meta_store
                 .remove_mut(&chunk_id, &meta, &mut write_batch)?;
+             entries.push(entry);
         }
         if !write_batch.is_empty() {
             self.meta_store.write(write_batch, true)?;
-            for (chunk_id, _) in &chunks[offset..] {
-                self.meta_cache.remove(chunk_id);
+            for mut entry in entries.drain(..) {
+                entry.remove();
             }
         }
         Ok(chunks.len() as _)
