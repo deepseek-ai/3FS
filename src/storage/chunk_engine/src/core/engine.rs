@@ -658,33 +658,37 @@ impl Engine {
         end: impl AsRef<[u8]>,
         max_count: u64,
     ) -> Result<u64> {
-        let chunks = self.meta_store.query_chunks(begin, end, max_count)?;
+        let mut chunk_ids = self
+            .meta_store
+            .query_chunks(begin, end, max_count)?
+            .into_iter()
+            .map(|(chunk_id, _)| chunk_id)
+            .collect::<Vec<Bytes>>();
 
-        const BATCH_SIZE: Size = Size::mebibyte(1);
-        let mut write_batch = RocksDB::new_write_batch();
-        let mut entries = Vec::<EntryByRef<Bytes, [u8], ChunkArc>>::with_capacity(chunks.len());
-        for (chunk_id, meta) in chunks.iter() {
-            if write_batch.size_in_bytes() >= BATCH_SIZE.0 as _ {
-                self.meta_store.write(write_batch, true)?;
-                // remove the entries from the cache and clear the vec.
-                for mut entry in entries.drain(..) {
-                    entry.remove();
+        const BATCH_SIZE: usize = 4096;
+        for batch in chunk_ids.chunks_mut(BATCH_SIZE) {
+            batch.sort(); // acquire locks in sequence to avoid deadlocks.
+
+            let mut write_batch = RocksDB::new_write_batch();
+            let mut entries = Vec::with_capacity(batch.len());
+            for chunk_id in batch.iter() {
+                let mut entry = self.meta_cache.entry_by_ref(chunk_id);
+                match self.get_with_entry(chunk_id, &mut entry)? {
+                    Some(chunk) => {
+                        self.meta_store
+                            .remove_mut(chunk_id, chunk.meta(), &mut write_batch)?;
+                    }
+                    None => {
+                        // The chunk has been deleted by another thread. Still count it as a successfully deleted one.
+                    }
                 }
-                write_batch = RocksDB::new_write_batch();
+                entries.push(entry);
             }
-            // lock it.
-            let entry = self.meta_cache.entry_by_ref(chunk_id);
-            self.meta_store
-                .remove_mut(&chunk_id, &meta, &mut write_batch)?;
-             entries.push(entry);
-        }
-        if !write_batch.is_empty() {
+
             self.meta_store.write(write_batch, true)?;
-            for mut entry in entries.drain(..) {
-                entry.remove();
-            }
         }
-        Ok(chunks.len() as _)
+
+        Ok(chunk_ids.len() as _)
     }
 
     pub fn upgrade_version(&self) -> Result<()> {
