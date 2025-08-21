@@ -109,6 +109,12 @@ Install other build prerequisites:
 - Build 3FS use Docker
   - For TencentOS-4:  `docker pull docker.io/tencentos/tencentos4-deepseek3fs-build:latest`
   - For OpenCloudOS-9:  `docker pull docker.io/opencloudos/opencloudos9-deepseek3fs-build:latest`
+ 
+## Build hf3fs_py_usrbio whl
+- Build python sdk whl after build 3fs
+  ```
+  python3 setup.py bdist_wheel
+  ```
   
 ## Run a test cluster
 
