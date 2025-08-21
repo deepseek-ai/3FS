@@ -229,7 +229,7 @@ impl Engine {
         // 3. replace chunk.
         let mut entry = self.meta_cache.entry_by_ref(chunk_id);
         match entry.get() {
-            Some(chunk) if chunk.meta() == old_chunk.meta() => {
+            Some(chunk) if Arc::ptr_eq(chunk, &old_chunk) => {
                 self.meta_store
                     .move_chunk(chunk_id, old_chunk.meta(), new_chunk.meta(), true)?;
                 let new_chunk = Arc::new(new_chunk);
