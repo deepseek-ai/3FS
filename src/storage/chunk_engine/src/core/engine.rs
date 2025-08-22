@@ -474,7 +474,13 @@ impl Engine {
 
         if chunk.is_remove {
             let mut entry = self.meta_cache.entry_by_ref(chunk_id);
-            self.meta_store.remove(chunk_id, new_chunk.meta(), sync)?;
+            match self.get_with_entry(chunk_id, &mut entry)? {
+                Some(old_chunk) => {
+                    self.meta_store
+                        .remove(&chunk.chunk_id, old_chunk.meta(), sync)?
+                }
+                None => self.meta_store.remove_writing_chunk(chunk_id, sync)?,
+            }
             entry.remove();
             drop(entry);
             chunk.commit_succ();
@@ -521,8 +527,16 @@ impl Engine {
         for chunk in &mut chunks {
             chunk.set_committed();
             if chunk.is_remove {
-                self.meta_store
-                    .remove_mut(&chunk.chunk_id, chunk.meta(), &mut write_batch)?;
+                match entries.get_mut(&chunk.chunk_id).unwrap().get() {
+                    Some(old_chunk) => self.meta_store.remove_mut(
+                        &chunk.chunk_id,
+                        old_chunk.meta(),
+                        &mut write_batch,
+                    )?,
+                    None => self
+                        .meta_store
+                        .remove_writing_chunk(&chunk.chunk_id, sync)?,
+                }
             } else {
                 match entries.get_mut(&chunk.chunk_id).unwrap().get() {
                     Some(old_chunk) => self.meta_store.move_chunk_mut(
@@ -916,7 +930,7 @@ mod tests {
         let engine = Engine::open(&config).unwrap();
         const N: usize = 512;
         for i in 1..=N {
-            let mut data = vec![i as u8; i * 1024];
+            let data = vec![i as u8; i * 1024];
             let checksum = crc32c::crc32c(&data);
             let chunk = engine
                 .write(&i.to_be_bytes(), &data, i as u32 * 512, checksum)
