@@ -1,0 +1,54 @@
+#include "common/utils/VersionInfo.h"
+
+namespace hf3fs {
+
+#define HF3FS_VERSION_MAJOR @BUILD_VERSION_MAJOR@
+#define HF3FS_VERSION_MINOR @BUILD_VERSION_MINOR@
+#define HF3FS_VERSION_PATCH @BUILD_VERSION_PATCH@
+#define HF3FS_COMMIT_HASH_SHORT 0x@BUILD_COMMIT_HASH_SHORT@
+#define HF3FS_BUILD_TIMESTAMP @BUILD_TIMESTAMP@
+#define HF3FS_BUILD_PIPELINE_ID @BUILD_PIPELINE_ID@
+#define HF3FS_BUILD_TAG @BUILD_TAG@
+#define HF3FS_BUILD_TAG_SEQ_NUM @BUILD_TAG_SEQ_NUM@
+#define HF3FS_BUILD_ON_RELEASE_BRANCH @BUILD_ON_RELEASE_BRANCH@
+
+// old format
+#define HF3fS_VERSION_FULL "Version: v@BUILD_VERSION@-@BUILD_PIPELINE_ID@-@BUILD_DATE@-@BUILD_COMMIT_HASH_SHORT@"
+#define HF3fS_VERSION_FULL_REL "Version: v@BUILD_TAG@-rel-@BUILD_TAG_SEQ_NUM@-@BUILD_PIPELINE_ID@-@BUILD_COMMIT_HASH_SHORT@"
+#define HF3fS_VERSION_FULL_DEV "Version: v@BUILD_TAG@-dev-@BUILD_TAG_SEQ_NUM@-@BUILD_PIPELINE_ID@-@BUILD_COMMIT_HASH_SHORT@"
+#define HF3FS_COMMIT_HASH_FULL "Hash: @BUILD_COMMIT_HASH_FULL@"
+
+std::string_view VersionInfo::fullV0() {
+    return HF3fS_VERSION_FULL;
+}
+
+std::string_view VersionInfo::full() {
+    if constexpr (HF3FS_BUILD_ON_RELEASE_BRANCH) {
+        return HF3fS_VERSION_FULL_REL;
+    } else {
+        return HF3fS_VERSION_FULL_DEV;
+    }
+}
+
+uint8_t VersionInfo::versionMajor() { return HF3FS_VERSION_MAJOR; }
+uint8_t VersionInfo::versionMinor() { return HF3FS_VERSION_MINOR; }
+uint8_t VersionInfo::versionPatch() { return HF3FS_VERSION_PATCH; }
+uint64_t VersionInfo::buildTimeInSeconds() { return HF3FS_BUILD_TIMESTAMP; }
+uint32_t VersionInfo::buildPipelineId() { return HF3FS_BUILD_PIPELINE_ID; }
+
+uint32_t VersionInfo::commitHashShort() { return HF3FS_COMMIT_HASH_SHORT; }
+std::string_view VersionInfo::commitHashFull() { return HF3FS_COMMIT_HASH_FULL; }
+
+uint32_t VersionInfo::gitTag() {
+    return HF3FS_BUILD_TAG;
+}
+
+uint32_t VersionInfo::gitTagSeqNum() {
+    return HF3FS_BUILD_TAG_SEQ_NUM;
+}
+
+bool VersionInfo::isReleaseBranch() {
+    return HF3FS_BUILD_ON_RELEASE_BRANCH;
+}
+
+}  // namespace hf3fs

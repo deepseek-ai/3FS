@@ -1,0 +1,1 @@
+target_add_lib(analytics common apache_arrow_static)

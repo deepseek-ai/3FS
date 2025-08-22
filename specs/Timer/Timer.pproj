@@ -1,0 +1,8 @@
+<!-- P Project file for the Timer Module-->
+<Project>
+<ProjectName>Timer</ProjectName>
+<InputFiles>
+	<PFile>./PSrc/</PFile>
+</InputFiles>
+<OutputDir>./PGenerated/</OutputDir>
+</Project>

@@ -1,0 +1,42 @@
+[submodule "third_party/googletest"]
+	path = third_party/googletest
+	url = https://github.com/google/googletest.git
+[submodule "third_party/folly"]
+	path = third_party/folly
+	url = https://github.com/facebook/folly.git
+[submodule "third_party/leveldb"]
+	path = third_party/leveldb
+	url = https://github.com/google/leveldb.git
+[submodule "third_party/rocksdb"]
+	path = third_party/rocksdb
+	url = https://github.com/facebook/rocksdb.git
+[submodule "third_party/scnlib"]
+	path = third_party/scnlib
+	url = https://github.com/eliaskosunen/scnlib.git
+[submodule "third_party/pybind11"]
+	path = third_party/pybind11
+	url = https://github.com/pybind/pybind11.git
+[submodule "third_party/clickhouse-cpp"]
+	path = third_party/clickhouse-cpp
+	url = https://github.com/ClickHouse/clickhouse-cpp.git
+[submodule "third_party/fmt"]
+	path = third_party/fmt
+	url = https://github.com/fmtlib/fmt.git
+[submodule "third_party/toml11"]
+	path = third_party/toml11
+	url = https://github.com/ToruNiina/toml11.git
+[submodule "third_party/jemalloc"]
+	path = third_party/jemalloc
+	url = https://github.com/jemalloc/jemalloc.git
+[submodule "third_party/mimalloc"]
+	path = third_party/mimalloc
+	url = https://github.com/microsoft/mimalloc.git
+[submodule "third_party/zstd"]
+	path = third_party/zstd
+	url = https://github.com/facebook/zstd.git
+[submodule "third_party/liburing"]
+	path = third_party/liburing
+	url = https://github.com/axboe/liburing.git
+[submodule "third_party/gtest-parallel"]
+	path = third_party/gtest-parallel
+	url = https://github.com/google/gtest-parallel.git

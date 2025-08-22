@@ -1,0 +1,44 @@
+allow_dev_version = true
+cluster_id = ''
+use_memkv = false
+
+[fdb]
+casual_read_risky = false
+clusterFile = ''
+default_backoff = 0
+enableMultipleClient = false
+externalClientDir = ''
+externalClientPath = ''
+multipleClientThreadNum = 4
+readonly = false
+trace_file = ''
+trace_format = 'json'
+
+[ib_devices]
+allow_no_usable_devices = false
+allow_unknown_zone = true
+default_network_zone = 'UNKNOWN'
+default_pkey_index = 0
+default_roce_pkey_index = 0
+default_traffic_class = 0
+device_filter = []
+fork_safe = true
+prefer_ibdevice = true
+skip_inactive_ports = true
+skip_unusable_device = true
+subnets = []
+
+[kv_engine]
+use_memkv = false
+
+[kv_engine.fdb]
+casual_read_risky = false
+clusterFile = ''
+default_backoff = 0
+enableMultipleClient = false
+externalClientDir = ''
+externalClientPath = ''
+multipleClientThreadNum = 4
+readonly = false
+trace_file = ''
+trace_format = 'json'

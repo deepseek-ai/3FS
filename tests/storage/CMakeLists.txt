@@ -1,0 +1,5 @@
+add_subdirectory(client)
+add_subdirectory(service)
+add_subdirectory(store)
+add_subdirectory(sync)
+target_add_test(test_storage test-fabric-lib)

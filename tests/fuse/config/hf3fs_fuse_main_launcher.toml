@@ -1,0 +1,9 @@
+allow_other = false
+token_file = '${TOKEN_FILE}'
+cluster_id = '${FS_CLUSTER}'
+
+[ib_devices]
+default_pkey_index = ${PKEY_INDEX}
+
+[mgmtd_client]
+mgmtd_server_addresses = [ 'RDMA://${ADDRESS}:${MGMTD_PORT}' ]

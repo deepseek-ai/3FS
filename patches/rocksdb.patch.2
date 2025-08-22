@@ -1,0 +1,107 @@
+diff --git a/utilities/cassandra/cassandra_compaction_filter.cc b/utilities/cassandra/cassandra_compaction_filter.cc
+index d59db47d4..938f56af4 100644
+--- a/utilities/cassandra/cassandra_compaction_filter.cc
++++ b/utilities/cassandra/cassandra_compaction_filter.cc
+@@ -78,7 +78,7 @@ CassandraCompactionFilterFactory::CreateCompactionFilter(
+ }
+ 
+ #ifndef ROCKSDB_LITE
+-int RegisterCassandraObjects(ObjectLibrary& library,
++int RocksDBRegisterCassandraObjects(ObjectLibrary& library,
+                              const std::string& /*arg*/) {
+   library.AddFactory<MergeOperator>(
+       CassandraValueMergeOperator::kClassName(),
+diff --git a/utilities/cassandra/cassandra_functional_test.cc b/utilities/cassandra/cassandra_functional_test.cc
+index 15f633bac..03ea6b949 100644
+--- a/utilities/cassandra/cassandra_functional_test.cc
++++ b/utilities/cassandra/cassandra_functional_test.cc
+@@ -335,7 +335,7 @@ TEST_F(CassandraFunctionalTest, LoadMergeOperator) {
+   ASSERT_NOK(MergeOperator::CreateFromString(
+       config_options, CassandraValueMergeOperator::kClassName(), &mo));
+ 
+-  config_options.registry->AddLibrary("cassandra", RegisterCassandraObjects,
++  config_options.registry->AddLibrary("cassandra", RocksDBRegisterCassandraObjects,
+                                       "cassandra");
+ 
+   ASSERT_OK(MergeOperator::CreateFromString(
+@@ -363,7 +363,7 @@ TEST_F(CassandraFunctionalTest, LoadCompactionFilter) {
+ 
+   ASSERT_NOK(CompactionFilter::CreateFromString(
+       config_options, CassandraCompactionFilter::kClassName(), &filter));
+-  config_options.registry->AddLibrary("cassandra", RegisterCassandraObjects,
++  config_options.registry->AddLibrary("cassandra", RocksDBRegisterCassandraObjects,
+                                       "cassandra");
+ 
+   ASSERT_OK(CompactionFilter::CreateFromString(
+@@ -395,7 +395,7 @@ TEST_F(CassandraFunctionalTest, LoadCompactionFilterFactory) {
+   ASSERT_NOK(CompactionFilterFactory::CreateFromString(
+       config_options, CassandraCompactionFilterFactory::kClassName(),
+       &factory));
+-  config_options.registry->AddLibrary("cassandra", RegisterCassandraObjects,
++  config_options.registry->AddLibrary("cassandra", RocksDBRegisterCassandraObjects,
+                                       "cassandra");
+ 
+   ASSERT_OK(CompactionFilterFactory::CreateFromString(
+diff --git a/utilities/cassandra/cassandra_options.h b/utilities/cassandra/cassandra_options.h
+index efa73a308..f399b4c96 100644
+--- a/utilities/cassandra/cassandra_options.h
++++ b/utilities/cassandra/cassandra_options.h
+@@ -36,7 +36,7 @@ struct CassandraOptions {
+ };
+ #ifndef ROCKSDB_LITE
+ extern "C" {
+-int RegisterCassandraObjects(ObjectLibrary& library, const std::string& arg);
++int RocksDBRegisterCassandraObjects(ObjectLibrary& library, const std::string& arg);
+ }  // extern "C"
+ #endif  // ROCKSDB_LITE
+ }  // namespace cassandra
+diff --git a/utilities/ttl/db_ttl_impl.cc b/utilities/ttl/db_ttl_impl.cc
+index 1c2c6daa1..a8d7fde70 100644
+--- a/utilities/ttl/db_ttl_impl.cc
++++ b/utilities/ttl/db_ttl_impl.cc
+@@ -279,7 +279,7 @@ Status TtlCompactionFilterFactory::ValidateOptions(
+   }
+ }
+ 
+-int RegisterTtlObjects(ObjectLibrary& library, const std::string& /*arg*/) {
++int RocksDBRegisterTtlObjects(ObjectLibrary& library, const std::string& /*arg*/) {
+   library.AddFactory<MergeOperator>(
+       TtlMergeOperator::kClassName(),
+       [](const std::string& /*uri*/, std::unique_ptr<MergeOperator>* guard,
+@@ -330,7 +330,7 @@ Status DBWithTTLImpl::Close() {
+ void DBWithTTLImpl::RegisterTtlClasses() {
+   static std::once_flag once;
+   std::call_once(once, [&]() {
+-    ObjectRegistry::Default()->AddLibrary("TTL", RegisterTtlObjects, "");
++    ObjectRegistry::Default()->AddLibrary("TTL", RocksDBRegisterTtlObjects, "");
+   });
+ }
+ 
+diff --git a/utilities/ttl/db_ttl_impl.h b/utilities/ttl/db_ttl_impl.h
+index 7c43501a4..f11910d36 100644
+--- a/utilities/ttl/db_ttl_impl.h
++++ b/utilities/ttl/db_ttl_impl.h
+@@ -242,7 +242,7 @@ class TtlMergeOperator : public MergeOperator {
+   SystemClock* clock_;
+ };
+ extern "C" {
+-int RegisterTtlObjects(ObjectLibrary& library, const std::string& /*arg*/);
++int RocksDBRegisterTtlObjects(ObjectLibrary& library, const std::string& /*arg*/);
+ }  // extern "C"
+ 
+ }  // namespace ROCKSDB_NAMESPACE
+diff --git a/utilities/ttl/ttl_test.cc b/utilities/ttl/ttl_test.cc
+index 982051ac7..0434de021 100644
+--- a/utilities/ttl/ttl_test.cc
++++ b/utilities/ttl/ttl_test.cc
+@@ -772,8 +772,8 @@ static int RegisterTestObjects(ObjectLibrary& library,
+ class TtlOptionsTest : public testing::Test {
+  public:
+   TtlOptionsTest() {
+-    config_options_.registry->AddLibrary("RegisterTtlObjects",
+-                                         RegisterTtlObjects, "");
++    config_options_.registry->AddLibrary("RocksDBRegisterTtlObjects",
++                                         RocksDBRegisterTtlObjects, "");
+     config_options_.registry->AddLibrary("RegisterTtlTestObjects",
+                                          RegisterTestObjects, "");
+   }

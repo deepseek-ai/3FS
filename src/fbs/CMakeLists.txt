@@ -1,0 +1,8 @@
+add_subdirectory(core)
+add_subdirectory(mgmtd)
+add_subdirectory(meta)
+add_subdirectory(storage)
+#add_subdirectory(lib)
+add_subdirectory(monitor_collector)
+add_subdirectory(simple_example)
+add_subdirectory(migration)

@@ -1,0 +1,5 @@
+#!/usr/bin/env python
+from hf3fs_utils import cli
+
+if __name__ == "__main__":
+    cli.cli(max_content_width=120)

@@ -1,0 +1,7 @@
+[common]
+log = """
+  DBG:normal:err:fatal;
+  normal=file:path=mgmtd.log,async=true;
+  err=file:path=mgmtd.error.log,async=false,level=ERR;
+  fatal=stream:stream=stderr,level=FATAL
+"""

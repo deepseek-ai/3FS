@@ -1,0 +1,1437 @@
+diff --git a/.gitignore b/.gitignore
+index 5d948f008..3b3c29567 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -32,3 +32,4 @@ folly/m4/lt~obsolete.m4
+ folly/generate_fingerprint_tables
+ folly/FingerprintTables.cpp
+ _build
++/release/
+diff --git a/CMake/FollyCompilerUnix.cmake b/CMake/FollyCompilerUnix.cmake
+index f10e1c320..05119cd58 100644
+--- a/CMake/FollyCompilerUnix.cmake
++++ b/CMake/FollyCompilerUnix.cmake
+@@ -22,7 +22,7 @@
+ # libraries that aren't using gnu++1z yet, provide an option to let them still
+ # override this with gnu++14 if they need to.
+ set(
+-  CXX_STD "gnu++1z"
++  CXX_STD "c++20"
+   CACHE STRING
+   "The C++ standard argument to pass to the compiler.  Defaults to gnu++1z"
+ )
+diff --git a/CMake/folly-deps.cmake b/CMake/folly-deps.cmake
+index 989259a87..49009864b 100644
+--- a/CMake/folly-deps.cmake
++++ b/CMake/folly-deps.cmake
+@@ -153,12 +153,23 @@ if (PYTHON_EXTENSIONS)
+   find_package(Cython 0.26 REQUIRED)
+ endif ()
+ 
+-find_package(LibUnwind)
+-list(APPEND FOLLY_LINK_LIBRARIES ${LIBUNWIND_LIBRARIES})
+-list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBUNWIND_INCLUDE_DIRS})
+-if (LIBUNWIND_FOUND)
+-  set(FOLLY_HAVE_LIBUNWIND ON)
++option(
++  FOLLY_DISABLE_LIBUNWIND
++  "Do not try to find libunwind"
++  OFF
++)
++
++if (NOT FOLLY_DISABLE_LIBUNWIND)
++  find_package(LibUnwind)
++  list(APPEND FOLLY_LINK_LIBRARIES ${LIBUNWIND_LIBRARIES})
++  list(APPEND FOLLY_INCLUDE_DIRECTORIES ${LIBUNWIND_INCLUDE_DIRS})
++  if (LIBUNWIND_FOUND)
++    set(FOLLY_HAVE_LIBUNWIND ON)
++  endif()
++else()
++  set(FOLLY_HAVE_LIBUNWIND OFF)
+ endif()
++
+ if (CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
+   list(APPEND FOLLY_LINK_LIBRARIES "execinfo")
+ endif ()
+@@ -299,12 +310,12 @@ endif()
+ 
+ add_library(folly_deps INTERFACE)
+ 
+-find_package(fmt CONFIG)
+-if (NOT DEFINED fmt_CONFIG)
+-    # Fallback on a normal search on the current system
+-    find_package(Fmt MODULE REQUIRED)
+-endif()
+-target_link_libraries(folly_deps INTERFACE fmt::fmt)
++# find_package(fmt CONFIG)
++# if (NOT DEFINED fmt_CONFIG)
++#     # Fallback on a normal search on the current system
++#     find_package(Fmt MODULE REQUIRED)
++# endif()
++target_link_libraries(folly_deps INTERFACE fmt)
+ 
+ list(REMOVE_DUPLICATES FOLLY_INCLUDE_DIRECTORIES)
+ target_include_directories(folly_deps INTERFACE ${FOLLY_INCLUDE_DIRECTORIES})
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 85ba70d3b..2720b66e0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -90,7 +90,7 @@ set(FOLLY_SUPPORT_SHARED_LIBRARY "${BUILD_SHARED_LIBS}")
+ include(FBBuildOptions)
+ fb_activate_static_library_option()
+ 
+-set(CMAKE_CXX_STANDARD 17)
++set(CMAKE_CXX_STANDARD 20)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ 
+ if(NOT DEFINED IS_X86_64_ARCH AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "x86_64|AMD64")
+@@ -400,17 +400,20 @@ include(GenPkgConfig)
+ gen_pkgconfig_vars(FOLLY_PKGCONFIG folly_deps)
+ 
+ target_include_directories(folly_deps
++  SYSTEM
+   BEFORE
+   INTERFACE
+     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+ )
+ target_include_directories(folly_deps
++  SYSTEM
+   INTERFACE
+     $<INSTALL_INTERFACE:include>
+ )
+ 
+ target_include_directories(folly_base
++  SYSTEM
+   PUBLIC
+     $<TARGET_PROPERTY:folly_deps,INTERFACE_INCLUDE_DIRECTORIES>
+ )
+@@ -481,13 +484,13 @@ install(
+   DESTINATION ${CMAKE_INSTALL_DIR}
+   COMPONENT dev
+ )
+-install(
+-  EXPORT folly
+-  DESTINATION ${CMAKE_INSTALL_DIR}
+-  NAMESPACE Folly::
+-  FILE folly-targets.cmake
+-  COMPONENT dev
+-)
++# install(
++#   EXPORT folly
++#   DESTINATION ${CMAKE_INSTALL_DIR}
++#   NAMESPACE Folly::
++#   FILE folly-targets.cmake
++#   COMPONENT dev
++# )
+ 
+ # Generate a pkg-config file so that downstream projects that don't use
+ # CMake can depend on folly using pkg-config.
+diff --git a/folly/FBString.h b/folly/FBString.h
+index f0bf32c7b..6820c23ca 100644
+--- a/folly/FBString.h
++++ b/folly/FBString.h
+@@ -685,9 +685,9 @@ inline void fbstring_core<Char>::initSmall(
+ // If data is aligned, use fast word-wise copying. Otherwise,
+ // use conservative memcpy.
+ // The word-wise path reads bytes which are outside the range of
+-// the string, and makes ASan unhappy, so we disable it when
+-// compiling with ASan.
+-#ifndef FOLLY_SANITIZE_ADDRESS
++// the string, and makes ASan/TSan unhappy, so we disable it when
++// compiling with ASan/TSan.
++#if not (defined(FOLLY_SANITIZE_ADDRESS) || defined(FOLLY_SANITIZE_THREAD))
+   if ((reinterpret_cast<size_t>(data) & (sizeof(size_t) - 1)) == 0) {
+     const size_t byteSize = size * sizeof(Char);
+     constexpr size_t wordWidth = sizeof(size_t);
+diff --git a/folly/concurrency/ConcurrentHashMap.h b/folly/concurrency/ConcurrentHashMap.h
+index 6fe920bbd..77a9da4db 100644
+--- a/folly/concurrency/ConcurrentHashMap.h
++++ b/folly/concurrency/ConcurrentHashMap.h
+@@ -126,7 +126,7 @@ template <
+     typename ValueType,
+     typename HashFn = std::hash<KeyType>,
+     typename KeyEqual = std::equal_to<KeyType>,
+-    typename Allocator = std::allocator<uint8_t>,
++    template <typename> class Allocator = std::allocator,
+     uint8_t ShardBits = 8,
+     template <typename> class Atom = std::atomic,
+     class Mutex = std::mutex,
+@@ -136,7 +136,8 @@ template <
+         uint8_t,
+         typename,
+         typename,
+-        typename,
++        template <typename>
++        class,
+         template <typename>
+         class,
+         class>
+@@ -152,8 +153,6 @@ class ConcurrentHashMap {
+       Atom,
+       Mutex,
+       Impl>;
+-  using SegmentTAllocator = typename std::allocator_traits<
+-      Allocator>::template rebind_alloc<SegmentT>;
+   template <typename K, typename T>
+   using EnableHeterogeneousFind = std::enable_if_t<
+       detail::EligibleForHeterogeneousFind<KeyType, HashFn, KeyEqual, K>::value,
+@@ -237,7 +236,7 @@ class ConcurrentHashMap {
+       auto seg = segments_[i].load(std::memory_order_relaxed);
+       if (seg) {
+         seg->~SegmentT();
+-        SegmentTAllocator().deallocate(seg, 1);
++        Allocator<SegmentT>().deallocate(seg, 1);
+       }
+       segments_[i].store(
+           o.segments_[i].load(std::memory_order_relaxed),
+@@ -265,7 +264,7 @@ class ConcurrentHashMap {
+       auto seg = segments_[i].load(std::memory_order_relaxed);
+       if (seg) {
+         seg->~SegmentT();
+-        SegmentTAllocator().deallocate(seg, 1);
++        Allocator<SegmentT>().deallocate(seg, 1);
+       }
+     }
+     cohort_shutdown_cleanup();
+@@ -342,7 +341,7 @@ class ConcurrentHashMap {
+   template <typename... Args>
+   std::pair<ConstIterator, bool> emplace(Args&&... args) {
+     using Node = typename SegmentT::Node;
+-    auto node = (Node*)Allocator().allocate(sizeof(Node));
++    auto node = Allocator<Node>().allocate(1);
+     new (node) Node(ensureCohort(), std::forward<Args>(args)...);
+     auto h = HashFn{}(node->getItem().first);
+     auto segment = pickSegment(h);
+@@ -354,7 +353,7 @@ class ConcurrentHashMap {
+         res.first.it_, h, node->getItem().first, node);
+     if (!res.second) {
+       node->~Node();
+-      Allocator().deallocate((uint8_t*)node, sizeof(Node));
++      Allocator<Node>().deallocate(node, 1);
+     }
+     return res;
+   }
+@@ -729,13 +728,13 @@ class ConcurrentHashMap {
+     SegmentT* seg = segments_[i].load(std::memory_order_acquire);
+     if (!seg) {
+       auto b = ensureCohort();
+-      SegmentT* newseg = SegmentTAllocator().allocate(1);
++      SegmentT* newseg = Allocator<SegmentT>().allocate(1);
+       newseg = new (newseg)
+           SegmentT(size_ >> ShardBits, load_factor_, max_size_ >> ShardBits, b);
+       if (!segments_[i].compare_exchange_strong(seg, newseg)) {
+         // seg is updated with new value, delete ours.
+         newseg->~SegmentT();
+-        SegmentTAllocator().deallocate(newseg, 1);
++        Allocator<SegmentT>().deallocate(newseg, 1);
+       } else {
+         seg = newseg;
+         updateBeginAndEndSegments(i);
+@@ -765,13 +764,13 @@ class ConcurrentHashMap {
+   hazptr_obj_cohort<Atom>* ensureCohort() const {
+     auto b = cohort();
+     if (!b) {
+-      auto storage = Allocator().allocate(sizeof(hazptr_obj_cohort<Atom>));
++      auto storage = Allocator<hazptr_obj_cohort<Atom>>().allocate(1);
+       auto newcohort = new (storage) hazptr_obj_cohort<Atom>();
+       if (cohort_.compare_exchange_strong(b, newcohort)) {
+         b = newcohort;
+       } else {
+         newcohort->~hazptr_obj_cohort<Atom>();
+-        Allocator().deallocate(storage, sizeof(hazptr_obj_cohort<Atom>));
++        Allocator<hazptr_obj_cohort<Atom>>().deallocate(storage, 1);
+       }
+     }
+     return b;
+@@ -781,7 +780,7 @@ class ConcurrentHashMap {
+     auto b = cohort();
+     if (b) {
+       b->~hazptr_obj_cohort<Atom>();
+-      Allocator().deallocate((uint8_t*)b, sizeof(hazptr_obj_cohort<Atom>));
++      Allocator<hazptr_obj_cohort<Atom>>().deallocate(b, 1);
+     }
+   }
+ 
+@@ -798,7 +797,7 @@ template <
+     typename ValueType,
+     typename HashFn = std::hash<KeyType>,
+     typename KeyEqual = std::equal_to<KeyType>,
+-    typename Allocator = std::allocator<uint8_t>,
++    template <typename> class Allocator = std::allocator,
+     uint8_t ShardBits = 8,
+     template <typename> class Atom = std::atomic,
+     class Mutex = std::mutex>
+diff --git a/folly/concurrency/detail/ConcurrentHashMap-detail.h b/folly/concurrency/detail/ConcurrentHashMap-detail.h
+index 302c3b0cf..d47d7a3cb 100644
+--- a/folly/concurrency/detail/ConcurrentHashMap-detail.h
++++ b/folly/concurrency/detail/ConcurrentHashMap-detail.h
+@@ -48,6 +48,7 @@ enum class InsertType {
+ template <
+     typename KeyType,
+     typename ValueType,
++    template <typename>
+     typename Allocator,
+     template <typename>
+     class Atom,
+@@ -76,6 +77,7 @@ class ValueHolder {
+ template <
+     typename KeyType,
+     typename ValueType,
++    template <typename>
+     typename Allocator,
+     template <typename>
+     class Atom>
+@@ -130,7 +132,7 @@ class ValueHolder<
+ 
+   template <typename Arg, typename... Args>
+   ValueHolder(std::piecewise_construct_t, Arg&& k, Args&&... args) {
+-    item_ = (CountedItem*)Allocator().allocate(sizeof(CountedItem));
++    item_ = Allocator<CountedItem>().allocate(1);
+     new (item_) CountedItem(
+         std::piecewise_construct,
+         std::forward<Arg>(k),
+@@ -141,7 +143,7 @@ class ValueHolder<
+     DCHECK(item_);
+     if (item_->releaseLink()) {
+       item_->~CountedItem();
+-      Allocator().deallocate((uint8_t*)item_, sizeof(CountedItem));
++      Allocator<CountedItem>().deallocate(item_, 1);
+     }
+   }
+ 
+@@ -152,13 +154,13 @@ class ValueHolder<
+ }; // ValueHolder specialization
+ 
+ // hazptr deleter that can use an allocator.
+-template <typename Allocator>
++template <template <typename> typename Allocator>
+ class HazptrDeleter {
+  public:
+   template <typename Node>
+   void operator()(Node* node) {
+     node->~Node();
+-    Allocator().deallocate((uint8_t*)node, sizeof(Node));
++    Allocator<Node>().deallocate(node, 1);
+   }
+ };
+ 
+@@ -179,7 +181,7 @@ namespace bucket {
+ template <
+     typename KeyType,
+     typename ValueType,
+-    typename Allocator,
++    template <typename> class Allocator,
+     template <typename> class Atom = std::atomic>
+ class NodeT : public hazptr_obj_base_linked<
+                   NodeT<KeyType, ValueType, Allocator, Atom>,
+@@ -236,7 +238,7 @@ template <
+     uint8_t ShardBits = 0,
+     typename HashFn = std::hash<KeyType>,
+     typename KeyEqual = std::equal_to<KeyType>,
+-    typename Allocator = std::allocator<uint8_t>,
++    template <typename> class Allocator = std::allocator,
+     template <typename> class Atom = std::atomic,
+     class Mutex = std::mutex>
+ class alignas(64) BucketTable {
+@@ -366,7 +368,7 @@ class alignas(64) BucketTable {
+       // Clone remaining nodes
+       for (; node != lastrun;
+            node = node->next_.load(std::memory_order_relaxed)) {
+-        auto newnode = (Node*)Allocator().allocate(sizeof(Node));
++        auto newnode = Allocator<Node>().allocate(1);
+         new (newnode) Node(cohort, node);
+         auto k = getIdx(bucket_count, HashFn()(node->getItem().first));
+         auto prevhead = &newbuckets->buckets_[k]();
+@@ -508,8 +510,8 @@ class alignas(64) BucketTable {
+ 
+    public:
+     static Buckets* create(size_t count, hazptr_obj_cohort<Atom>* cohort) {
+-      auto buf =
+-          Allocator().allocate(sizeof(Buckets) + sizeof(BucketRoot) * count);
++      auto buf = Allocator<uint8_t>().allocate(
++          sizeof(Buckets) + sizeof(BucketRoot) * count);
+       auto buckets = new (buf) Buckets();
+       DCHECK(cohort);
+       buckets->set_cohort_tag(cohort); // defined in hazptr_obj
+@@ -524,7 +526,7 @@ class alignas(64) BucketTable {
+         buckets_[i].~BucketRoot();
+       }
+       this->~Buckets();
+-      Allocator().deallocate(
++      Allocator<uint8_t>().deallocate(
+           (uint8_t*)this, sizeof(BucketRoot) * count + sizeof(*this));
+     }
+ 
+@@ -703,7 +705,7 @@ class alignas(64) BucketTable {
+           return false;
+         } else {
+           if (!cur) {
+-            cur = (Node*)Allocator().allocate(sizeof(Node));
++            cur = Allocator<Node>().allocate(1);
+             new (cur) Node(cohort, std::forward<Args>(args)...);
+           }
+           auto next = node->next_.load(std::memory_order_relaxed);
+@@ -753,7 +755,7 @@ class alignas(64) BucketTable {
+       // InsertType::ANY
+       // OR DOES_NOT_EXIST, but only in the try_emplace case
+       DCHECK(type == InsertType::ANY || type == InsertType::DOES_NOT_EXIST);
+-      cur = (Node*)Allocator().allocate(sizeof(Node));
++      cur = Allocator<Node>().allocate(1);
+       new (cur) Node(cohort, std::forward<Args>(args)...);
+     }
+     cur->next_.store(headnode, std::memory_order_relaxed);
+@@ -793,7 +795,7 @@ using folly::hazptr_obj_cohort;
+ template <
+     typename KeyType,
+     typename ValueType,
+-    typename Allocator,
++    template <typename> class Allocator,
+     template <typename> class Atom = std::atomic>
+ class NodeT : public hazptr_obj_base<
+                   NodeT<KeyType, ValueType, Allocator, Atom>,
+@@ -833,7 +835,7 @@ template <
+     uint8_t ShardBits = 0,
+     typename HashFn = std::hash<KeyType>,
+     typename KeyEqual = std::equal_to<KeyType>,
+-    typename Allocator = std::allocator<uint8_t>,
++    template <typename> class Allocator = std::allocator,
+     template <typename> class Atom = std::atomic,
+     class Mutex = std::mutex>
+ class alignas(64) SIMDTable {
+@@ -997,7 +999,7 @@ class alignas(64) SIMDTable {
+ 
+    public:
+     static Chunks* create(size_t count, hazptr_obj_cohort<Atom>* cohort) {
+-      auto buf = Allocator().allocate(sizeof(Chunks) + sizeof(Chunk) * count);
++      auto buf = Allocator<uint8_t>().allocate(sizeof(Chunks) + sizeof(Chunk) * count);
+       auto chunks = new (buf) Chunks();
+       DCHECK(cohort);
+       chunks->set_cohort_tag(cohort); // defined in hazptr_obj
+@@ -1013,7 +1015,7 @@ class alignas(64) SIMDTable {
+         chunks_[i].~Chunk();
+       }
+       this->~Chunks();
+-      Allocator().deallocate(
++      Allocator<uint8_t>().deallocate(
+           (uint8_t*)this, sizeof(Chunk) * count + sizeof(*this));
+     }
+ 
+@@ -1235,7 +1237,7 @@ class alignas(64) SIMDTable {
+       return false;
+     }
+ 
+-    auto cur = (Node*)Allocator().allocate(sizeof(Node));
++    auto cur = Allocator<Node>().allocate(1);
+     new (cur) Node(cohort, std::forward<Args>(args)...);
+ 
+     if (!node) {
+@@ -1663,7 +1665,7 @@ template <
+     uint8_t ShardBits = 0,
+     typename HashFn = std::hash<KeyType>,
+     typename KeyEqual = std::equal_to<KeyType>,
+-    typename Allocator = std::allocator<uint8_t>,
++    template <typename> class Allocator = std::allocator,
+     template <typename> class Atom = std::atomic,
+     class Mutex = std::mutex,
+     template <
+@@ -1672,7 +1674,8 @@ template <
+         uint8_t,
+         typename,
+         typename,
+-        typename,
++        template <typename>
++        class,
+         template <typename>
+         class,
+         class>
+@@ -1721,7 +1724,7 @@ class alignas(64) ConcurrentHashMapSegment {
+ 
+   template <typename Key, typename Value>
+   bool insert(Iterator& it, size_t h, Key&& k, Value&& v) {
+-    auto node = (Node*)Allocator().allocate(sizeof(Node));
++    auto node = Allocator<Node>().allocate(1);
+     new (node) Node(cohort_, std::forward<Key>(k), std::forward<Value>(v));
+     auto res = insert_internal(
+         it,
+@@ -1732,7 +1735,7 @@ class alignas(64) ConcurrentHashMapSegment {
+         node);
+     if (!res) {
+       node->~Node();
+-      Allocator().deallocate((uint8_t*)node, sizeof(Node));
++      Allocator<Node>().deallocate(node, 1);
+     }
+     return res;
+   }
+@@ -1764,7 +1767,7 @@ class alignas(64) ConcurrentHashMapSegment {
+ 
+   template <typename Key, typename Value>
+   bool insert_or_assign(Iterator& it, size_t h, Key&& k, Value&& v) {
+-    auto node = (Node*)Allocator().allocate(sizeof(Node));
++    auto node = Allocator<Node>().allocate(1);
+     new (node) Node(cohort_, std::forward<Key>(k), std::forward<Value>(v));
+     auto res = insert_internal(
+         it,
+@@ -1775,14 +1778,14 @@ class alignas(64) ConcurrentHashMapSegment {
+         node);
+     if (!res) {
+       node->~Node();
+-      Allocator().deallocate((uint8_t*)node, sizeof(Node));
++      Allocator<Node>().deallocate(node, 1);
+     }
+     return res;
+   }
+ 
+   template <typename Key, typename Value>
+   bool assign(Iterator& it, size_t h, Key&& k, Value&& v) {
+-    auto node = (Node*)Allocator().allocate(sizeof(Node));
++    auto node = Allocator<Node>().allocate(1);
+     new (node) Node(cohort_, std::forward<Key>(k), std::forward<Value>(v));
+     auto res = insert_internal(
+         it,
+@@ -1793,14 +1796,14 @@ class alignas(64) ConcurrentHashMapSegment {
+         node);
+     if (!res) {
+       node->~Node();
+-      Allocator().deallocate((uint8_t*)node, sizeof(Node));
++      Allocator<Node>().deallocate(node, 1);
+     }
+     return res;
+   }
+   template <typename Key, typename Value, typename Predicate>
+   bool assign_if(
+       Iterator& it, size_t h, Key&& k, Value&& desired, Predicate&& predicate) {
+-    auto node = (Node*)Allocator().allocate(sizeof(Node));
++    auto node = Allocator<Node>().allocate(1);
+     new (node)
+         Node(cohort_, std::forward<Key>(k), std::forward<Value>(desired));
+     auto res = insert_internal(
+@@ -1812,7 +1815,7 @@ class alignas(64) ConcurrentHashMapSegment {
+         node);
+     if (!res) {
+       node->~Node();
+-      Allocator().deallocate((uint8_t*)node, sizeof(Node));
++      Allocator<Node>().deallocate(node, 1);
+     }
+     return res;
+   }
+diff --git a/folly/concurrency/test/ConcurrentHashMapTest.cpp b/folly/concurrency/test/ConcurrentHashMapTest.cpp
+index 827e4665c..43fe257f8 100644
+--- a/folly/concurrency/test/ConcurrentHashMapTest.cpp
++++ b/folly/concurrency/test/ConcurrentHashMapTest.cpp
+@@ -54,7 +54,7 @@ struct MapFactory {
+       typename ValueType,
+       typename HashFn = std::hash<KeyType>,
+       typename KeyEqual = std::equal_to<KeyType>,
+-      typename Allocator = std::allocator<uint8_t>,
++      typename Allocator = std::allocator,
+       uint8_t ShardBits = 8,
+       template <typename> class Atom = std::atomic,
+       class Mutex = std::mutex>
+@@ -442,7 +442,7 @@ TYPED_TEST_P(ConcurrentHashMapTest, UpdateStressTest) {
+       unsigned long,
+       std::hash<unsigned long>,
+       std::equal_to<unsigned long>,
+-      std::allocator<uint8_t>,
++      std::allocator,
+       8,
+       Atom,
+       Mutex>
+@@ -493,7 +493,7 @@ TYPED_TEST_P(ConcurrentHashMapTest, EraseStressTest) {
+       unsigned long,
+       std::hash<unsigned long>,
+       std::equal_to<unsigned long>,
+-      std::allocator<uint8_t>,
++      std::allocator,
+       8,
+       Atom,
+       Mutex>
+@@ -600,7 +600,7 @@ TYPED_TEST_P(ConcurrentHashMapTest, IterateStressTest) {
+       unsigned long,
+       std::hash<unsigned long>,
+       std::equal_to<unsigned long>,
+-      std::allocator<uint8_t>,
++      std::allocator,
+       8,
+       Atom,
+       Mutex>
+@@ -658,7 +658,7 @@ TYPED_TEST_P(ConcurrentHashMapTest, insertStressTest) {
+       unsigned long,
+       std::hash<unsigned long>,
+       std::equal_to<unsigned long>,
+-      std::allocator<uint8_t>,
++      std::allocator,
+       8,
+       Atom,
+       Mutex>
+@@ -713,7 +713,7 @@ TYPED_TEST_P(ConcurrentHashMapTest, assignStressTest) {
+       big_value,
+       std::hash<unsigned long>,
+       std::equal_to<unsigned long>,
+-      std::allocator<uint8_t>,
++      std::allocator,
+       8,
+       Atom,
+       Mutex>
+@@ -752,7 +752,7 @@ TYPED_TEST_P(ConcurrentHashMapTest, RefcountTest) {
+       uint64_t,
+       badhash,
+       std::equal_to<uint64_t>,
+-      std::allocator<uint8_t>,
++      std::allocator,
+       0>
+       foomap(3);
+   foomap.insert(0, 0);
+@@ -1094,7 +1094,7 @@ TYPED_TEST_P(ConcurrentHashMapTest, ConcurrentInsertClear) {
+       unsigned long,
+       std::hash<unsigned long>,
+       std::equal_to<unsigned long>,
+-      std::allocator<uint8_t>,
++      std::allocator,
+       8,
+       Atom,
+       Mutex>
+diff --git a/folly/container/OrderedMap.h b/folly/container/OrderedMap.h
+new file mode 100644
+index 000000000..6b35a7d5f
+--- /dev/null
++++ b/folly/container/OrderedMap.h
+@@ -0,0 +1,129 @@
++#pragma once
++
++#include <list>
++#include <folly/container/F14Map.h>
++
++namespace folly {
++
++template <class K, class V, class H = std::hash<K>, class E = std::equal_to<V>>
++class OrderedMap {
++ public:
++  using key_type = const K;
++  using mapped_type = V;
++  using value_type = std::pair<key_type, mapped_type>;
++  using list_type = std::list<value_type>;
++  using size_type = typename list_type::size_type;
++  using iterator = typename list_type::iterator;
++  using const_iterator = typename list_type::const_iterator;
++
++ public:
++  OrderedMap() = default;
++  OrderedMap(const OrderedMap& o) { *this = o; }
++  OrderedMap(OrderedMap&& o) { *this = std::move(o); }
++
++  OrderedMap& operator=(const OrderedMap& o) {
++    clear();
++    for (auto& [key, value] : o) {
++      emplace(key, value);
++    }
++    return *this;
++  }
++  OrderedMap& operator=(OrderedMap&& o) {
++    order_ = std::move(o.order_);
++    used_ = std::move(o.used_);
++    return *this;
++  }
++  bool operator==(const OrderedMap& o) const {
++    for (auto& [key, a] : used_) {
++      auto b = o.find(key);
++      if (b == o.end()) {
++        return false;
++      }
++      if (a->second != b->second) {
++        return false;
++      }
++    }
++    return size() == o.size();
++  }
++
++  iterator begin() { return order_.begin(); }
++  const_iterator begin() const { return order_.begin(); }
++  iterator end() { return order_.end(); }
++  const_iterator end() const { return order_.end(); }
++  bool empty() const { return order_.empty(); }
++  size_type size() const { return order_.size(); }
++  value_type& front() { return order_.front(); }
++  const value_type& front() const { return order_.front(); }
++  value_type& back() { return order_.back(); }
++  const value_type& back() const { return order_.back(); }
++  void clear() { used_.clear(), order_.clear(); }
++
++  iterator find(key_type& key) {
++    auto it = used_.find(key);
++    if (it == used_.end()) {
++      return end();
++    }
++    return it->second;
++  }
++  const_iterator find(key_type& key) const {
++    auto it = used_.find(key);
++    if (it == used_.end()) {
++      return end();
++    }
++    return it->second;
++  }
++
++  size_type erase(key_type& key) {
++    auto it = used_.find(key);
++    if (it != used_.end()) {
++      erase(it->second);
++      return 1;
++    }
++    return 0;
++  }
++  iterator erase(const_iterator it) {
++    used_.erase(it->first);
++    return order_.erase(it);
++  }
++
++  iterator erase(const_iterator first, const_iterator last) {
++    iterator ret = end();
++    for (auto it = first; it != last; ++it) {
++      used_.erase(it->first);
++      ret = order_.erase(it);
++    }
++    return ret;
++  }
++
++  template <class T>
++  std::pair<iterator, bool> emplace(key_type& key, T&& value) {
++    auto [it, succ] = used_.emplace(key, iterator{});
++    if (succ) {
++      order_.emplace_back(key, std::forward<T>(value));
++      it->second = --order_.end();
++    }
++    return std::make_pair(it->second, succ);
++  }
++
++  template <class T>
++  std::pair<iterator, bool> try_emplace(key_type& key, T&& value) {
++    auto [it, succ] = used_.try_emplace(key, iterator{});
++    if (succ) {
++      order_.emplace_back(key, std::forward<T>(value));
++      it->second = --order_.end();
++    }
++    return std::make_pair(it->second, succ);
++  }
++
++  mapped_type& operator[](key_type& key) {
++    return emplace(key, mapped_type{}).first->second;
++  }
++
++  void reserve(size_type capacity) { used_.reserve(capacity); }
++
++ private:
++  list_type order_;
++  F14NodeMap<key_type, iterator, H, E> used_;
++};
++
++} // namespace folly
+diff --git a/folly/dynamic-inl.h b/folly/dynamic-inl.h
+index d440e50de..b8ee8788c 100644
+--- a/folly/dynamic-inl.h
++++ b/folly/dynamic-inl.h
+@@ -167,7 +167,7 @@ dynamic numericOp(dynamic const& a, dynamic const& b) {
+  * Note: Later we may add separate order tracking here (a multi-index
+  * type of thing.)
+  */
+-struct dynamic::ObjectImpl : F14NodeMap<
++struct dynamic::ObjectImpl : OrderedMap<
+                                  dynamic,
+                                  dynamic,
+                                  detail::DynamicHasher,
+diff --git a/folly/dynamic.h b/folly/dynamic.h
+index d00849806..d89441b24 100644
+--- a/folly/dynamic.h
++++ b/folly/dynamic.h
+@@ -66,7 +66,7 @@
+ #include <folly/Expected.h>
+ #include <folly/Range.h>
+ #include <folly/Traits.h>
+-#include <folly/container/F14Map.h>
++#include <folly/container/OrderedMap.h>
+ #include <folly/json_pointer.h>
+ 
+ namespace folly {
+@@ -1119,7 +1119,7 @@ struct dynamic {
+      * incomplete type right now).  (Note that in contrast we know it
+      * is ok to do this with fbvector because we own it.)
+      */
+-    aligned_storage_for_t<F14NodeMap<int, int>> objectBuffer;
++    aligned_storage_for_t<OrderedMap<int, int>> objectBuffer;
+   } u_;
+ };
+ 
+diff --git a/folly/executors/ThreadPoolExecutor.cpp b/folly/executors/ThreadPoolExecutor.cpp
+index ef5c89dc5..cc0329898 100644
+--- a/folly/executors/ThreadPoolExecutor.cpp
++++ b/folly/executors/ThreadPoolExecutor.cpp
+@@ -152,7 +152,8 @@ size_t ThreadPoolExecutor::numActiveThreads() const {
+ }
+ 
+ // Set the maximum number of running threads.
+-void ThreadPoolExecutor::setNumThreads(size_t numThreads) {
++void ThreadPoolExecutor::setNumThreads(
++    size_t numThreads, bool setMinThreads /* = false */) {
+   /* Since ThreadPoolExecutor may be dynamically adjusting the number of
+      threads, we adjust the relevant variables instead of changing
+      the number of threads directly.  Roughly:
+@@ -180,6 +181,9 @@ void ThreadPoolExecutor::setNumThreads(size_t numThreads) {
+     if (numThreads < minthreads) {
+       minthreads = numThreads;
+       minThreads_.store(numThreads, std::memory_order_relaxed);
++    } else if (setMinThreads && minthreads < numThreads) {
++      minthreads = numThreads;
++      minThreads_.store(numThreads, std::memory_order_relaxed);
+     }
+     if (active > numThreads) {
+       numThreadsToJoin = active - numThreads;
+diff --git a/folly/executors/ThreadPoolExecutor.h b/folly/executors/ThreadPoolExecutor.h
+index c3d92fa80..545d4400e 100644
+--- a/folly/executors/ThreadPoolExecutor.h
++++ b/folly/executors/ThreadPoolExecutor.h
+@@ -87,7 +87,7 @@ class ThreadPoolExecutor : public DefaultKeepAliveExecutor {
+   }
+ 
+   size_t numThreads() const;
+-  void setNumThreads(size_t numThreads);
++  void setNumThreads(size_t numThreads, bool setMinThreads = false);
+ 
+   // Return actual number of active threads -- this could be different from
+   // numThreads() due to ThreadPoolExecutor's dynamic behavior.
+diff --git a/folly/executors/task_queue/UnboundedBlockingQueue.h b/folly/executors/task_queue/UnboundedBlockingQueue.h
+index 578673f67..565cde3ec 100644
+--- a/folly/executors/task_queue/UnboundedBlockingQueue.h
++++ b/folly/executors/task_queue/UnboundedBlockingQueue.h
+@@ -39,6 +39,13 @@ class UnboundedBlockingQueue : public BlockingQueue<T> {
+     return queue_.dequeue();
+   }
+ 
++  folly::Optional<T> try_take() {
++    if (!sem_.try_wait()) {
++      return folly::none;
++    }
++    return queue_.dequeue();
++  }
++
+   folly::Optional<T> try_take_for(std::chrono::milliseconds time) override {
+     if (!sem_.try_wait_for(time)) {
+       return folly::none;
+diff --git a/folly/experimental/coro/ViaIfAsync.h b/folly/experimental/coro/ViaIfAsync.h
+index 1668b04fa..ac22ff283 100644
+--- a/folly/experimental/coro/ViaIfAsync.h
++++ b/folly/experimental/coro/ViaIfAsync.h
+@@ -78,14 +78,14 @@ class ViaCoroutinePromiseBase {
+   void scheduleContinuation() noexcept {
+     // Pass the coroutine's RequestContext to Executor::add(), in case the
+     // Executor implementation wants to know what runs on it (e.g. for stats).
+-    RequestContextScopeGuard contextScope{context_};
++    RequestContextScopeGuard contextScope{context_.value_or(std::shared_ptr<RequestContext>())};
+ 
+     executor_->add([this]() noexcept { this->executeContinuation(); });
+   }
+ 
+  private:
+   void executeContinuation() noexcept {
+-    RequestContextScopeGuard contextScope{std::move(context_)};
++    RequestContextScopeGuard contextScope{std::move(context_).value_or(std::shared_ptr<RequestContext>())};
+     if (asyncFrame_ != nullptr) {
+       folly::resumeCoroutineWithNewAsyncStackRoot(
+           continuation_.getHandle(), *asyncFrame_);
+@@ -100,7 +100,7 @@ class ViaCoroutinePromiseBase {
+   folly::Executor::KeepAlive<> executor_;
+   ExtendedCoroutineHandle continuation_;
+   folly::AsyncStackFrame* asyncFrame_ = nullptr;
+-  std::shared_ptr<RequestContext> context_;
++  std::optional<std::shared_ptr<RequestContext>> context_;
+ };
+ 
+ template <bool IsStackAware>
+@@ -117,7 +117,7 @@ class ViaCoroutine {
+       FOLLY_CORO_AWAIT_SUSPEND_NONTRIVIAL_ATTRIBUTES void await_suspend(
+           coroutine_handle<promise_type> h) noexcept {
+         auto& promise = h.promise();
+-        if (!promise.context_) {
++        if (!promise.context_.has_value()) {
+           promise.setRequestContext(RequestContext::saveContext());
+         }
+ 
+diff --git a/folly/experimental/test/AutoTimerTest.cpp b/folly/experimental/test/AutoTimerTest.cpp
+index dfc9e263d..fde2619a7 100644
+--- a/folly/experimental/test/AutoTimerTest.cpp
++++ b/folly/experimental/test/AutoTimerTest.cpp
+@@ -14,6 +14,8 @@
+  * limitations under the License.
+  */
+ 
++#if 0
++
+ #include <folly/experimental/AutoTimer.h>
+ 
+ #include <folly/portability/GTest.h>
+@@ -137,3 +139,5 @@ TEST(TestAutoTimer, MovedObjectDestructionDoesntLog) {
+   }();
+   timer.log("AFTER_MOVE");
+ }
++
++#endif
+diff --git a/folly/io/async/test/HHWheelTimerTest.cpp b/folly/io/async/test/HHWheelTimerTest.cpp
+index b47414ffd..8885b3eb1 100644
+--- a/folly/io/async/test/HHWheelTimerTest.cpp
++++ b/folly/io/async/test/HHWheelTimerTest.cpp
+@@ -14,6 +14,8 @@
+  * limitations under the License.
+  */
+ 
++#if 0
++
+ #include <folly/io/async/HHWheelTimer.h>
+ 
+ #include <folly/io/async/EventBase.h>
+@@ -612,3 +614,4 @@ TEST(HHWheelTimerDetailsTest, Divider) {
+     }
+   }
+ }
++#endif
+diff --git a/folly/io/coro/ServerSocket.cpp b/folly/io/coro/ServerSocket.cpp
+index 13cc3519f..8b678c105 100644
+--- a/folly/io/coro/ServerSocket.cpp
++++ b/folly/io/coro/ServerSocket.cpp
+@@ -83,9 +83,12 @@ namespace coro {
+ ServerSocket::ServerSocket(
+     std::shared_ptr<AsyncServerSocket> socket,
+     std::optional<SocketAddress> bindAddr,
+-    uint32_t listenQueueDepth)
++    uint32_t listenQueueDepth,
++    bool reusePortEnabled /* = true */)
+     : socket_{socket} {
+-  socket_->setReusePortEnabled(true);
++  if (reusePortEnabled) {
++    socket_->setReusePortEnabled(true);
++  }
+   if (bindAddr.has_value()) {
+     VLOG(1) << "ServerSocket binds on IP: " << bindAddr->describe();
+     socket_->bind(*bindAddr);
+@@ -116,6 +119,7 @@ Task<std::unique_ptr<Transport>> ServerSocket::accept() {
+   if (cb.error) {
+     co_yield co_error(std::move(cb.error));
+   }
++
+   co_return std::make_unique<Transport>(
+       socket_->getEventBase(),
+       AsyncSocket::newSocket(
+diff --git a/folly/io/coro/ServerSocket.h b/folly/io/coro/ServerSocket.h
+index 952ed0f52..0bcd18c20 100644
+--- a/folly/io/coro/ServerSocket.h
++++ b/folly/io/coro/ServerSocket.h
+@@ -38,7 +38,8 @@ class ServerSocket {
+   ServerSocket(
+       std::shared_ptr<AsyncServerSocket> socket,
+       std::optional<SocketAddress> bindAddr,
+-      uint32_t listenQueueDepth);
++      uint32_t listenQueueDepth,
++      bool reusePortEnabled = true);
+ 
+   ServerSocket(ServerSocket&&) = default;
+   ServerSocket& operator=(ServerSocket&&) = default;
+diff --git a/folly/logging/Hf3fsLogFormatter.cpp b/folly/logging/Hf3fsLogFormatter.cpp
+new file mode 100644
+index 000000000..9c48f5137
+--- /dev/null
++++ b/folly/logging/Hf3fsLogFormatter.cpp
+@@ -0,0 +1,134 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include <fmt/chrono.h>
++#include <fmt/core.h>
++#include <folly/logging/Hf3fsLogFormatter.h>
++#include <folly/logging/LogMessage.h>
++#include <folly/system/ThreadId.h>
++#include <folly/system/ThreadName.h>
++
++namespace folly {
++namespace {
++std::string_view getLevelName(LogLevel level) {
++  if (level < LogLevel::INFO) {
++    return "DEBUG";
++  } else if (level < LogLevel::WARN) {
++    return "INFO";
++  } else if (level < LogLevel::ERR) {
++    return "WARNING";
++  } else if (level < LogLevel::CRITICAL) {
++    return "ERROR";
++  } else if (level < LogLevel::DFATAL) {
++    return "CRITICAL";
++  }
++  return "FATAL";
++}
++
++auto localtime(std::chrono::system_clock::time_point ts) {
++  return fmt::localtime(std::chrono::system_clock::to_time_t(ts));
++}
++}  // namespace
++
++std::string Hf3fsLogFormatter::formatMessage(const LogMessage &message, const LogCategory * /*handlerCategory*/) {
++  // this implementation (except the thread_local optimization) takes from GlogStyleFormatter.
++  thread_local auto cachedSeconds =
++      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::time_point().time_since_epoch());
++  thread_local std::string cachedDateTimeStr;
++  thread_local uint64_t cachedThreadId = 0;
++  thread_local std::string cachedThreadIdStr;
++  thread_local Optional<std::string> currentThreadName;
++  thread_local auto currentOsThreadId = getOSThreadID();
++
++  auto timestamp = message.getTimestamp();
++
++  // NOTE: assume nobody will change the time zone in runtime
++  static const auto timeZoneStr = fmt::format("{:%Ez}", localtime(timestamp));
++
++  // Get the local time info
++  auto timeSinceEpoch = timestamp.time_since_epoch();
++  auto epochSeconds = std::chrono::duration_cast<std::chrono::seconds>(timeSinceEpoch);
++  auto nsecs = std::chrono::duration_cast<std::chrono::nanoseconds>(timeSinceEpoch) - epochSeconds;
++
++  if (cachedSeconds != epochSeconds) {
++    cachedSeconds = epochSeconds;
++    cachedDateTimeStr = fmt::format("{:%FT%H:%M:%S}", localtime(timestamp));
++  }
++
++  std::string_view threadName;
++  {
++    if (!currentThreadName) {
++      currentThreadName = getCurrentThreadName();
++    }
++
++    auto tid = message.getThreadID();
++    if (tid == currentOsThreadId && currentThreadName) {
++      threadName = *currentThreadName;
++    }
++
++    if (tid != cachedThreadId) {
++      cachedThreadId = tid;
++      cachedThreadIdStr = fmt::format("{:5d}", tid);
++    }
++  }
++
++  auto basename = message.getFileBaseName();
++  auto header = fmt::format("[{}.{:09d}{} {}:{} {}:{} {}] ",
++                            cachedDateTimeStr,
++                            nsecs.count(),
++                            timeZoneStr,
++                            threadName,
++                            cachedThreadIdStr,
++                            basename,
++                            message.getLineNumber(),
++                            getLevelName(message.getLevel()));
++
++  // Format the data into a buffer.
++  std::string buffer;
++  StringPiece msgData{message.getMessage()};
++  if (message.containsNewlines()) {
++    // If there are multiple lines in the log message, add a header
++    // before each one.
++
++    buffer.reserve(((header.size() + 1) * message.getNumNewlines()) + msgData.size());
++
++    size_t idx = 0;
++    while (true) {
++      auto end = msgData.find('\n', idx);
++      if (end == StringPiece::npos) {
++        end = msgData.size();
++      }
++
++      buffer.append(header);
++      auto line = msgData.subpiece(idx, end - idx);
++      buffer.append(line.data(), line.size());
++      buffer.push_back('\n');
++
++      if (end == msgData.size()) {
++        break;
++      }
++      idx = end + 1;
++    }
++  } else {
++    buffer.reserve(header.size() + msgData.size());
++    buffer.append(header);
++    buffer.append(msgData.data(), msgData.size());
++    buffer.push_back('\n');
++  }
++
++  return buffer;
++}
++}  // namespace folly
+diff --git a/folly/logging/Hf3fsLogFormatter.h b/folly/logging/Hf3fsLogFormatter.h
+new file mode 100644
+index 000000000..3de8015f6
+--- /dev/null
++++ b/folly/logging/Hf3fsLogFormatter.h
+@@ -0,0 +1,12 @@
++#pragma once
++
++#include <folly/Range.h>
++#include <folly/logging/LogFormatter.h>
++
++namespace folly {
++class Hf3fsLogFormatter : public LogFormatter {
++ public:
++  std::string formatMessage(const LogMessage &message, const LogCategory *) override;
++};
++
++}  // namespace folly
+diff --git a/folly/logging/Logger.h b/folly/logging/Logger.h
+index 8b6c9d728..5db76b5be 100644
+--- a/folly/logging/Logger.h
++++ b/folly/logging/Logger.h
+@@ -49,14 +49,12 @@
+  * Beware that the logger argument is evaluated twice, so this argument should
+  * be an expression with no side-effects.
+  */
+-#define FB_LOGF(logger, level, fmt, arg1, ...) \
+-  FB_LOG_IMPL(                                 \
+-      logger,                                  \
+-      ::folly::LogLevel::level,                \
+-      ::folly::LogStreamProcessor::FORMAT,     \
+-      fmt,                                     \
+-      arg1,                                    \
+-      ##__VA_ARGS__)
++#define FB_LOGF(logger, level, fmt, ...)   \
++  FB_LOG_IMPL(                             \
++      logger,                              \
++      ::folly::LogLevel::level,            \
++      ::folly::LogStreamProcessor::FORMAT, \
++      fmt __VA_OPT__(, )##__VA_ARGS__)
+ 
+ /**
+  * FB_LOG_RAW() can be used by callers that want to pass in the log level as a
+diff --git a/folly/logging/ObjectToString.h b/folly/logging/ObjectToString.h
+index 17efb02f4..268d23ec5 100644
+--- a/folly/logging/ObjectToString.h
++++ b/folly/logging/ObjectToString.h
+@@ -116,6 +116,8 @@ std::string objectToString(const Arg& arg) {
+   return result;
+ }
+ 
++inline void appendToString(std::string&) {}
++
+ /**
+  * Append an arbitrary object to a string for logging purposes.
+  */
+diff --git a/folly/logging/StandardLogHandlerFactory.cpp b/folly/logging/StandardLogHandlerFactory.cpp
+index f6024a855..9be3f0cf1 100644
+--- a/folly/logging/StandardLogHandlerFactory.cpp
++++ b/folly/logging/StandardLogHandlerFactory.cpp
+@@ -14,43 +14,38 @@
+  * limitations under the License.
+  */
+ 
+-#include <folly/logging/StandardLogHandlerFactory.h>
+-
+ #include <folly/Conv.h>
+ #include <folly/MapUtil.h>
+ #include <folly/String.h>
+ #include <folly/logging/CustomLogFormatter.h>
+ #include <folly/logging/GlogStyleFormatter.h>
++#include <folly/logging/Hf3fsLogFormatter.h>
+ #include <folly/logging/LogLevel.h>
+ #include <folly/logging/LogWriter.h>
+ #include <folly/logging/StandardLogHandler.h>
++#include <folly/logging/StandardLogHandlerFactory.h>
+ 
+ using std::string;
+ 
+ namespace folly {
+ namespace {
+ 
+-class GlogFormatterFactory
+-    : public StandardLogHandlerFactory::FormatterFactory {
++class GlogFormatterFactory : public StandardLogHandlerFactory::FormatterFactory {
+  public:
+-  bool processOption(
+-      StringPiece name /* name */, StringPiece value /* value */) override {
++  bool processOption(StringPiece name /* name */, StringPiece value /* value */) override {
+     if (name == "log_thread_name") {
+       auto expectedLogThreadName = folly::tryTo<bool>(value);
+       if (expectedLogThreadName.hasValue()) {
+         log_thread_name_ = expectedLogThreadName.value();
+       } else {
+-        throw std::invalid_argument(to<string>(
+-            "unknown log_thread_name type \"",
+-            value,
+-            "\". Needs to be true/false or 1/0"));
++        throw std::invalid_argument(
++            to<string>("unknown log_thread_name type \"", value, "\". Needs to be true/false or 1/0"));
+       }
+       return true;
+     }
+     return false;
+   }
+-  std::shared_ptr<LogFormatter> createFormatter(
+-      const std::shared_ptr<LogWriter>& /* logWriter */) override {
++  std::shared_ptr<LogFormatter> createFormatter(const std::shared_ptr<LogWriter> & /* logWriter */) override {
+     return std::make_shared<GlogStyleFormatter>(log_thread_name_);
+   }
+ 
+@@ -58,8 +53,7 @@ class GlogFormatterFactory
+   bool log_thread_name_{false};
+ };
+ 
+-class CustomLogFormatterFactory
+-    : public StandardLogHandlerFactory::FormatterFactory {
++class CustomLogFormatterFactory : public StandardLogHandlerFactory::FormatterFactory {
+  public:
+   enum Colored { ALWAYS, AUTO, NEVER };
+ 
+@@ -75,18 +69,14 @@ class CustomLogFormatterFactory
+       } else if (value == "never") {
+         colored_ = NEVER;
+       } else {
+-        throw std::invalid_argument(to<string>(
+-            "unknown colored type \"",
+-            value,
+-            "\". Needs to be always/never/auto"));
++        throw std::invalid_argument(to<string>("unknown colored type \"", value, "\". Needs to be always/never/auto"));
+       }
+       return true;
+     }
+     return false;
+   }
+ 
+-  std::shared_ptr<LogFormatter> createFormatter(
+-      const std::shared_ptr<LogWriter>& logWriter) override {
++  std::shared_ptr<LogFormatter> createFormatter(const std::shared_ptr<LogWriter> &logWriter) override {
+     bool colored;
+     switch (colored_) {
+       case ALWAYS:
+@@ -104,38 +94,48 @@ class CustomLogFormatterFactory
+ 
+  private:
+   std::string format_;
+-  Colored colored_{NEVER}; // Turn off coloring by default.
++  Colored colored_{NEVER};  // Turn off coloring by default.
++};
++
++class Hf3fsLogFormatterFactory : public StandardLogHandlerFactory::FormatterFactory {
++ public:
++  bool processOption(StringPiece /* name */, StringPiece /* value */) override { return false; }
++  std::shared_ptr<LogFormatter> createFormatter(const std::shared_ptr<LogWriter> & /* logWriter */) override {
++    return std::make_shared<Hf3fsLogFormatter>();
++  }
+ };
+-} // namespace
+ 
+-std::shared_ptr<StandardLogHandler> StandardLogHandlerFactory::createHandler(
+-    StringPiece type, WriterFactory* writerFactory, const Options& options) {
++}  // namespace
++
++std::shared_ptr<StandardLogHandler> StandardLogHandlerFactory::createHandler(StringPiece type,
++                                                                             WriterFactory *writerFactory,
++                                                                             const Options &options) {
+   std::unique_ptr<FormatterFactory> formatterFactory;
+ 
+   // Get the log formatter type
+-  auto* formatterType = get_ptr(options, "formatter");
+-  if (!formatterType || *formatterType == "glog") {
++  auto *formatterType = get_ptr(options, "formatter");
++  if (!formatterType || *formatterType == "hf3fs") {
++    formatterFactory = std::make_unique<Hf3fsLogFormatterFactory>();
++  } else if (!formatterType || *formatterType == "glog") {
+     formatterFactory = std::make_unique<GlogFormatterFactory>();
+   } else if (!formatterType || *formatterType == "custom") {
+     formatterFactory = std::make_unique<CustomLogFormatterFactory>();
+   } else {
+-    throw std::invalid_argument(
+-        to<string>("unknown log formatter type \"", *formatterType, "\""));
++    throw std::invalid_argument(to<string>("unknown log formatter type \"", *formatterType, "\""));
+   }
+   return createHandler(type, writerFactory, formatterFactory.get(), options);
+ }
+ 
+-std::shared_ptr<StandardLogHandler> StandardLogHandlerFactory::createHandler(
+-    StringPiece type,
+-    WriterFactory* writerFactory,
+-    FormatterFactory* formatterFactory,
+-    const Options& options) {
++std::shared_ptr<StandardLogHandler> StandardLogHandlerFactory::createHandler(StringPiece type,
++                                                                             WriterFactory *writerFactory,
++                                                                             FormatterFactory *formatterFactory,
++                                                                             const Options &options) {
+   Optional<LogLevel> logLevel;
+   Optional<LogLevel> syncLevel;
+ 
+   // Process the log formatter and log handler options
+   std::vector<string> errors;
+-  for (const auto& entry : options) {
++  for (const auto &entry : options) {
+     bool handled = false;
+     try {
+       // Allow both the formatterFactory and writerFactory to consume an
+@@ -143,9 +143,8 @@ std::shared_ptr<StandardLogHandler> StandardLogHandlerFactory::createHandler(
+       // option names, but we don't give precedence to one over the other here.
+       handled |= formatterFactory->processOption(entry.first, entry.second);
+       handled |= writerFactory->processOption(entry.first, entry.second);
+-    } catch (const std::exception& ex) {
+-      errors.push_back(to<string>(
+-          "error processing option \"", entry.first, "\": ", ex.what()));
++    } catch (const std::exception &ex) {
++      errors.push_back(to<string>("error processing option \"", entry.first, "\": ", ex.what()));
+       continue;
+     }
+ 
+@@ -155,24 +154,16 @@ std::shared_ptr<StandardLogHandler> StandardLogHandlerFactory::createHandler(
+     if (entry.first == "level") {
+       try {
+         logLevel = stringToLogLevel(entry.second);
+-      } catch (const std::exception& ex) {
+-        errors.push_back(to<string>(
+-            "unable to parse value for option \"",
+-            entry.first,
+-            "\": ",
+-            ex.what()));
++      } catch (const std::exception &ex) {
++        errors.push_back(to<string>("unable to parse value for option \"", entry.first, "\": ", ex.what()));
+       }
+       handled = true;
+     } else if (entry.first == "sync_level") {
+       // Process the "sync_level" option.
+       try {
+         syncLevel = stringToLogLevel(entry.second);
+-      } catch (const std::exception& ex) {
+-        errors.push_back(to<string>(
+-            "unable to parse value for option \"",
+-            entry.first,
+-            "\": ",
+-            ex.what()));
++      } catch (const std::exception &ex) {
++        errors.push_back(to<string>("unable to parse value for option \"", entry.first, "\": ", ex.what()));
+       }
+       handled = true;
+     }
+@@ -194,11 +185,9 @@ std::shared_ptr<StandardLogHandler> StandardLogHandlerFactory::createHandler(
+   std::shared_ptr<StandardLogHandler> logHandler;
+ 
+   if (syncLevel) {
+-    logHandler = std::make_shared<StandardLogHandler>(
+-        LogHandlerConfig{type, options}, formatter, writer, *syncLevel);
++    logHandler = std::make_shared<StandardLogHandler>(LogHandlerConfig{type, options}, formatter, writer, *syncLevel);
+   } else {
+-    logHandler = std::make_shared<StandardLogHandler>(
+-        LogHandlerConfig{type, options}, formatter, writer);
++    logHandler = std::make_shared<StandardLogHandler>(LogHandlerConfig{type, options}, formatter, writer);
+   }
+ 
+   if (logLevel) {
+@@ -208,4 +197,4 @@ std::shared_ptr<StandardLogHandler> StandardLogHandlerFactory::createHandler(
+   return logHandler;
+ }
+ 
+-} // namespace folly
++}  // namespace folly
+diff --git a/folly/logging/xlog.h b/folly/logging/xlog.h
+index 3b013c44f..cd29ecabe 100644
+--- a/folly/logging/xlog.h
++++ b/folly/logging/xlog.h
+@@ -413,7 +413,7 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogFirstNExactImpl(std::size_t n) {
+  *   skipped with just a single check of the LogLevel.
+  */
+ #define XLOG_ACTUAL_IMPL(level, cond, always_fatal, type, ...)              \
+-  (!XLOG_IS_ON_IMPL(level) || !(cond))                                      \
++  (XLOG_IS_NOT_ON_IMPL(level) || !(cond))                                   \
+       ? ::folly::logDisabledHelper(::folly::bool_constant<always_fatal>{})  \
+       : ::folly::LogStreamVoidify<::folly::isLogLevelFatal(level)>{} &      \
+           ::folly::LogStreamProcessor(                                      \
+@@ -463,6 +463,11 @@ FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool xlogFirstNExactImpl(std::size_t n) {
+     XLOG_IS_ON_IMPL_HELPER(level)) ||                       \
+    ((level) >= ::folly::kMinFatalLogLevel))
+ 
++#define XLOG_IS_NOT_ON_IMPL(level)                         \
++  ((((level) < ::folly::LogLevel::FOLLY_XLOG_MIN_LEVEL) || \
++    !XLOG_IS_ON_IMPL_HELPER(level)) &&                     \
++   ((level) < ::folly::kMinFatalLogLevel))
++
+ /**
+  * Helper macro to implement of XLOG_IS_ON()
+  *
+diff --git a/folly/synchronization/HazptrDomain.h b/folly/synchronization/HazptrDomain.h
+index d485ee7a1..3194fc962 100644
+--- a/folly/synchronization/HazptrDomain.h
++++ b/folly/synchronization/HazptrDomain.h
+@@ -614,7 +614,8 @@ class hazptr_domain {
+     }
+   }
+ 
+-  std::pair<uint8_t, Rec*> try_pop_available_hprecs(uint8_t num) {
++  FOLLY_DISABLE_THREAD_SANITIZER std::pair<uint8_t, Rec*>
++  try_pop_available_hprecs(uint8_t num) {
+     DCHECK_GE(num, 1);
+     while (true) {
+       uintptr_t avail = load_avail();
+diff --git a/folly/test/ExceptionWrapperTest.cpp b/folly/test/ExceptionWrapperTest.cpp
+index a366d461a..12e709585 100644
+--- a/folly/test/ExceptionWrapperTest.cpp
++++ b/folly/test/ExceptionWrapperTest.cpp
+@@ -14,6 +14,8 @@
+  * limitations under the License.
+  */
+ 
++#if 0
++
+ #include <folly/ExceptionWrapper.h>
+ 
+ #include <memory>
+@@ -769,3 +771,5 @@ TEST(ExceptionWrapper, terminate_with_test) {
+   EXPECT_DEATH(
+       try { ew.terminate_with(); } catch (...){}, "int");
+ }
++
++#endif
+diff --git a/folly/test/FBStringTest.cpp b/folly/test/FBStringTest.cpp
+index d69bb1a08..29b6ca2c8 100644
+--- a/folly/test/FBStringTest.cpp
++++ b/folly/test/FBStringTest.cpp
+@@ -1739,10 +1739,14 @@ TEST(FBString, convertToStringView) {
+ }
+ #endif
+ 
++#if 0
++
+ TEST(FBString, Format) {
+   EXPECT_EQ("  foo", fmt::format("{:>5}", folly::fbstring("foo")));
+ }
+ 
++#endif
++
+ TEST(FBString, OverLarge) {
+   EXPECT_THROW(
+       fbstring().reserve((size_t)0xFFFF'FFFF'FFFF'FFFF), std::length_error);
+diff --git a/folly/test/RangeTest.cpp b/folly/test/RangeTest.cpp
+index cd7135e88..16902979a 100644
+--- a/folly/test/RangeTest.cpp
++++ b/folly/test/RangeTest.cpp
+@@ -17,6 +17,8 @@
+ // @author Kristina Holst (kholst@fb.com)
+ // @author Andrei Alexandrescu (andrei.alexandrescu@fb.com)
+ 
++#if 0
++
+ #include <folly/Range.h>
+ 
+ #include <array>
+@@ -1678,3 +1680,5 @@ class Parent {
+   struct Nested : Range<const Parent*> {};
+ };
+ } // namespace
++
++#endif

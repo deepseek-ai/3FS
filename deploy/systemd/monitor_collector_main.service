@@ -1,0 +1,11 @@
+[Unit]
+Description=monitor_collector_main Server
+Requires=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/opt/3fs/bin/monitor_collector_main --cfg /opt/3fs/etc/monitor_collector_main.toml
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

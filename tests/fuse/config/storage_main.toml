@@ -1,0 +1,39 @@
+[[common.log.categories]]
+categories = [ '.' ]
+handlers = [ 'normal' ]
+
+[[common.log.handlers]]
+async = true
+name = 'normal'
+start_level = 'NONE'
+writer_type = 'FILE'
+file_path = '${STORAGE_LOG}'
+
+[[server.base.groups]]
+[server.base.groups.listener]
+listen_port = ${STORAGE_PORT}
+
+[[server.base.groups]]
+[server.base.groups.listener]
+listen_port = 0
+
+[server.allocate_worker]
+min_remain_groups = 0
+max_remain_groups = 1
+max_reserved_chunks = '1GB'
+
+[server.mgmtd]
+mgmtd_server_addresses = [ 'RDMA://${ADDRESS}:${MGMTD_PORT}' ]
+
+[server.targets]
+target_paths = [ ${TARGETS} ]
+allow_disk_without_uuid = true
+
+[server.aio_read_worker]
+enable_io_uring = false
+
+[server.buffer_pool]
+big_rdmabuf_count = 16
+big_rdmabuf_size = '16MB'
+rdmabuf_count = 32
+rdmabuf_size = '4MB'

@@ -1,0 +1,15 @@
+cluster_id = '${FS_CLUSTER}'
+
+[ib_devices]
+default_pkey_index = ${PKEY_INDEX}
+
+[fdb]
+clusterFile = '${FDB_TEST_CLUSTER}'
+
+[mgmtd_client]
+mgmtd_server_addresses = [ 'RDMA://${ADDRESS}:${MGMTD_PORT}' ]
+
+[user_info]
+uid = 0
+gid = 0
+token = '${TOKEN}'

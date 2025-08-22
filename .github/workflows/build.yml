@@ -1,0 +1,28 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: self-hosted  # or `ubuntu-22.04`
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Prepare
+      run: |
+        sudo apt install -y cmake libuv1-dev liblz4-dev liblzma-dev libdouble-conversion-dev libdwarf-dev libunwind-dev
+        sudo apt install -y libaio-dev libgflags-dev libgoogle-glog-dev libgtest-dev libgmock-dev clang-format-14 clang-14 clang-tidy-14 lld-14
+        sudo apt install -y libgoogle-perftools-dev google-perftools libssl-dev gcc-12 g++-12 libboost-all-dev meson rustc cargo
+        wget https://github.com/apple/foundationdb/releases/download/7.1.61/foundationdb-clients_7.1.61-1_amd64.deb && sudo dpkg -i foundationdb-clients_7.1.61-1_amd64.deb
+        git clone https://github.com/libfuse/libfuse.git libfuse -b fuse-3.16.2 --depth 1 && mkdir libfuse/build && cd libfuse/build && meson setup .. && ninja && sudo ninja install && cd ../.. && rm -rf libfuse
+        git submodule update --init --recursive
+        ./patches/apply.sh
+
+    - name: Build
+      run: |
+        cargo build --release
+        cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        cmake --build build -j 32

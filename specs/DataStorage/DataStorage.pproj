@@ -1,0 +1,12 @@
+<!-- P project file for data storage -->
+<Project>
+<ProjectName>DataStorage</ProjectName>
+<InputFiles>
+	<PFile>./PSrc/</PFile>
+	<PFile>./PSpec/</PFile>
+	<PFile>./PTst/</PFile>
+</InputFiles>
+<OutputDir>./PGenerated/</OutputDir>
+<!-- Add external dependencies -->
+<IncludeProject>../Timer/Timer.pproj</IncludeProject>
+</Project>

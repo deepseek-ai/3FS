@@ -1,0 +1,12 @@
+[Unit]
+Description=meta_main Server
+Requires=network-online.target
+After=network-online.target
+
+[Service]
+LimitNOFILE=1000000
+ExecStart=/opt/3fs/bin/meta_main --launcher_cfg /opt/3fs/etc/meta_main_launcher.toml --app-cfg /opt/3fs/etc/meta_main_app.toml
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

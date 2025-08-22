@@ -1,0 +1,1 @@
+target_add_shared_lib(mimalloc_wrapper mimalloc-static)

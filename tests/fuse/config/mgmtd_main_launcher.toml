@@ -1,0 +1,7 @@
+cluster_id = '${FS_CLUSTER}'
+
+[ib_devices]
+default_pkey_index = ${PKEY_INDEX}
+
+[kv_engine.fdb]
+clusterFile = '${FDB_TEST_CLUSTER}'

@@ -1,0 +1,17 @@
+/.cache
+/.vscode
+/build
+/debug
+/release
+/clang
+/clangdbg
+/packages
+*.o
+*.a
+*.so
+*.log
+compile_commands.json
+*_generated.h
+*~
+__pycache__
+/target

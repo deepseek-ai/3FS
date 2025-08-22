@@ -1,0 +1,2 @@
+target_add_lib(monitor_collector common memory-common MonitorCollectorService-fbs)
+target_add_bin(monitor_collector_main "monitor_collector.cpp" monitor_collector)

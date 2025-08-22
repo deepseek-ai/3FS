@@ -1,0 +1,29 @@
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++20
+AlignAfterOpenBracket: Align
+AlignEscapedNewlines: Left
+AlignTrailingComments: true
+AllowAllArgumentsOnNextLine: false 
+AllowAllParametersOfDeclarationOnNextLine: false
+AlwaysBreakAfterReturnType: None
+AlwaysBreakTemplateDeclarations: true
+BinPackArguments: false
+BinPackParameters: false
+BitFieldColonSpacing: Both
+BreakConstructorInitializers: BeforeColon
+BreakInheritanceList: BeforeColon
+IndentWidth: 2
+PointerAlignment: Right
+DerivePointerAlignment: false
+ColumnLimit: 120
+PackConstructorInitializers: Never
+SpaceAfterTemplateKeyword: true
+
+IncludeCategories:
+  - Regex: 'Flat_generated\.h("|>)'
+    Priority: 1000
+    SortPriority: 1000
+  - Regex: '"fbs/macros/'
+    Priority: 1001
+    SortPriority: 1001

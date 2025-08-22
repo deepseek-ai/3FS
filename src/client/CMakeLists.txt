@@ -1,0 +1,6 @@
+add_subdirectory(cli)
+add_subdirectory(bin)
+add_subdirectory(mgmtd)
+add_subdirectory(meta)
+add_subdirectory(storage)
+add_subdirectory(core)

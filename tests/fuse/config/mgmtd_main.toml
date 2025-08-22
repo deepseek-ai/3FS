@@ -1,0 +1,21 @@
+[[common.log.categories]]
+categories = [ '.' ]
+handlers = [ 'normal' ]
+
+[[common.log.handlers]]
+async = true
+name = 'normal'
+start_level = 'NONE'
+writer_type = 'FILE'
+file_path = '${MGMTD_LOG}'
+
+[[server.base.groups]]
+[server.base.groups.listener]
+listen_port = ${MGMTD_PORT}
+
+[[server.base.groups]]
+[server.base.groups.listener]
+listen_port = 0
+
+[server.service]
+allow_heartbeat_from_unregistered = true

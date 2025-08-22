@@ -1,0 +1,24 @@
+[package]
+name = "trash_cleaner"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tracing = "0"
+tracing-appender = "0"
+tracing-subscriber = { version = "0", features = ["fmt", "json", "chrono"] }
+libc = "0"
+scopeguard = "0"
+nix = { version = "0", features = ["fs", "ioctl", "dir", "user"]}
+chrono = "0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+structopt = "0"
+
+[dev-dependencies]
+tempfile = "3.2"

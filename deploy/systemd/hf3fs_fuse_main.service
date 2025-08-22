@@ -1,0 +1,12 @@
+[Unit]
+Description=fuse_main Server
+Requires=network-online.target
+After=network-online.target
+
+[Service]
+LimitNOFILE=1000000
+ExecStart=/opt/3fs/bin/hf3fs_fuse_main --launcher_cfg /opt/3fs/etc/hf3fs_fuse_main_launcher.toml
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

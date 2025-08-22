@@ -1,0 +1,42 @@
+[package]
+name = "chunk_engine"
+version = "0.1.11"
+edition = "2021"
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["lib", "staticlib"]
+
+[dependencies]
+anyhow = "1"
+byteorder = "1"
+crc32c = "0"
+cxx = "1"
+dashmap = "6"
+derse = { version = ">=0.1.32", features = ["tinyvec"] }
+lazy_static = "1"
+libc = "0"
+lockmap = "0.1.6"
+rand = "0"
+rocksdb = "0"
+rolling-file = "0"
+serde = { version = "1", features = ["derive"] }
+static_assertions = "1"
+tinyvec = { version = "1", features = ["alloc"] }
+toml = "0"
+tracing = "0"
+tracing-appender = "0"
+tracing-subscriber = { version = "0", features = ["fmt"] }
+
+[dev-dependencies]
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+criterion = "0"
+
+[build-dependencies]
+cxx-build = "1"
+
+[[bench]]
+name = "bench_allocator"
+harness = false

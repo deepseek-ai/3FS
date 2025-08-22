@@ -1,0 +1,11 @@
+[package]
+name = "hf3fs-usrbio-sys"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shared_memory = "0.12.4"
+uuid = { version = "1.13.2", features = ["v4"] }
+
+[build-dependencies]
+bindgen = "0.71"

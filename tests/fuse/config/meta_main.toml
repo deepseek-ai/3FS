@@ -1,0 +1,44 @@
+[[common.log.categories]]
+categories = [ '.' ]
+handlers = [ 'normal' ]
+
+[[common.log.handlers]]
+async = true
+name = 'normal'
+start_level = 'NONE'
+writer_type = 'FILE'
+file_path = '${META_LOG}'
+
+[[server.base.groups]]
+[server.base.groups.listener]
+listen_port = ${META_PORT}
+
+[[server.base.groups]]
+[server.base.groups.listener]
+listen_port = 0
+
+[server.mgmtd_client]
+mgmtd_server_addresses = [ 'RDMA://${ADDRESS}:${MGMTD_PORT}' ]
+auto_extend_client_session_interval = '2s'
+auto_heartbeat_interval = '2s'
+auto_refresh_interval = '2s'
+
+[server.meta]
+allow_owner_change_immutable = true
+time_granularity = '1ms'
+dynamic_stripe = true
+dynamic_stripe_initial = 1
+dynamic_stripe_growth = 2
+iflags_chain_allocation = true
+idempotent_record_clean = '1min'
+idempotent_record_expire = '5min'
+idempotent_remove = true
+idempotent_rename = true
+
+[server.meta.gc]
+gc_file_delay = '5s'
+
+[server.fdb]
+casual_read_risky = true
+clusterFile = '${FDB_TEST_CLUSTER}'
+externalClientPath = '/lib/libfdb_c.so'

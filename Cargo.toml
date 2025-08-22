@@ -1,0 +1,22 @@
+[workspace]
+members = [
+  "src/client/trash_cleaner",
+  "src/storage/chunk_engine",
+  "src/lib/rs/hf3fs-usrbio-sys"
+]
+default-members = [
+  "src/client/trash_cleaner",
+  "src/storage/chunk_engine",
+]
+resolver = "2"
+
+[workspace.package]
+authors = ["dev <noreply@deepseek.com>"]
+edition = "2021"
+license = "MIT"
+rust-version = "1.85.0" # MSRV
+
+[profile.release-cmake]
+debug = true
+inherits = "release"
+lto = true

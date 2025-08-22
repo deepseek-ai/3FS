@@ -1,0 +1,7 @@
+PCheckerOutput/
+PGenerated/
+POutput/
+obj/
+*.toolbox/
+Test.cs
+*.log

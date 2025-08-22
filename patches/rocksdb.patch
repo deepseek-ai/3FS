@@ -1,0 +1,13 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e9e506951..79a68507f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -620,7 +620,7 @@ set(SOURCES
+         db/blob/blob_source.cc
+         db/blob/prefetch_buffer_collection.cc
+         db/builder.cc
+-        db/c.cc
++        # db/c.cc
+         db/column_family.cc
+         db/compaction/compaction.cc
+         db/compaction/compaction_iterator.cc

@@ -1,0 +1,17 @@
+__pycache__
+.ipynb_checkpoints
+.tmp/
+dist/
+build/
+output/
+*.egg-info/
+test/scratch/
+test/runtime/
+*.log
+*.pyc
+*.xml
+.tmp/
+.idea
+.coverage
+.vscode/
+.hypothesis/

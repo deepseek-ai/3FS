@@ -1,0 +1,633 @@
+[[common.log.categories]]
+categories = [ '.' ]
+handlers = [ 'normal', 'err', 'fatal' ]
+inherit = true
+level = 'INFO'
+propagate = 'NONE'
+
+[[common.log.categories]]
+categories = [ 'eventlog' ]
+handlers = [ 'event' ]
+inherit = false
+level = 'INFO'
+propagate = 'ERR'
+
+[[common.log.handlers]]
+async = true
+file_path = '/var/log/3fs/hf3fs_meta_main.log'
+max_file_size = '100MB'
+max_files = 10
+name = 'normal'
+rotate = true
+rotate_on_open = false
+start_level = 'NONE'
+stream_type = 'STDERR'
+writer_type = 'FILE'
+
+[[common.log.handlers]]
+async = false
+file_path = '/var/log/3fs/hf3fs_meta_main-err.log'
+max_file_size = '100MB'
+max_files = 10
+name = 'err'
+rotate = true
+rotate_on_open = false
+start_level = 'ERR'
+stream_type = 'STDERR'
+writer_type = 'FILE'
+
+[[common.log.handlers]]
+async = false
+file_path = '/var/log/3fs/hf3fs_meta_main-fatal.log'
+max_file_size = '100MB'
+max_files = 10
+name = 'fatal'
+rotate = true
+rotate_on_open = false
+start_level = 'FATAL'
+stream_type = 'STDERR'
+writer_type = 'STREAM'
+
+[[common.log.handlers]]
+async = true
+file_path = '/var/log/3fs/hf3fs_meta_main-event.log'
+max_file_size = '100MB'
+max_files = 10
+name = 'event'
+rotate = true
+rotate_on_open = false
+start_level = 'INFO'
+stream_type = 'STDERR'
+writer_type = 'EVENT'
+
+[common.memory]
+prof_active = false
+prof_prefix = ''
+
+[common.monitor]
+collect_period = '1s'
+num_collectors = 1
+
+[[common.monitor.reporters]]
+type = 'monitor_collector'
+
+[common.monitor.reporters.monitor_collector]
+remote_ip = ''
+
+[server]
+use_memkv = false
+
+[server.background_client]
+default_compression_level = 0
+default_compression_threshold = '128KB'
+default_log_long_running_threshold = '0ns'
+default_report_metrics = false
+default_send_retry_times = 1
+default_timeout = '1s'
+enable_rdma_control = false
+force_use_tcp = false
+
+[server.background_client.io_worker]
+num_event_loop = 1
+rdma_connect_timeout = '5s'
+read_write_rdma_in_event_thread = false
+read_write_tcp_in_event_thread = false
+tcp_connect_timeout = '1s'
+wait_to_retry_send = '100ms'
+
+[server.background_client.io_worker.connect_concurrency_limiter]
+max_concurrency = 4
+
+[server.background_client.io_worker.ibsocket]
+buf_ack_batch = 8
+buf_signal_batch = 8
+buf_size = 16384
+drain_timeout = '5s'
+drop_connections = 0
+event_ack_batch = 128
+max_rd_atomic = 16
+max_rdma_wr = 128
+max_rdma_wr_per_post = 32
+max_sge = 16
+min_rnr_timer = 1
+record_bytes_per_peer = false
+record_latency_per_peer = false
+retry_cnt = 7
+rnr_retry = 0
+send_buf_cnt = 32
+sl = 0
+start_psn = 0
+timeout = 14
+
+[server.background_client.io_worker.transport_pool]
+max_connections = 1
+
+[server.background_client.processor]
+enable_coroutines_pool = true
+max_coroutines_num = 256
+max_processing_requests_num = 4096
+response_compression_level = 1
+response_compression_threshold = '128KB'
+
+[server.background_client.rdma_control]
+max_concurrent_transmission = 64
+
+[server.background_client.thread_pool]
+bg_thread_pool_stratetry = 'SHARED_QUEUE'
+collect_stats = false
+enable_work_stealing = false
+io_thread_pool_stratetry = 'SHARED_QUEUE'
+num_bg_threads = 2
+num_connect_threads = 2
+num_io_threads = 2
+num_proc_threads = 2
+proc_thread_pool_stratetry = 'SHARED_QUEUE'
+
+[server.base.independent_thread_pool]
+bg_thread_pool_stratetry = 'SHARED_QUEUE'
+collect_stats = false
+enable_work_stealing = false
+io_thread_pool_stratetry = 'SHARED_QUEUE'
+num_bg_threads = 2
+num_connect_threads = 2
+num_io_threads = 2
+num_proc_threads = 2
+proc_thread_pool_stratetry = 'SHARED_QUEUE'
+
+[server.base.thread_pool]
+bg_thread_pool_stratetry = 'SHARED_QUEUE'
+collect_stats = false
+enable_work_stealing = false
+io_thread_pool_stratetry = 'SHARED_QUEUE'
+num_bg_threads = 2
+num_connect_threads = 2
+num_io_threads = 2
+num_proc_threads = 2
+proc_thread_pool_stratetry = 'SHARED_QUEUE'
+
+[[server.base.groups]]
+check_connections_interval = '1min'
+connection_expiration_time = '1day'
+network_type = 'RDMA'
+services = [ 'MetaSerde' ]
+use_independent_thread_pool = false
+
+[server.base.groups.io_worker]
+num_event_loop = 1
+rdma_connect_timeout = '5s'
+read_write_rdma_in_event_thread = false
+read_write_tcp_in_event_thread = false
+tcp_connect_timeout = '1s'
+wait_to_retry_send = '100ms'
+
+[server.base.groups.io_worker.connect_concurrency_limiter]
+max_concurrency = 4
+
+[server.base.groups.io_worker.ibsocket]
+buf_ack_batch = 8
+buf_signal_batch = 8
+buf_size = 16384
+drain_timeout = '5s'
+drop_connections = 0
+event_ack_batch = 128
+max_rd_atomic = 16
+max_rdma_wr = 128
+max_rdma_wr_per_post = 32
+max_sge = 16
+min_rnr_timer = 1
+record_bytes_per_peer = false
+record_latency_per_peer = false
+retry_cnt = 7
+rnr_retry = 0
+send_buf_cnt = 32
+sl = 0
+start_psn = 0
+timeout = 14
+
+[server.base.groups.io_worker.transport_pool]
+max_connections = 1
+
+[server.base.groups.listener]
+domain_socket_index = 1
+filter_list = []
+listen_port = 8001
+listen_queue_depth = 4096
+rdma_accept_timeout = '15s'
+rdma_listen_ethernet = true
+reuse_port = false
+
+[server.base.groups.processor]
+enable_coroutines_pool = true
+max_coroutines_num = 256
+max_processing_requests_num = 4096
+response_compression_level = 1
+response_compression_threshold = '128KB'
+
+[[server.base.groups]]
+check_connections_interval = '1min'
+connection_expiration_time = '1day'
+network_type = 'TCP'
+services = [ 'Core' ]
+use_independent_thread_pool = true
+
+[server.base.groups.io_worker]
+num_event_loop = 1
+rdma_connect_timeout = '5s'
+read_write_rdma_in_event_thread = false
+read_write_tcp_in_event_thread = false
+tcp_connect_timeout = '1s'
+wait_to_retry_send = '100ms'
+
+[server.base.groups.io_worker.connect_concurrency_limiter]
+max_concurrency = 4
+
+[server.base.groups.io_worker.ibsocket]
+buf_ack_batch = 8
+buf_signal_batch = 8
+buf_size = 16384
+drain_timeout = '5s'
+drop_connections = 0
+event_ack_batch = 128
+max_rd_atomic = 16
+max_rdma_wr = 128
+max_rdma_wr_per_post = 32
+max_sge = 16
+min_rnr_timer = 1
+record_bytes_per_peer = false
+record_latency_per_peer = false
+retry_cnt = 7
+rnr_retry = 0
+send_buf_cnt = 32
+sl = 0
+start_psn = 0
+timeout = 14
+
+[server.base.groups.io_worker.transport_pool]
+max_connections = 1
+
+[server.base.groups.listener]
+domain_socket_index = 1
+filter_list = []
+listen_port = 9001
+listen_queue_depth = 4096
+rdma_accept_timeout = '15s'
+rdma_listen_ethernet = true
+reuse_port = false
+
+[server.base.groups.processor]
+enable_coroutines_pool = true
+max_coroutines_num = 256
+max_processing_requests_num = 4096
+response_compression_level = 1
+response_compression_threshold = '128KB'
+
+[server.fdb]
+casual_read_risky = false
+clusterFile = ''
+default_backoff = 0
+enableMultipleClient = false
+externalClientDir = ''
+externalClientPath = ''
+multipleClientThreadNum = 4
+readonly = false
+trace_file = ''
+trace_format = 'json'
+
+[server.kv_engine]
+use_memkv = false
+
+[server.kv_engine.fdb]
+casual_read_risky = false
+clusterFile = ''
+default_backoff = 0
+enableMultipleClient = false
+externalClientDir = ''
+externalClientPath = ''
+multipleClientThreadNum = 4
+readonly = false
+trace_file = ''
+trace_format = 'json'
+
+[server.meta]
+acl_cache_time = '15s'
+allow_directly_move_to_trash = false
+allow_owner_change_immutable = false
+allow_stat_deleted_inodes = true
+authenticate = false
+batch_stat_by_path_concurrent = 4
+batch_stat_concurrent = 8
+check_file_hole = false
+dynamic_stripe = false
+dynamic_stripe_growth = 2
+dynamic_stripe_initial = 16
+enable_new_chunk_engine = false
+grv_cache = false
+idempotent_record_clean = '1min'
+idempotent_record_expire = '30min'
+idempotent_remove = true
+idempotent_rename = false
+iflags_chain_allocation = false
+iflags_chunk_engine = true
+ignore_length_hint = false
+inodeId_abort_on_duplicate = false
+inodeId_check_unique = true
+list_default_limit = 128
+max_batch_operations = 4096
+max_directory_depth = 64
+max_remove_chunks_per_request = 32
+max_symlink_count = 10
+max_symlink_depth = 4
+operation_timeout = '5s'
+otrunc_replace_file = true
+otrunc_replace_file_threshold = '1GB'
+readonly = false
+recursive_remove_check_owner = true
+recursive_remove_perm_check = 1024
+statfs_cache_time = '1min'
+statfs_space_imbalance_threshold = 5
+statfs_update_interval = '5s'
+sync_on_prune_session = false
+time_granularity = '1s'
+
+[server.meta.background_hole_checker]
+coroutines_num = 16
+enable_work_stealing = false
+queue_size = 4096
+
+[server.meta.distributor]
+timeout = '30s'
+update_interval = '1s'
+
+[server.meta.event_trace_log]
+dump_interval = '30s'
+enabled = true
+max_num_writers = 1
+max_row_group_length = 100000
+trace_file_dir = '.'
+
+[server.meta.forward]
+addr_type = 'RDMA'
+debug = true
+timeout = '10s'
+
+[server.meta.gc]
+check_session = true
+distributed_gc = true
+enable = true
+gc_delay_free_space_threshold = 5
+gc_directory_concurrent = 4
+gc_directory_delay = '0ns'
+gc_directory_entry_batch = 32
+gc_directory_entry_concurrent = 4
+gc_file_concurrent = 32
+gc_file_delay = '5min'
+large_file_chunks = 128
+recursive_perm_check = true
+remove_chunks_batch_size = 32
+retry_delay = '10min'
+scan_batch = 4096
+scan_interval = '200ms'
+small_file_chunks = 32
+txn_low_priority = false
+
+[server.meta.gc.retry_remove_chunks]
+init_wait_time = '10s'
+max_retry_time = '30s'
+max_wait_time = '10s'
+retry_permanent_error = false
+
+[server.meta.gc.workers]
+coroutines_num = 8
+enable_work_stealing = false
+queue_size = 1024
+
+[server.meta.retry_remove_chunks]
+init_wait_time = '10s'
+max_retry_time = '30s'
+max_wait_time = '10s'
+retry_permanent_error = false
+
+[server.meta.retry_transaction]
+max_backoff = '1s'
+max_retry_count = 10
+
+[server.meta.session_manager]
+enable = true
+scan_batch = 1024
+scan_interval = '5min'
+session_timeout = '5min'
+sync_on_prune_session = false
+
+[server.meta.session_manager.close_workers]
+coroutines_num = 32
+enable_work_stealing = false
+queue_size = 1024
+
+[server.meta.session_manager.scan_workers]
+coroutines_num = 8
+enable_work_stealing = false
+queue_size = 128
+
+[server.meta.user_cache]
+buckets = 127
+exist_ttl = '5min'
+inexist_ttl = '10s'
+
+[server.mgmtd_client]
+accept_incomplete_routing_info_during_mgmtd_bootstrapping = true
+auto_extend_client_session_interval = '10s'
+auto_heartbeat_interval = '10s'
+auto_refresh_interval = '10s'
+enable_auto_extend_client_session = false
+enable_auto_heartbeat = true
+enable_auto_refresh = true
+mgmtd_server_addresses = []
+work_queue_size = 100
+
+[server.storage_client]
+check_overlapping_read_buffers = true
+check_overlapping_write_buffers = false
+chunk_checksum_type = 'CRC32C'
+create_net_client_for_updates = false
+implementation_type = 'RPC'
+max_inline_read_bytes = '0'
+max_inline_write_bytes = '0'
+max_read_io_bytes = '0'
+
+[server.storage_client.net_client]
+default_compression_level = 0
+default_compression_threshold = '128KB'
+default_log_long_running_threshold = '0ns'
+default_report_metrics = false
+default_send_retry_times = 1
+default_timeout = '1s'
+enable_rdma_control = false
+force_use_tcp = false
+
+[server.storage_client.net_client.io_worker]
+num_event_loop = 1
+rdma_connect_timeout = '5s'
+read_write_rdma_in_event_thread = false
+read_write_tcp_in_event_thread = false
+tcp_connect_timeout = '1s'
+wait_to_retry_send = '100ms'
+
+[server.storage_client.net_client.io_worker.connect_concurrency_limiter]
+max_concurrency = 4
+
+[server.storage_client.net_client.io_worker.ibsocket]
+buf_ack_batch = 8
+buf_signal_batch = 8
+buf_size = 16384
+drain_timeout = '5s'
+drop_connections = 0
+event_ack_batch = 128
+max_rd_atomic = 16
+max_rdma_wr = 128
+max_rdma_wr_per_post = 32
+max_sge = 16
+min_rnr_timer = 1
+record_bytes_per_peer = false
+record_latency_per_peer = false
+retry_cnt = 7
+rnr_retry = 0
+send_buf_cnt = 32
+sl = 0
+start_psn = 0
+timeout = 14
+
+[server.storage_client.net_client.io_worker.transport_pool]
+max_connections = 1
+
+[server.storage_client.net_client.processor]
+enable_coroutines_pool = true
+max_coroutines_num = 256
+max_processing_requests_num = 4096
+response_compression_level = 1
+response_compression_threshold = '128KB'
+
+[server.storage_client.net_client.rdma_control]
+max_concurrent_transmission = 64
+
+[server.storage_client.net_client.thread_pool]
+bg_thread_pool_stratetry = 'SHARED_QUEUE'
+collect_stats = false
+enable_work_stealing = false
+io_thread_pool_stratetry = 'SHARED_QUEUE'
+num_bg_threads = 2
+num_connect_threads = 2
+num_io_threads = 2
+num_proc_threads = 2
+proc_thread_pool_stratetry = 'SHARED_QUEUE'
+
+[server.storage_client.net_client_for_updates]
+default_compression_level = 0
+default_compression_threshold = '128KB'
+default_log_long_running_threshold = '0ns'
+default_report_metrics = false
+default_send_retry_times = 1
+default_timeout = '1s'
+enable_rdma_control = false
+force_use_tcp = false
+
+[server.storage_client.net_client_for_updates.io_worker]
+num_event_loop = 1
+rdma_connect_timeout = '5s'
+read_write_rdma_in_event_thread = false
+read_write_tcp_in_event_thread = false
+tcp_connect_timeout = '1s'
+wait_to_retry_send = '100ms'
+
+[server.storage_client.net_client_for_updates.io_worker.connect_concurrency_limiter]
+max_concurrency = 4
+
+[server.storage_client.net_client_for_updates.io_worker.ibsocket]
+buf_ack_batch = 8
+buf_signal_batch = 8
+buf_size = 16384
+drain_timeout = '5s'
+drop_connections = 0
+event_ack_batch = 128
+max_rd_atomic = 16
+max_rdma_wr = 128
+max_rdma_wr_per_post = 32
+max_sge = 16
+min_rnr_timer = 1
+record_bytes_per_peer = false
+record_latency_per_peer = false
+retry_cnt = 7
+rnr_retry = 0
+send_buf_cnt = 32
+sl = 0
+start_psn = 0
+timeout = 14
+
+[server.storage_client.net_client_for_updates.io_worker.transport_pool]
+max_connections = 1
+
+[server.storage_client.net_client_for_updates.processor]
+enable_coroutines_pool = true
+max_coroutines_num = 256
+max_processing_requests_num = 4096
+response_compression_level = 1
+response_compression_threshold = '128KB'
+
+[server.storage_client.net_client_for_updates.rdma_control]
+max_concurrent_transmission = 64
+
+[server.storage_client.net_client_for_updates.thread_pool]
+bg_thread_pool_stratetry = 'SHARED_QUEUE'
+collect_stats = false
+enable_work_stealing = false
+io_thread_pool_stratetry = 'SHARED_QUEUE'
+num_bg_threads = 2
+num_connect_threads = 2
+num_io_threads = 2
+num_proc_threads = 2
+proc_thread_pool_stratetry = 'SHARED_QUEUE'
+
+[server.storage_client.retry]
+init_wait_time = '2s'
+max_failures_before_failover = 1
+max_retry_time = '5s'
+max_wait_time = '5s'
+
+[server.storage_client.traffic_control.query]
+max_batch_bytes = '4MB'
+max_batch_size = 128
+max_concurrent_requests = 32
+max_concurrent_requests_per_server = 8
+process_batches_in_parallel = true
+random_shuffle_requests = true
+
+[server.storage_client.traffic_control.read]
+max_batch_bytes = '4MB'
+max_batch_size = 128
+max_concurrent_requests = 32
+max_concurrent_requests_per_server = 8
+process_batches_in_parallel = true
+random_shuffle_requests = true
+
+[server.storage_client.traffic_control.remove]
+max_batch_bytes = '4MB'
+max_batch_size = 128
+max_concurrent_requests = 32
+max_concurrent_requests_per_server = 8
+process_batches_in_parallel = true
+random_shuffle_requests = true
+
+[server.storage_client.traffic_control.truncate]
+max_batch_bytes = '4MB'
+max_batch_size = 128
+max_concurrent_requests = 32
+max_concurrent_requests_per_server = 8
+process_batches_in_parallel = true
+random_shuffle_requests = true
+
+[server.storage_client.traffic_control.write]
+max_batch_bytes = '4MB'
+max_batch_size = 128
+max_concurrent_requests = 32
+max_concurrent_requests_per_server = 8
+process_batches_in_parallel = true
+random_shuffle_requests = true
