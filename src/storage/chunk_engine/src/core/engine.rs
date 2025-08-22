@@ -686,6 +686,10 @@ impl Engine {
             }
 
             self.meta_store.write(write_batch, true)?;
+
+            for mut entry in entries {
+                entry.remove();
+            }
         }
 
         Ok(chunk_ids.len() as _)
@@ -912,8 +916,7 @@ mod tests {
         let engine = Engine::open(&config).unwrap();
         const N: usize = 512;
         for i in 1..=N {
-            let mut data = create_aligned_buf(Size::from(i * 1024));
-            data.fill(i as u8);
+            let mut data = vec![i as u8; i * 1024];
             let checksum = crc32c::crc32c(&data);
             let chunk = engine
                 .write(&i.to_be_bytes(), &data, i as u32 * 512, checksum)
@@ -952,6 +955,9 @@ mod tests {
 
         let count = engine.batch_remove([], [], u64::MAX).unwrap();
         assert_eq!(count, 1 + N as u64);
+        for i in 1..=N {
+            assert!(engine.get(&i.to_be_bytes()).unwrap().is_none());
+        }
         let count = engine.batch_remove([], [], u64::MAX).unwrap();
         assert_eq!(count, 0);
 
