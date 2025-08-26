@@ -32,6 +32,15 @@ TEST(TestVarint64, Normal) {
     ASSERT_TRUE(serde::deserialize(der, out).hasValue());
     ASSERT_EQ(ser, der);
   }
+
+  for (auto value = 1000000ul; value <= 2000000ul; ++value) {
+    Varint64 ser = value;
+    auto out = serde::serialize(ser);
+
+    Varint64 der{};
+    ASSERT_TRUE(serde::deserialize(der, out).hasValue());
+    ASSERT_EQ(ser, der);
+  }
 }
 
 }  // namespace

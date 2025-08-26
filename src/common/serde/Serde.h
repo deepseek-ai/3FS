@@ -199,7 +199,7 @@ struct hf3fs::serde::SerdeMethod<hf3fs::Varint64> {
 
     uint64_t v = o;
     while (v >= B) {
-      *(ptr++) = o | B;
+      *(ptr++) = v | B;
       v >>= 7;
     }
     *(ptr++) = static_cast<uint8_t>(v);
