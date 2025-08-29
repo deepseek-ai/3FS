@@ -435,12 +435,15 @@ CoTryTask<void> IBSocket::connect(serde::ClientContext &ctx, Duration timeout) {
     co_return makeError(RPCCode::kConnectFailed);
   }
 
-  // post a empty msg to generate a event and notify remote side,
+  // post a 1-byte msg to generate a event and notify remote side,
   // after this msg send success, state will change to State::READY
-  auto bufIdx = sendBufs_.front().first;
+  // empty RDMA packet might be silently droped in some certain virtualized
+  // RDMA environment on cloud.
+  auto [bufIdx, sendBuf] = sendBufs_.front();
+  memset(sendBuf.data(), 0, 1);
   sendBufs_.pop();
-  if (auto ret = postSend(bufIdx, 0, IBV_SEND_SIGNALED) != 0; ret != 0) {
-    XLOGF(CRITICAL, "IBSocket {} failed to send empty msg, errno {}", describe(), ret);
+  if (auto ret = postSend(bufIdx, 1, IBV_SEND_SIGNALED) != 0; ret != 0) {
+    XLOGF(CRITICAL, "IBSocket {} failed to send 1-byte msg, errno {}", describe(), ret);
     co_return Void{};
   }
   XLOGF(INFO, "IBSocket {} connected", describe());
@@ -485,7 +488,7 @@ Result<Void> IBSocket::accept(folly::IPAddressV4 ip, const IBConnectReq &req, Du
     return makeError(RPCCode::kConnectFailed, "IBSocket failed to modify QP to RTR.");
   }
 
-  // client will send a empty msg to server, then server's QP will turn to READY
+  // client will send a 1-byte msg to server, then server's QP will turn to READY
   auto state = state_.exchange(State::ACCEPTED);
   XLOGF_IF(FATAL, state != State::INIT, "State is not INIT!!!");
   if (UNLIKELY(closed_)) {
