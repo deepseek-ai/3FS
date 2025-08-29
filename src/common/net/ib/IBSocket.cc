@@ -516,8 +516,9 @@ int IBSocket::onSended(const ibv_wc &wc, Events &events) {
 
 int IBSocket::onRecved(const ibv_wc &wc, Events &events) {
   WRId wr(wc.wr_id);
+  bool isConnectMsg = (state_.load(std::memory_order_seq_cst) == State::ACCEPTED);
 
-  if (UNLIKELY(state_.load(std::memory_order_seq_cst) == State::ACCEPTED)) {
+  if (isConnectMsg) {
     // turn QP from ACCEPTED to RTS when receive first msg from peer.
     XLOGF(INFO, "IBSocket {} turn to READY from ACCEPTED.", describe());
     if (qpReadyToSend() != 0) {
@@ -535,6 +536,12 @@ int IBSocket::onRecved(const ibv_wc &wc, Events &events) {
       return -1;
     }
     assert(wc.byte_len == 0);  // shouldn't contains data if contains immdata
+    return postRecv(recvBufIdx);
+  }
+
+  // The connecting message will be consumed by the transport layer and not be
+  // passed to the application.
+  if (isConnectMsg) {
     return postRecv(recvBufIdx);
   }
 
