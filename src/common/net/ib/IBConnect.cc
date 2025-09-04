@@ -437,7 +437,7 @@ CoTryTask<void> IBSocket::connect(serde::ClientContext &ctx, Duration timeout) {
 
   // post a 1-byte msg to generate a event and notify remote side,
   // after this msg send success, state will change to State::READY
-  // empty RDMA packet might be silently droped in some certain virtualized
+  // empty RDMA packet might be silently dropped in some certain virtualized
   // RDMA environment on cloud.
   auto [bufIdx, sendBuf] = sendBufs_.front();
   memset(sendBuf.data(), 0, 1);
