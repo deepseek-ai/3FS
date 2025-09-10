@@ -30,14 +30,17 @@
 
 namespace hf3fs::net {
 
-static bool checkNicType(std::string_view nic, Address::Type type) {
+static bool checkNicType(std::string_view nic, Address::Type type, std::string_view tcp_nic_custom_prefix) {
   switch (type) {
+    // RDMA networks rely on TCP networks to establish connections. Therefore, when the network type is set to RDMA, a
+    // TCP network card is still required for listening and handshaking. Since it is impossible to exhaustively list all
+    // TCP nic prefixes, a configurable prefix option is provided.
     case Address::TCP:
-      return nic.starts_with("en") || nic.starts_with("eth") || nic.starts_with("bond") || nic.starts_with("xgbe");
+    case Address::RDMA:
+      return nic.starts_with("en") || nic.starts_with("eth") || nic.starts_with("bond") || nic.starts_with("xgbe") ||
+             (!tcp_nic_custom_prefix.empty() && nic.starts_with(tcp_nic_custom_prefix));
     case Address::IPoIB:
       return nic.starts_with("ib");
-    case Address::RDMA:
-      return nic.starts_with("en") || nic.starts_with("eth") || nic.starts_with("bond") || nic.starts_with("xgbe");
     case Address::LOCAL:
       return nic.starts_with("lo");
     default:
@@ -65,7 +68,8 @@ Result<Void> Listener::setup() {
 
   auto &filters = config_.filter_list();
   for (auto [name, addr] : nics.value()) {
-    if (addr.up && (filters.empty() || filters.count(name) != 0) && checkNicType(name, networkType_)) {
+    if (addr.up && (filters.empty() || filters.count(name) != 0) &&
+        checkNicType(name, networkType_, config_.custom_tcp_nic_prefix())) {
       addressList_.push_back(Address{addr.ip.toLong(),
                                      config_.listen_port(),
                                      networkType_ == Address::LOCAL ? Address::TCP : networkType_});
