@@ -55,7 +55,7 @@ Result<const Target *> TargetMap::getTarget(TargetId targetId) const {
 Result<const Target *> TargetMap::getByChainId(VersionedChainId vChainId, bool allowOutdatedChainVer) const {
   CHECK_RESULT(targetId, getTargetId(vChainId.chainId));
   CHECK_RESULT(target, getTarget(targetId));
-  if (target->vChainId != vChainId && (!allowOutdatedChainVer || vChainId.chainVer > target->vChainId.chainVer)) {
+  if (target->vChainId != vChainId && !allowOutdatedChainVer) {
     auto msg = fmt::format("chain {} version mismatch request {} != local {}",
                            vChainId.chainId,
                            vChainId.chainVer,
