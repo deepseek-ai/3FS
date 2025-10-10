@@ -704,9 +704,7 @@ struct Target {
  public:
   Result<net::Address> getSuccessorAddr() const;
 
-  bool upToDate() const {
-    return localState == flat::LocalTargetState::UPTODATE && publicState == flat::PublicTargetState::SERVING;
-  }
+  bool upToDate() const { return localState == flat::LocalTargetState::UPTODATE; }
 
   bool unrecoverableOffline() const { return diskError || offlineUponUserRequest; }
 };
