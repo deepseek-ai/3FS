@@ -1,2 +1,0 @@
-[build]
-rustflags = ["-Clinker=clang++-14", "-Clink-arg=-fuse-ld=lld"]
