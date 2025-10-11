@@ -7,13 +7,13 @@
 #include <folly/experimental/Bits.h>
 #include <folly/logging/xlog.h>
 #include <folly/system/Shell.h>
+#include <ifaddrs.h>
 #include <map>
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <vector>
 
 #include "common/utils/Result.h"
-#include "ifaddrs.h"
 
 namespace hf3fs::net {
 
