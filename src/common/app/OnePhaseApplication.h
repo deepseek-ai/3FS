@@ -87,7 +87,7 @@ class OnePhaseApplication : public ApplicationBase {
     XLOGF(INFO, "LogConfig: {}", logConfigStr);
     logging::initOrDie(logConfigStr);
     XLOGF(INFO, "{}", VersionInfo::full());
-    XLOGF(INFO, "Full AppConfig:\n{}", config_.toString());
+    XLOGF(INFO, "Full AppConfig:\n{}", appConfig_.toString());
     XLOGF(INFO, "Full Config:\n{}", config_.toString());
 
     XLOGF(INFO, "Init waiter singleton {}", fmt::ptr(&net::Waiter::instance()));
