@@ -31,7 +31,7 @@ struct FuseConfig : public ConfigBase<FuseConfig> {
   CONFIG_HOT_UPDATED_ITEM(enable_read_cache, true);
   CONFIG_HOT_UPDATED_ITEM(fsync_length_hint, false);  // for test
   CONFIG_HOT_UPDATED_ITEM(fdatasync_update_length, false);
-  CONFIG_ITEM(max_idle_threads, 10);
+  CONFIG_ITEM(max_idle_threads, -1);
   CONFIG_ITEM(max_threads, 256);
   CONFIG_ITEM(max_readahead, 16_MB);
   CONFIG_ITEM(max_background, 32);
