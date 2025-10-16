@@ -168,9 +168,8 @@ class OperationDriver {
     }
 
     auto grvCache = operation_.isReadOnly() && enableGrvCache;
-    if (grvCache && dynamic_cast<kv::FDBTransaction *>(txn.get())) {
-      auto fdbTxn = dynamic_cast<kv::FDBTransaction *>(txn.get());
-      CO_RETURN_ON_ERROR(fdbTxn->setOption(FDBTransactionOption::FDB_TR_OPTION_USE_GRV_CACHE, {}));
+    if (grvCache) {
+      CO_RETURN_ON_ERROR(txn->enableStaleRead());
     }
 
     Result<Rsp> result = makeError(MetaCode::kOperationTimeout);
