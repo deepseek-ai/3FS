@@ -60,7 +60,9 @@ inline std::optional<meta::Layout> parseLayout(const argparse::ArgumentParser &p
                                       *chunkSize,
                                       std::move(chains));
   } else {
-    return meta::Layout::newEmpty(flat::ChainTableId(*chainTableId), *chunkSize, *stripeSize);
+    return meta::Layout::newEmpty(flat::ChainTableId(*chainTableId), 
+                                  flat::ChainTableVersion(chainTableVersion.value_or(0)),
+                                  *chunkSize, *stripeSize);
   }
 }
 
