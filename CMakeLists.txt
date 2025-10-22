@@ -74,7 +74,7 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
     # Clang on ARM uses built-in runtime library (compiler-rt) to provide symbols like '__muloti4'.
     # Without explicitly specifying '-rtlib=compiler-rt', linking may fail due to missing '__muloti4'.
     # '-unwindlib=libgcc' ensures proper exception unwinding compatibility.
-    add_compile_options(-march=armv8-a)
+    add_compile_options(-march=armv8-a+crc)
     message(STATUS "ARM architecture detected, linking with compiler-rt and libgcc.")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -rtlib=compiler-rt -unwindlib=libgcc")
 endif()
