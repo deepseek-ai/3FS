@@ -32,17 +32,28 @@ Result<TransportPtr> IOWorker::addTcpSocket(folly::NetworkSocket sock, bool isDo
   auto type = tcp->peerAddr().type;
   auto transport = Transport::create(std::move(tcp), *this, type);
   RETURN_AND_LOG_ON_ERROR(transport->getPeerCredentials());
-  RETURN_AND_LOG_ON_ERROR(eventLoopPool_.add(transport, (EPOLLIN | EPOLLOUT | EPOLLET)));
-
   pool_.add(transport);
+
+  auto result = eventLoopPool_.add(transport, (EPOLLIN | EPOLLOUT | EPOLLET));
+  if (UNLIKELY(!result)) {
+    pool_.remove(transport);
+    return result.error();
+  }
+
   return Result<TransportPtr>(std::move(transport));
 }
 
 Result<TransportPtr> IOWorker::addIBSocket(std::unique_ptr<IBSocket> sock) {
   auto transport = Transport::create(std::move(sock), *this, Address::RDMA);
-  RETURN_AND_LOG_ON_ERROR(eventLoopPool_.add(transport, (EPOLLIN | EPOLLOUT | EPOLLET)));
 
   pool_.add(transport);
+
+  auto result = eventLoopPool_.add(transport, (EPOLLIN | EPOLLOUT | EPOLLET));
+  if (UNLIKELY(!result)) {
+    pool_.remove(transport);
+    return result.error();
+  }
+
   return Result<TransportPtr>(std::move(transport));
 }
 
