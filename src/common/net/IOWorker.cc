@@ -37,7 +37,7 @@ Result<TransportPtr> IOWorker::addTcpSocket(folly::NetworkSocket sock, bool isDo
   auto result = eventLoopPool_.add(transport, (EPOLLIN | EPOLLOUT | EPOLLET));
   if (UNLIKELY(!result)) {
     pool_.remove(transport);
-    return result.error();
+    RETURN_AND_LOG_ON_ERROR(result);
   }
 
   return Result<TransportPtr>(std::move(transport));
@@ -51,7 +51,7 @@ Result<TransportPtr> IOWorker::addIBSocket(std::unique_ptr<IBSocket> sock) {
   auto result = eventLoopPool_.add(transport, (EPOLLIN | EPOLLOUT | EPOLLET));
   if (UNLIKELY(!result)) {
     pool_.remove(transport);
-    return result.error();
+    RETURN_AND_LOG_ON_ERROR(result);
   }
 
   return Result<TransportPtr>(std::move(transport));
