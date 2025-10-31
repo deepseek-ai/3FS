@@ -541,7 +541,9 @@ TEST_F(MgmtdClientTest, testRetryUnknownAddrs) {
     Machine::visitRecords.clear();
     CO_ASSERT_OK(co_await client.refreshRoutingInfo(false));
     {
-      std::vector<std::pair<String, net::Address>> expected = {{"GetPrimaryMgmtd", adj}, {"GetRoutingInfo", adj}};
+      std::vector<std::pair<String, net::Address>> expected = {{"GetPrimaryMgmtd", add},
+                                                               {"GetPrimaryMgmtd", adj},
+                                                               {"GetRoutingInfo", adj}};
       CO_ASSERT_RECORDS_EQ(expected);
     }
 
