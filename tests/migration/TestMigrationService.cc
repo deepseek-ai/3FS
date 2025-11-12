@@ -65,7 +65,7 @@ TEST_F(TestTestMigrationService, StartAndStopServer) {
   const auto &mgmtdAddressList = mgmtdServer_.collectAddressList("Mgmtd");
 
   server::MigrationServer::Config config;
-  config.mgmtd_client().set_mgmtd_server_addresses(mgmtdAddressList);
+  config.mgmtd_client().set_mgmtd_server_addresses(to_named(mgmtdAddressList));
   server::MigrationServer server(config);
 
   auto result = server.setup();
