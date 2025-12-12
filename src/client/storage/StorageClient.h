@@ -54,7 +54,7 @@ class IOBuffer : public folly::MoveOnly {
   net::RDMABuf subrange(size_t offset, size_t length) const { return rdmabuf.subrange(offset, length); }
 
   IOBuffer(hf3fs::net::RDMABuf rdmabuf)
-      : rdmabuf(rdmabuf) {}
+      : rdmabuf(std::move(rdmabuf)) {}
 
  private:
   const hf3fs::net::RDMABuf rdmabuf;
