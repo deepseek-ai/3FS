@@ -15,3 +15,5 @@ compile_commands.json
 *~
 __pycache__
 /target
+.idea/
+cmake-build-*/
