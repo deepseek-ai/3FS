@@ -100,15 +100,25 @@ Install other build prerequisites:
 
 ## Build 3FS
 
-- Build 3FS in `build` folder:
+Build 3FS in `build` folder:
 
-    ```
-    cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-    cmake --build build -j 32
-    ```
-- Build 3FS use Docker
-  - For TencentOS-4:  `docker pull docker.io/tencentos/tencentos4-deepseek3fs-build:latest`
-  - For OpenCloudOS-9:  `docker pull docker.io/opencloudos/opencloudos9-deepseek3fs-build:latest`
+```bash
+# Replace <method> with 'g++10' or 'g++11' based on your environment
+cmake -S . -B build \
+      -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+      -DSHUFFLE_METHOD=<method>
+cmake --build build -j 32
+```
+
+Due to the historical use of `std::shuffle`, binaries compiled with different compiler versions (e.g., `g++10` vs. `g++11 +`) may be incompatible ([issue](https://github.com/deepseek-ai/3FS/issues/368)). To resolve this, you must explicitly specify `-DSHUFFLE_METHOD` during compilation to lock in a consistent shuffle algorithm:
+
+- Existing Clusters: Use the method corresponding to the compiler version previously used to deploy the cluster (`g++10` or `g++11`).
+- New Clusters: You can choose either `g++10` or `g++11`. However, once the cluster is deployed, you must stay with the same configuration for all future builds to maintain compatibility.
+
+### Build 3FS use Docker
+- For TencentOS-4:  `docker pull docker.io/tencentos/tencentos4-deepseek3fs-build:latest`
+- For OpenCloudOS-9:  `docker pull docker.io/opencloudos/opencloudos9-deepseek3fs-build:latest`
   
 ## Run a test cluster
 
