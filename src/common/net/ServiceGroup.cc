@@ -48,7 +48,9 @@ void ServiceGroup::stopAndJoin() {
 CoTask<void> ServiceGroup::checkConnectionsRegularly() {
   while (true) {
     XLOGF(DBG9, "server@{} check connections", fmt::ptr(this));
+    // Check both RDMA and TCP connections for expiration
     ioWorker().checkConnections(Address{0, 0, Address::RDMA}, config_.connection_expiration_time());
+    ioWorker().checkConnections(Address{0, 0, Address::TCP}, config_.connection_expiration_time());
     co_await folly::coro::sleep(config_.check_connections_interval().asMs());
   }
 }
