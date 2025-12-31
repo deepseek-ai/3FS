@@ -12,7 +12,7 @@ flat::ChainInfo makeChainInfo(const flat::ChainSetting &setting) {
     flat::ChainTargetInfo cti;
     cti.targetId = t.targetId;
     cti.publicState = flat::PublicTargetState::SERVING;
-    info.targets.push_back(std::move(cti));
+    info.targets.push_back(cti);
     if (setting.setPreferredTargetOrder) {
       info.preferredTargetOrder.push_back(cti.targetId);
     }
