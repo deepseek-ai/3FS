@@ -39,6 +39,7 @@ class TagSet {
   std::map<String, String> asMap() const { return {begin(), end()}; }
 
   size_t size() const { return tag_set_.size(); }
+  bool empty() const { return tag_set_.empty(); }
 
   Iterator begin() { return tag_set_.begin(); }
   Iterator end() { return tag_set_.end(); }
