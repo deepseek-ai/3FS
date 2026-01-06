@@ -104,7 +104,7 @@ impl Drop for RocksDB {
 pub struct RocksDBIterator<'a>(rocksdb::DBRawIterator<'a>);
 
 impl RocksDBIterator<'_> {
-    pub fn iterate<P, Fn>(&mut self, prefix: P, mut func: Fn) -> Result<u32>
+    pub fn iterate<P, Fn>(&mut self, prefix: P, mut func: Fn) -> Result<usize>
     where
         P: AsRef<[u8]>,
         Fn: FnMut(&[u8], &[u8]) -> Result<()>,
