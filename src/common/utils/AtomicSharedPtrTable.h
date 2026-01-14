@@ -2,6 +2,7 @@
 
 #include <folly/concurrency/AtomicSharedPtr.h>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -17,33 +18,30 @@ struct AvailSlots {
       return idx;
     }
 
-    auto idx = nextAvail.load();
-    if (idx < cap) {
-      ++nextAvail;
-      return idx;
-    } else {
-      return std::nullopt;
+    if (nextAvail < cap) {
+      return nextAvail++;
     }
+    return std::nullopt;
   }
+
   void dealloc(int idx) {
-    if (idx < 0 || idx >= cap) {
+    std::lock_guard lock(mutex);
+    if (idx < 0 || idx >= nextAvail) {
       return;
     }
 
-    std::lock_guard lock(mutex);
     if (idx == nextAvail - 1) {
-      while (free.find(--nextAvail) != free.end()) {
-        // move back next avail as much as possible
-        ;
-      }
+      do {
+        --nextAvail;
+      } while (nextAvail > 0 && free.erase(nextAvail - 1));
     } else {
       free.insert(idx);
     }
   }
 
-  int cap;
+  const int cap;
   mutable std::mutex mutex;
-  std::atomic<int> nextAvail{0};
+  int nextAvail{0};
   std::set<int> free;
 };
 
