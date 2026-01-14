@@ -18,22 +18,25 @@ struct AvailSlots {
       return idx;
     }
 
-    if (nextAvail < cap) {
-      return nextAvail++;
+    auto current = nextAvail.load(std::memory_order_relaxed);
+    if (current < cap) {
+      nextAvail.fetch_add(1, std::memory_order_release);
+      return current;
     }
     return std::nullopt;
   }
 
   void dealloc(int idx) {
     std::lock_guard lock(mutex);
-    if (idx < 0 || idx >= nextAvail) {
+    auto current = nextAvail.load(std::memory_order_relaxed);
+    if (idx < 0 || idx >= current) {
       return;
     }
 
-    if (idx == nextAvail - 1) {
+    if (idx == current - 1) {
       do {
-        --nextAvail;
-      } while (nextAvail > 0 && free.erase(nextAvail - 1));
+        current = nextAvail.fetch_sub(1, std::memory_order_release) - 1;
+      } while (current > 0 && free.erase(current - 1));
     } else {
       free.insert(idx);
     }
@@ -41,7 +44,7 @@ struct AvailSlots {
 
   const int cap;
   mutable std::mutex mutex;
-  int nextAvail{0};
+  std::atomic<int> nextAvail{0};
   std::set<int> free;
 };
 
