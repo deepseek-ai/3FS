@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <fmt/core.h>
 #include <fmt/format.h>
 #include <folly/Conv.h>
@@ -23,13 +24,11 @@
 #include <folly/Range.h>
 #include <folly/ScopeGuard.h>
 #include <folly/String.h>
-#include <folly/Subprocess.h>
 #include <folly/Synchronized.h>
 #include <folly/experimental/TimerFD.h>
 #include <folly/functional/Partial.h>
 #include <folly/logging/xlog.h>
 #include <folly/small_vector.h>
-#include <folly/system/Shell.h>
 #include <folly/system/ThreadName.h>
 #include <ifaddrs.h>
 #include <infiniband/verbs.h>
@@ -64,7 +63,7 @@
 #include "common/utils/Result.h"
 #include "common/utils/String.h"
 
-using namespace folly::literals::shell_literals;
+using namespace hf3fs::net;
 
 /* from rdma-core
  * GID types as appear in sysfs, no change is expected as of ABI
@@ -143,47 +142,135 @@ Result<std::pair<ibv_gid, uint8_t>> queryRoCEv2GID(ibv_context *ctx, uint8_t por
 using IBDevPort = std::pair<std::string, uint8_t>;
 using NetDev = std::string;
 
+// Helper to get the PCI ID from a device path.
+static std::optional<std::string> get_pci_id(const std::filesystem::path &path) {
+  std::error_code ec;
+  if (!std::filesystem::is_symlink(path, ec)) {
+    return std::nullopt;
+  }
+
+  auto pci_path = std::filesystem::read_symlink(path, ec);
+  if (ec) {
+    return std::nullopt;
+  }
+  return pci_path.filename().string();
+}
+
+// Build a map from PCI bus ID to network device name.
+// This is used as a fallback mechanism for RoCE devices and avoids repeatedly scanning /sys/class/net.
+static std::map<std::string, std::string> build_pci_to_netdev_map() {
+  std::map<std::string, std::string> pci_to_netdev;
+  const std::filesystem::path net_path("/sys/class/net");
+  std::error_code ec;
+
+  if (!std::filesystem::exists(net_path, ec) || !std::filesystem::is_directory(net_path, ec)) {
+    XLOGF(WARN, "Cannot open /sys/class/net directory, it may not exist.");
+    return pci_to_netdev;
+  }
+
+  for (const auto &entry : std::filesystem::directory_iterator(net_path, ec)) {
+    if (!entry.is_directory(ec)) {
+      continue;
+    }
+    const auto device_path = entry.path() / "device";
+    if (auto pci_id = get_pci_id(device_path)) {
+      pci_to_netdev[*pci_id] = entry.path().filename().string();
+    }
+  }
+  if (ec) {
+    XLOGF(WARN, "Error iterating /sys/class/net: {}", ec.message());
+  }
+  return pci_to_netdev;
+}
+
+// Gets the mapping from ibdev to netdev from /sys/class/infiniband.  This is a more
+// robust approach that does not depend on IPoIB or RoCE mode,  does not require special
+// permissions, and is independent of the execution environment.
+// It replaces the dependency on the 'ibdev2netdev' command-line tool.
 static Result<std::map<IBDevPort, NetDev>> ibdev2netdev() {
-  auto command = "env -i bash -l -c /usr/sbin/ibdev2netdev"_shellify();
-  auto subprocess = folly::Subprocess(command, folly::Subprocess::Options().pipeStdout());
-  String output;
-  while (true) {
-    char buf[4096];
-    ssize_t rsize = ::read(subprocess.stdoutFd(), buf, sizeof(buf));
-    if (rsize == 0) {
-      break;
-    } else if (rsize < 0) {
-      XLOGF(ERR, "Failed to run ibdev2netdev, read from stdout failed, errno {}", errno);
-      return makeError(RPCCode::kIBInitFailed, "Failed to run ibdev2netdev");
-    }
-    output.append(&buf[0], &buf[rsize]);
-  }
-  output = folly::trimWhitespace(output);
+  namespace fs = std::filesystem;
+  const fs::path ib_base_path("/sys/class/infiniband");
 
-  auto ret = subprocess.wait();
-  if (ret.exitStatus() != 0) {
-    XLOGF(ERR, "Failed to run ibdev2netdev, ret code {}", ret.exitStatus());
-    return makeError(RPCCode::kIBInitFailed, "Failed to run ibdev2netdev");
+  if (!fs::exists(ib_base_path)) {
+    XLOGF(WARN, "Infiniband sysfs path {} does not exist. Cannot map IB devices.", ib_base_path.string());
+    return std::map<IBDevPort, NetDev>();
   }
 
-  XLOGF(INFO, "ibdev2netdev: {}", output);
+  // Pre-build a map from PCI ID to netdev name to avoid re-scanning /sys/class/net
+  // for every RoCE device that needs the fallback method.
+  auto pci_to_netdev_map = build_pci_to_netdev_map();
   std::map<IBDevPort, NetDev> map;
-  std::vector<String> lines;
-  folly::split('\n', output, lines, true);
-  for (const auto &line : lines) {
-    std::vector<String> fields;
-    folly::split(" ", line, fields, true);
-    auto devName = fields[0];
-    auto port = folly::tryTo<uint8_t>(fields[2]);
-    auto netDev = fields[4];
-    // todo: test with multiple port devices!
-    if (port.hasError()) {
-      XLOGF(ERR, "Failed to parse port {} from ibdev2netdev output!", fields[2]);
-    } else if (*port != 1) {
-      XLOGF(WARN, "IBDevice is not tested with multiple port devices!!!");
+  std::error_code ec;
+
+  for (const auto &ib_dev_entry : fs::directory_iterator(ib_base_path, ec)) {
+    if (!ib_dev_entry.is_directory(ec)) {
+      continue;
     }
-    map[{devName, *port}] = netDev;
-    XLOGF(INFO, "ibdev2netdev parsed: {} => {}", devName, netDev);
+    auto ib_dev_name = ib_dev_entry.path().filename().string();
+    auto ports_path = ib_dev_entry.path() / "ports";
+
+    if (!fs::exists(ports_path, ec) || !fs::is_directory(ports_path, ec)) {
+      continue;
+    }
+
+    std::optional<std::string> pci_id;
+
+    for (const auto &port_entry : fs::directory_iterator(ports_path, ec)) {
+      if (!port_entry.is_directory(ec)) {
+        continue;
+      }
+
+      auto port_str = port_entry.path().filename().string();
+      auto port_num_res = folly::tryTo<uint8_t>(port_str);
+      if (port_num_res.hasError()) {
+        XLOGF(WARN, "Failed to parse port number from directory name: {}", port_str);
+        continue;
+      }
+      uint8_t port_num = port_num_res.value();
+
+      bool net_found = false;
+      // Fast Path: Check for a 'net' subdirectory. This is the standard method for IPoIB
+      // and modern RoCE drivers, providing a direct port-to-netdev mapping.
+      auto net_path = port_entry.path() / "net";
+      if (fs::exists(net_path, ec) && fs::is_directory(net_path, ec)) {
+        for (const auto &net_dev_entry : fs::directory_iterator(net_path, ec)) {
+          if (net_dev_entry.is_directory(ec)) {
+            map[{ib_dev_name, port_num}] = net_dev_entry.path().filename().string();
+            XLOGF(INFO,
+                  "ibdev2netdev parsed from sysfs: {} port {} => {}",
+                  ib_dev_name,
+                  port_num,
+                  map.at({ib_dev_name, port_num}));
+            net_found = true;
+            break;  // Assume one netdev per port
+          }
+        }
+      }
+
+      if (net_found) {
+        continue;
+      }
+
+      // Fallback for RoCE: If the fast path fails, try to match the device's PCI ID.
+      // This is common for older RoCE drivers that don't create the 'net' directory.
+      if (!pci_id) {
+        pci_id = get_pci_id(ib_dev_entry.path() / "device");
+      }
+
+      if (pci_id && pci_to_netdev_map.count(*pci_id)) {
+        map[{ib_dev_name, port_num}] = pci_to_netdev_map.at(*pci_id);
+        XLOGF(INFO,
+              "ibdev2netdev parsed from PCI map: {} port {} => {}",
+              ib_dev_name,
+              port_num,
+              map.at({ib_dev_name, port_num}));
+      }
+    }
+  }
+
+  if (ec) {
+    XLOGF(ERR, "Error iterating sysfs for IB devices: {}", ec.message());
+    return makeError(StatusCode::kIOError, "Filesystem error while mapping IB devices");
   }
 
   return map;

@@ -355,6 +355,11 @@ impl MetaStore {
         })
     }
 
+    pub fn remove_writing_chunk(&self, chunk_id: &[u8], sync: bool) -> Result<()> {
+        let chunk_meta_key = MetaKey::writing_chunk_key(chunk_id);
+        self.rocksdb.delete(chunk_meta_key, sync)
+    }
+
     pub fn remove_writing_chunk_mut(&self, chunk_id: &[u8], write_batch: &mut rocksdb::WriteBatch) {
         write_batch.delete(MetaKey::writing_chunk_key(chunk_id));
     }

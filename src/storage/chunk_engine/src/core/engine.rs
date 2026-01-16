@@ -229,7 +229,7 @@ impl Engine {
         // 3. replace chunk.
         let mut entry = self.meta_cache.entry_by_ref(chunk_id);
         match entry.get() {
-            Some(chunk) if chunk.meta() == old_chunk.meta() => {
+            Some(chunk) if Arc::ptr_eq(chunk, &old_chunk) => {
                 self.meta_store
                     .move_chunk(chunk_id, old_chunk.meta(), new_chunk.meta(), true)?;
                 let new_chunk = Arc::new(new_chunk);
@@ -473,8 +473,16 @@ impl Engine {
         let new_chunk: ChunkArc = (&chunk).into();
 
         if chunk.is_remove {
-            self.meta_store.remove(chunk_id, new_chunk.meta(), sync)?;
-            self.meta_cache.remove(chunk_id);
+            let mut entry = self.meta_cache.entry_by_ref(chunk_id);
+            match self.get_with_entry(chunk_id, &mut entry)? {
+                Some(old_chunk) => {
+                    self.meta_store
+                        .remove(&chunk.chunk_id, old_chunk.meta(), sync)?
+                }
+                None => self.meta_store.remove_writing_chunk(chunk_id, sync)?,
+            }
+            entry.remove();
+            drop(entry);
             chunk.commit_succ();
             return Ok(new_chunk);
         }
@@ -519,8 +527,16 @@ impl Engine {
         for chunk in &mut chunks {
             chunk.set_committed();
             if chunk.is_remove {
-                self.meta_store
-                    .remove_mut(&chunk.chunk_id, chunk.meta(), &mut write_batch)?;
+                match entries.get_mut(&chunk.chunk_id).unwrap().get() {
+                    Some(old_chunk) => self.meta_store.remove_mut(
+                        &chunk.chunk_id,
+                        old_chunk.meta(),
+                        &mut write_batch,
+                    )?,
+                    None => self
+                        .meta_store
+                        .remove_writing_chunk(&chunk.chunk_id, sync)?,
+                }
             } else {
                 match entries.get_mut(&chunk.chunk_id).unwrap().get() {
                     Some(old_chunk) => self.meta_store.move_chunk_mut(
@@ -656,30 +672,41 @@ impl Engine {
         end: impl AsRef<[u8]>,
         max_count: u64,
     ) -> Result<u64> {
-        let chunks = self.meta_store.query_chunks(begin, end, max_count)?;
-        let mut offset = 0;
+        let mut chunk_ids = self
+            .meta_store
+            .query_chunks(begin, end, max_count)?
+            .into_iter()
+            .map(|(chunk_id, _)| chunk_id)
+            .collect::<Vec<Bytes>>();
 
-        const BATCH_SIZE: Size = Size::mebibyte(1);
-        let mut write_batch = RocksDB::new_write_batch();
-        for (index, (chunk_id, meta)) in chunks.iter().enumerate() {
-            if write_batch.size_in_bytes() >= BATCH_SIZE.0 as _ {
-                self.meta_store.write(write_batch, true)?;
-                write_batch = RocksDB::new_write_batch();
-                for (chunk_id, _) in &chunks[offset..index] {
-                    self.meta_cache.remove(chunk_id);
+        const BATCH_SIZE: usize = 4096;
+        for batch in chunk_ids.chunks_mut(BATCH_SIZE) {
+            batch.sort(); // acquire locks in sequence to avoid deadlocks.
+
+            let mut write_batch = RocksDB::new_write_batch();
+            let mut entries = Vec::with_capacity(batch.len());
+            for chunk_id in batch.iter() {
+                let mut entry = self.meta_cache.entry_by_ref(chunk_id);
+                match self.get_with_entry(chunk_id, &mut entry)? {
+                    Some(chunk) => {
+                        self.meta_store
+                            .remove_mut(chunk_id, chunk.meta(), &mut write_batch)?;
+                    }
+                    None => {
+                        // The chunk has been deleted by another thread. Still count it as a successfully deleted one.
+                    }
                 }
-                offset = index;
+                entries.push(entry);
             }
-            self.meta_store
-                .remove_mut(&chunk_id, &meta, &mut write_batch)?;
-        }
-        if !write_batch.is_empty() {
+
             self.meta_store.write(write_batch, true)?;
-            for (chunk_id, _) in &chunks[offset..] {
-                self.meta_cache.remove(chunk_id);
+
+            for mut entry in entries {
+                entry.remove();
             }
         }
-        Ok(chunks.len() as _)
+
+        Ok(chunk_ids.len() as _)
     }
 
     pub fn upgrade_version(&self) -> Result<()> {
@@ -903,8 +930,7 @@ mod tests {
         let engine = Engine::open(&config).unwrap();
         const N: usize = 512;
         for i in 1..=N {
-            let mut data = create_aligned_buf(Size::from(i * 1024));
-            data.fill(i as u8);
+            let data = vec![i as u8; i * 1024];
             let checksum = crc32c::crc32c(&data);
             let chunk = engine
                 .write(&i.to_be_bytes(), &data, i as u32 * 512, checksum)
@@ -943,6 +969,9 @@ mod tests {
 
         let count = engine.batch_remove([], [], u64::MAX).unwrap();
         assert_eq!(count, 1 + N as u64);
+        for i in 1..=N {
+            assert!(engine.get(&i.to_be_bytes()).unwrap().is_none());
+        }
         let count = engine.batch_remove([], [], u64::MAX).unwrap();
         assert_eq!(count, 0);
 

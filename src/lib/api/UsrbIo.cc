@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <fmt/format.h>
 #include <folly/logging/xlog.h>
+#include <folly/ScopeGuard.h>
 #include <iostream>
 #include <numa.h>
 #include <sys/stat.h>
@@ -49,6 +50,7 @@ int hf3fs_extract_mount_point(char *hf3fs_mount_point, int size, const char *pat
 
   auto fp = fopen("/proc/self/mountinfo", "r");
   XLOGF_IF(FATAL, !fp, "cannot read system mount info");
+  SCOPE_EXIT { fclose(fp); };
 
   char line[4096];
   std::vector<std::string> parts;

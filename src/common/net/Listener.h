@@ -24,6 +24,10 @@ class Listener {
     CONFIG_ITEM(filter_list, std::set<std::string>{});  // use all available network cards if filter is empty.
     CONFIG_ITEM(rdma_listen_ethernet, true);            // support setup RDMA connection with Ethernet by default.
     CONFIG_ITEM(domain_socket_index, 1u);
+    // Configurable TCP nic prefix. Currently, "en", "eth", "bond", and "xgbe" are regarded as TCP network cards. If
+    // your nic is not included in the list above, you can configure this option. Note that when the network type is set
+    // to RDMA, it still relies on TCP network for connection establishment and handshaking.
+    CONFIG_ITEM(custom_tcp_nic_prefix, "");
     CONFIG_HOT_UPDATED_ITEM(rdma_accept_timeout, 15_s);
   };
 

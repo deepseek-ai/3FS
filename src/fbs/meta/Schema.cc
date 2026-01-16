@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "common/utils/Result.h"
+#include "common/utils/Shuffle.h"
 #include "fbs/core/user/User.h"
 #include "fbs/meta/Common.h"
 #include "fbs/mgmtd/MgmtdTypes.h"
@@ -118,7 +119,10 @@ Layout Layout::newChainRange(ChainTableId table,
                              uint32_t chunk,
                              uint32_t stripe,
                              uint32_t baseChainIndex) {
-  auto chains = ChainRange(baseChainIndex, ChainRange::Shuffle::STD_SHUFFLE_MT19937, folly::Random::rand64());
+  auto seed = find_safe_seed(stripe);
+  auto chains = ChainRange(baseChainIndex,
+                           seed ? ChainRange::Shuffle::STD_SHUFFLE_MT19937 : ChainRange::Shuffle::NO_SHUFFLE,
+                           seed ? *seed : 0);
   return Layout{table, tableVer, chunk, stripe, chains};
 }
 
@@ -164,8 +168,7 @@ std::span<const uint32_t> Layout::ChainRange::getChainIndexList(size_t stripe) c
       case NO_SHUFFLE:
         break;
       case STD_SHUFFLE_MT19937: {
-        auto rng = std::mt19937_64(seed);
-        std::shuffle(chains.begin(), chains.end(), rng);
+        hf3fs_shuffle(chains, seed);
         break;
       }
       default:

@@ -141,7 +141,11 @@ std::pair<TransportPtr, bool> TransportPool::get(Address addr, IOWorker &io_work
         // 3. create a new transport. still protected by mutex.
         transport = Transport::create(addr, io_worker);
         set.add(transport, idx);
-        acceptedCountRecorder.set(++acceptedCount);
+        if (addr.ip == 0) {
+          acceptedCountRecorder.set(++acceptedCount);
+        } else {
+          connectedCountRecorder.set(++connectedCount);
+        }
         cached = transport;
         return std::make_pair(std::move(transport), true);
       },

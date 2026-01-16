@@ -14,6 +14,7 @@
 #include "client/mgmtd/ICommonMgmtdClient.h"
 #include "common/utils/Coroutine.h"
 #include "common/utils/Result.h"
+#include "common/utils/Shuffle.h"
 #include "fbs/meta/Schema.h"
 #include "fbs/mgmtd/MgmtdTypes.h"
 
@@ -110,8 +111,13 @@ class ChainAllocator {
           fmt::format("try to allocate {} chains from {}, found {}", layout.stripeSize, tableId, chainCnt));
     }
     auto chainBegin = roundRobin(chainCnt);
+    // pick a safe shuffle seed
+    auto seed = find_safe_seed(layout.stripeSize);
+    if (!seed) {
+      co_return makeError(StatusCode::kInvalidArg, "Failed to find safe shuffle seed");
+    }
     layout.tableVersion = table->chainTableVersion;
-    layout.chains = Layout::ChainRange(chainBegin, Layout::ChainRange::STD_SHUFFLE_MT19937, folly::Random::rand64());
+    layout.chains = Layout::ChainRange(chainBegin, Layout::ChainRange::STD_SHUFFLE_MT19937, *seed);
     if (auto valid = layout.valid(false); valid.hasError()) {
       XLOGF(DFATAL, "Layout is not valid after alloc {}, error {}", layout, valid.error());
       CO_RETURN_ERROR(valid);
