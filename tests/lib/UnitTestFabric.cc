@@ -195,7 +195,7 @@ std::unique_ptr<storage::StorageServer> UnitTestFabric::createStorageServer(size
   serverConfig.targets().storage_target().kv_store().set_type(metaStoreType);
   serverConfig.targets().storage_target().file_store().set_preopen_chunk_size_list(
       std::set(chunkSizeList.begin(), chunkSizeList.end()));
-  serverConfig.mgmtd().set_mgmtd_server_addresses(mgmtdAddressList);
+  serverConfig.mgmtd().set_mgmtd_server_addresses(to_named(mgmtdAddressList));
   serverConfig.coroutines_pool_read().set_threads_num(32);
   serverConfig.coroutines_pool_read().set_coroutines_num(4096);
   serverConfig.coroutines_pool_update().set_threads_num(32);
@@ -417,7 +417,7 @@ bool UnitTestFabric::setUpStorageSystem() {
 
     mgmtdForClient_.reset((new FakeMgmtdClient(rawRoutingInfo_))->asCommon());
   } else {
-    mgmtdClientConfig_.set_mgmtd_server_addresses(mgmtdAddressList);
+    mgmtdClientConfig_.set_mgmtd_server_addresses(to_named(mgmtdAddressList));
     mgmtdClientConfig_.set_enable_auto_refresh(true);
     mgmtdClientConfig_.set_enable_auto_heartbeat(false);
     mgmtdClientConfig_.set_auto_refresh_interval(mgmtdServer_.config.service().check_status_interval());
