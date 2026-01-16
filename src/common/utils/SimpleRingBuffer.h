@@ -1,62 +1,87 @@
 #pragma once
 
 #include <cstddef>
-#include <vector>
+#include <concepts>
+#include <memory>
+#include <utility>
 
 namespace hf3fs {
 
-template <typename T>
+template <typename T, typename Allocator = std::allocator<T>>
 class SimpleRingBuffer {
  public:
-  explicit SimpleRingBuffer(size_t capacity)
+  using allocator_type = Allocator;
+  using alloc_traits = std::allocator_traits<Allocator>;
+
+  explicit SimpleRingBuffer(size_t capacity, const Allocator& alloc = Allocator())
       : cap_(capacity),
         head_(0),
-        tail_(0) {
-    buffer_.resize(capacity * sizeof(T));
+        tail_(0),
+        alloc_(alloc) {
+    buffer_ = alloc_traits::allocate(alloc_, cap_);
   }
 
+  ~SimpleRingBuffer() {
+    clear();
+    alloc_traits::deallocate(alloc_, buffer_, cap_);
+  }
+
+  SimpleRingBuffer(const SimpleRingBuffer&) = delete;
+  SimpleRingBuffer& operator=(const SimpleRingBuffer&) = delete;
+  // TODO: support move, after making cap_ non-const
+  SimpleRingBuffer(SimpleRingBuffer&&) = delete;
+  SimpleRingBuffer& operator=(SimpleRingBuffer&&) = delete;
+
   template <typename U>
-  requires(std::same_as<T, std::decay_t<U>>) bool push(U &&v) {
+  requires(std::constructible_from<T, U>)
+  bool push(U &&v) {
     if (full()) return false;
-    new (addr(head_)) T(std::move(v));
+    alloc_traits::construct(alloc_, addr(head_), std::forward<U>(v));
     ++head_;
     return true;
   }
 
   template <typename... Args>
-  bool emplace(Args &&...args) {
+  requires(std::constructible_from<T, Args...>)
+  bool emplace(Args &&... args) {
     if (full()) return false;
-    new (addr(head_)) T(std::forward<Args>(args)...);
+    alloc_traits::construct(alloc_, addr(head_), std::forward<Args>(args)...);
     ++head_;
     return true;
   }
 
   bool pop() {
     if (empty()) return false;
-    auto *tail = addr(tail_);
-    tail->~T();
+    alloc_traits::destroy(alloc_, addr(tail_));
     ++tail_;
     return true;
   }
 
   bool pop(T &v) {
     if (empty()) return false;
-    auto *tail = addr(tail_);
+    T* tail = addr(tail_);
     v = std::move(*tail);
-    tail->~T();
+    alloc_traits::destroy(alloc_, tail);
     ++tail_;
     return true;
   }
 
+  size_t size() const { return head_ - tail_; }
   bool empty() const { return head_ == tail_; }
+  bool full() const { return size() == cap_; }
 
-  bool full() const { return head_ == tail_ + cap_; }
+  void clear() {
+    while (!empty()) pop();
+    head_ = tail_ = 0;
+  }
+
+  allocator_type get_allocator() const { return alloc_; }
 
   // TODO: should be std::random_access_iterator_tag
   template <bool Const>
   class iterator_base {
    public:
-    using BufT = std::conditional_t<Const, const SimpleRingBuffer<T>, SimpleRingBuffer<T>>;
+    using BufT = std::conditional_t<Const, const SimpleRingBuffer, SimpleRingBuffer>;
     using ValueT = std::conditional_t<Const, const T, T>;
     using difference_type = std::ptrdiff_t;
     using value_type = ValueT;
@@ -69,11 +94,10 @@ class SimpleRingBuffer {
 
     iterator_base &operator++() {
       ++pos_;
-      pos_ %= rb_->cap_;
       return *this;
     }
 
-    iterator_base &operator++(int) {
+    iterator_base operator++(int) {
       auto old = *this;
       ++*this;
       return old;
@@ -104,15 +128,18 @@ class SimpleRingBuffer {
   const_iterator cend() const { return end(); }
 
  private:
-  T *addr(size_t pos) {
-    pos %= cap_;
-    return std::launder(reinterpret_cast<T *>(buffer_.data() + pos * sizeof(T)));
+  T* addr(size_t pos) {
+    return buffer_ + (pos % cap_);
+  }
+  const T* addr(size_t pos) const {
+    return buffer_ + (pos % cap_);
   }
 
   const size_t cap_;
   size_t head_;
   size_t tail_;
-  std::vector<std::byte> buffer_;
+  [[no_unique_address]] Allocator alloc_;
+  T* buffer_;
 };
 
 }  // namespace hf3fs
