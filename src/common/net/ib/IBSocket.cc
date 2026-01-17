@@ -539,12 +539,8 @@ int IBSocket::onRecved(const ibv_wc &wc, Events &events) {
     return postRecv(recvBufIdx);
   }
 
-  // The connecting message will be consumed by the transport layer and not be
-  // passed to the application.
-  if (isConnectMsg) {
-    return postRecv(recvBufIdx);
-  }
-
+  // Legacy 0-byte connect msgs (no imm) should follow normal recv flow so
+  // ACK batching stays aligned with sender's buffer credits.
   XLOGF_IF(FATAL, wc.byte_len > recvBufs_.getBufSize(), "{} > {}", wc.byte_len, recvBufs_.getBufSize());
   recvBufs_.push(recvBufIdx, wc.byte_len);
   events |= kEventReadableFlag;
@@ -907,6 +903,28 @@ int IBSocket::postRecv(uint32_t idx) {
   ibv_recv_wr *badWr = nullptr;
   int ret = ibv_post_recv(qp_.get(), &wr, &badWr);
   XLOGF_IF(CRITICAL, ret != 0, "IBSocket {} failed to post recv, closed {}, errno {}", describe(), closed_.load(), ret);
+  return ret;
+}
+
+int IBSocket::postConnectProbe() {
+  IBDBG("IBSocket {} post connect probe.", describe());
+
+  // Use IBV_WR_SEND_WITH_IMM with ACK(0) as connect probe. This guarantees backward 
+  // compatibility (sendAcked_ += 0) and works well with virtualized RDMA environments.
+  //
+  // Note: Unlike regular postSend, this does NOT consume a send buffer (sg_list = nullptr).
+  ibv_send_wr wr{
+      .wr_id = WRId::send(0),
+      .next = nullptr,
+      .sg_list = nullptr,
+      .num_sge = 0,
+      .opcode = IBV_WR_SEND_WITH_IMM,
+      .send_flags = IBV_SEND_SIGNALED,
+      .imm_data = ImmData::ack(0),
+  };
+  ibv_send_wr *badWr = nullptr;
+  int ret = ibv_post_send(qp_.get(), &wr, &badWr);
+  XLOGF_IF(CRITICAL, ret != 0, "IBSocket {} failed to post connect probe, closed {}, errno {}", describe(), closed_.load(), ret);
   return ret;
 }
 

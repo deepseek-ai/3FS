@@ -473,6 +473,7 @@ class IBSocket : public Socket, folly::MoveOnly {
   int postSend(uint32_t idx, size_t len, uint32_t flags = 0);
   int postRecv(uint32_t idx);
   int postAck();
+  [[nodiscard]] int postConnectProbe();
 
   friend class IBSocketManager;
   class Drainer : public EventLoop::EventHandler, public std::enable_shared_from_this<Drainer> {
