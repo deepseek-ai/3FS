@@ -378,6 +378,9 @@ pub mod ffi {
         checksum: u32,
         length: u32,
         offset: u32,
+        // SAFETY: This u64 field represents a raw pointer to data of size `length`.
+        // The pointer must remain valid for the entire duration of update_chunk().
+        // Currently safe because data is consumed synchronously within the function.
         data: u64,
         last_request_id: u64,
         last_client_low: u64,

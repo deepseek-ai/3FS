@@ -295,6 +295,10 @@ impl Engine {
 
         // 1. prepare update info.
         let data = if req.length != 0 {
+            // SAFETY: req.data pointer must be valid and remain live for the duration of this function.
+            // The slice is consumed synchronously and immediately within safe_write/copy_on_write calls
+            // (lines 382-390, 394-400, 414-420). If writes become asynchronous in the future,
+            // this would require refactoring to take ownership of the data (e.g., via Vec<u8>).
             let data =
                 unsafe { std::slice::from_raw_parts(req.data as *const _, req.length as usize) };
             let checksum = crc32c::crc32c(data);
