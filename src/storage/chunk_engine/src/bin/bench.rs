@@ -84,6 +84,7 @@ fn main() -> Result<()> {
     }
 
     engine.stop_and_join();
-    engine.speed_up_quit();
+    // SAFETY: This benchmark exits immediately after this call.
+    unsafe { engine.speed_up_quit(); }
     Ok(())
 }

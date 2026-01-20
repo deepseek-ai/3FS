@@ -168,7 +168,14 @@ impl Engine {
         self.allow_to_allocate.store(val, Ordering::Release)
     }
 
-    pub fn speed_up_quit(&self) {
+    /// Intentionally leaks Arc pointers to avoid shutdown overhead.
+    ///
+    /// # Safety
+    ///
+    /// This function **must only be called** when the process is guaranteed to exit immediately afterwards.
+    /// Calling it in any other context (e.g., during a restart, in a test) will cause permanent memory leaks
+    /// of the Arc-managed data. This is an internal method intended to be used exactly once in the process exit path.
+    pub unsafe fn speed_up_quit(&self) {
         // There is a memory leak and should only be called when the process exits.
         let _ = Arc::into_raw(self.meta_cache.clone());
         let _ = Arc::into_raw(self.writing_list.clone());
@@ -791,7 +798,8 @@ mod tests {
             assert_eq!(engine.used_size().allocated_size, s);
             assert_eq!(engine.used_size().reserved_size, s);
 
-            engine.speed_up_quit();
+            // SAFETY: This is a test that exits immediately after this call.
+            unsafe { engine.speed_up_quit(); }
         }
 
         {

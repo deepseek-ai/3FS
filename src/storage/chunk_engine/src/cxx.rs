@@ -476,7 +476,7 @@ pub mod ffi {
         fn compact_groups(&self, max_reserved: u64) -> usize;
 
         fn set_allow_to_allocate(&self, val: bool);
-        fn speed_up_quit(&self);
+        unsafe fn speed_up_quit(&self);
 
         fn get_raw_chunk(&self, chunk_id: &[u8], error: Pin<&mut CxxString>) -> *const Chunk;
         fn get_raw_chunks(&self, reqs: &mut [GetReq], error: Pin<&mut CxxString>);
