@@ -798,7 +798,10 @@ mod tests {
             assert_eq!(engine.used_size().allocated_size, s);
             assert_eq!(engine.used_size().reserved_size, s);
 
-            // SAFETY: This is a test that exits immediately after this call.
+            // SAFETY: This is an exceptional case for testing the function itself.
+            // In normal usage, speed_up_quit() should ONLY be called immediately before process exit.
+            // This test intentionally violates that contract to verify the function's behavior,
+            // but this will cause memory leaks that persist for the remainder of the test process.
             unsafe { engine.speed_up_quit(); }
         }
 
