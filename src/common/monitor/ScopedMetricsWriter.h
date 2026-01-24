@@ -15,7 +15,7 @@ class ScopedCounterWriter {
         value_(value),
         tagSet_(tagSet) {
     int64_t currentCounter = counter_.fetch_add(value_) + value_;
-    if (tagSet.size() > 0)
+    if (!tagSet.empty())
       recorder_.addSample(currentCounter, tagSet_);
     else
       recorder_.addSample(currentCounter);
@@ -32,7 +32,7 @@ class ScopedCounterWriter {
 
   ~ScopedCounterWriter() {
     int64_t currentCounter = counter_.fetch_add(-value_) - value_;
-    if (tagSet_.size() > 0)
+    if (!tagSet_.empty())
       recorder_.addSample(currentCounter, tagSet_);
     else
       recorder_.addSample(currentCounter);
@@ -56,7 +56,7 @@ class ScopedLatencyWriter {
       : ScopedLatencyWriter(recorder, instance.empty() ? monitor::TagSet() : monitor::instanceTagSet(instance)) {}
 
   ~ScopedLatencyWriter() {
-    if (tagSet_.size() > 0)
+    if (!tagSet_.empty())
       recorder_.addSample(getElapsedTime(), tagSet_);
     else
       recorder_.addSample(getElapsedTime());
