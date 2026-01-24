@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/kv/IKVEngine.h"
 #include "common/serde/Serde.h"
 #include "common/utils/Coroutine.h"
 #include "fbs/meta/Schema.h"
@@ -25,7 +26,7 @@ static_assert(serde::Serializable<InodeTable>);
 
 std::vector<Path> listFilesFromPath(const Path path);
 
-CoTryTask<Void> dumpInodesFromFdb(const std::string fdbClusterFile,
+CoTryTask<Void> dumpInodesFromFdb(std::shared_ptr<kv::IKVEngine> kvEngine,
                                   const uint32_t numInodesPerFile,
                                   const std::string inodeDir,
                                   const bool parquetFormat = false,
