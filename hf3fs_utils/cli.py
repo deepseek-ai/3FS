@@ -21,7 +21,7 @@ def get_filesystem(path: str) -> FileSystem:
             p = os.sep.join(parts[:i])
             if os.path.exists(os.path.join(p, "3fs-virt")):
                 mountpoint = p
-            break
+                break
     if not mountpoint:
         abort(f"{path} is not on 3FS")
     return FileSystem(mountpoint)
