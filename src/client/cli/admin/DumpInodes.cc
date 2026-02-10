@@ -30,7 +30,6 @@ namespace {
 auto getParser() {
   argparse::ArgumentParser parser("dump-inodes");
   parser.add_argument("-n", "--num-inodes-perfile").default_value(uint32_t{10'000'000}).scan<'u', uint32_t>();
-  parser.add_argument("-f", "--fdb-cluster-file").default_value(std::string{"./fdb.cluster"});
   parser.add_argument("-i", "--inode-dir").default_value(std::string{"inodes"});
   parser.add_argument("-q", "--parquet-format").default_value(false).implicit_value(true);
   parser.add_argument("-a", "--all-inodes").default_value(false).implicit_value(true);
@@ -44,8 +43,8 @@ CoTryTask<Dispatcher::OutputTable> dumpInodes(IEnv &ienv,
   auto &env = dynamic_cast<AdminEnv &>(ienv);
   ENSURE_USAGE(args.empty());
   ENSURE_USAGE(env.mgmtdClientGetter);
+  ENSURE_USAGE(env.kvEngineGetter);
 
-  const auto &fdbClusterFile = parser.get<std::string>("fdb-cluster-file");
   const auto &numInodesPerFile = parser.get<uint32_t>("num-inodes-perfile");
   const auto &inodeDir = parser.get<std::string>("inode-dir");
   const auto &parquetFormat = parser.get<bool>("parquet-format");
@@ -53,7 +52,6 @@ CoTryTask<Dispatcher::OutputTable> dumpInodes(IEnv &ienv,
   const auto &threads = parser.get<uint32_t>("threads");
 
   ENSURE_USAGE(threads > 0);
-  ENSURE_USAGE(!fdbClusterFile.empty());
 
   if (boost::filesystem::exists(inodeDir)) {
     XLOGF(CRITICAL, "Output directory for inodes already exists: {}", inodeDir);
@@ -61,7 +59,7 @@ CoTryTask<Dispatcher::OutputTable> dumpInodes(IEnv &ienv,
   }
 
   Dispatcher::OutputTable table;
-  auto dumpRes = co_await dumpInodesFromFdb(fdbClusterFile,
+  auto dumpRes = co_await dumpInodesFromFdb(env.kvEngineGetter(),
                                             numInodesPerFile,
                                             inodeDir,
                                             parquetFormat,
@@ -73,7 +71,7 @@ CoTryTask<Dispatcher::OutputTable> dumpInodes(IEnv &ienv,
 
 }  // namespace
 
-CoTryTask<Void> dumpInodesFromFdb(const std::string fdbClusterFile,
+CoTryTask<Void> dumpInodesFromFdb(std::shared_ptr<kv::IKVEngine> kvEngine,
                                   const uint32_t numInodesPerFile,
                                   const std::string inodeDir,
                                   const bool parquetFormat,
@@ -90,10 +88,9 @@ CoTryTask<Void> dumpInodesFromFdb(const std::string fdbClusterFile,
   XLOGF(CRITICAL, "Saving inodes to directory: {}", inodeDir);
 
   meta::server::MetaScan::Options options;
-  options.fdb_cluster_file = fdbClusterFile;
   options.threads = 8;
   options.coroutines = 32;
-  auto scan = std::make_unique<meta::server::MetaScan>(options);
+  auto scan = std::make_unique<meta::server::MetaScan>(options, kvEngine);
   auto exec = std::make_unique<folly::CPUThreadPoolExecutor>(16);
 
   time_t timestamp = UtcClock::secondsSinceEpoch();
