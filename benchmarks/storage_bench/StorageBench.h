@@ -52,7 +52,7 @@ class StorageBench : public test::UnitTestFabric {
     const std::string statsFilePath = "./perfstats.csv";
     const std::vector<std::string> ibvDevices = {};
     const std::vector<std::string> ibnetZones = {};
-    const std::vector<net::Address> mgmtdEndpoints = {};
+    const std::vector<net::NamedAddress> mgmtdEndpoints = {};
     const std::string clusterId = kClusterId;
     const uint32_t chainTableId = 0;
     const uint32_t chainTableVersion = 0;
