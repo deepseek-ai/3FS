@@ -392,6 +392,22 @@ void FDBTransaction::reset() {
   tr_.reset();
 }
 
+Result<Void> FDBTransaction::enableStaleRead() {
+  return setOption(FDBTransactionOption::FDB_TR_OPTION_USE_GRV_CACHE, {});
+}
+
+Result<Void> FDBTransaction::setPriority(Priority priority) {
+  assert(priority > PRIORITY::MIN && priority < PRIORITY::MAX);
+  switch (priority) {
+    case Priority::LOW: {
+      return setOption(FDBTransactionOption::FDB_TR_OPTION_PRIORITY_BATCH, {});
+    } break;
+    default: {
+      return Void{};
+    } break;
+  }
+}
+
 Result<Void> FDBTransaction::setOption(FDBTransactionOption option, std::string_view value) {
   fdb_error_t errcode = tr_.setOption(option, value);
   if (errcode != 0) {
