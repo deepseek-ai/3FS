@@ -102,7 +102,7 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
     # '-unwindlib=libgcc' ensures proper exception unwinding compatibility.
     add_compile_options(-march=armv8-a+crc)
     message(STATUS "ARM architecture detected, linking with compiler-rt and libgcc.")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -rtlib=compiler-rt -unwindlib=libgcc")
+    add_link_options("-rtlib=compiler-rt" "-unwindlib=libgcc")
 endif()
 add_compile_definitions(ROCKSDB_NAMESPACE=rocksdb_internal)
 include(cmake/Sanitizers.cmake)
