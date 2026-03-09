@@ -105,7 +105,7 @@ impl Allocators {
             .sum()
     }
 
-    pub fn get_allocate_tasks(&self, max_reserved: u64) -> tinyvec::ArrayVec<[GroupId; 3]> {
+    pub fn get_allocate_tasks(&self, max_reserved: u64) -> tinyvec::TinyVec<[GroupId; 3]> {
         self.vec
             .iter()
             .filter_map(|allocator| allocator.get_compact_task(max_reserved))
