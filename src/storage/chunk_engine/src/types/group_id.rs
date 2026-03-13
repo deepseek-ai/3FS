@@ -13,6 +13,8 @@ impl GroupId {
     // 32bit chunk size + 24bit group + 8bit cluster
     const SHIFT: u32 = 8;
     pub const COUNT: u32 = (1 << Self::SHIFT);
+    pub const CLUSTER_MASK: u64 = (Self::COUNT - 1) as u64;
+    pub const GROUP_MASK: u64 = ((1u64 << 24) - 1) << Self::SHIFT;
 
     pub const fn new(chunk_size: Size, cluster: u8, group: u32) -> Self {
         Self(chunk_size.0 << 32 | (group << Self::SHIFT | cluster as u32) as u64)
@@ -31,8 +33,7 @@ impl GroupId {
     }
 
     pub fn offset(&self) -> Size {
-        const MARKS: u64 = !(GroupId::COUNT - 1) as u64;
-        self.chunk_size() * (self.0 & MARKS)
+        self.chunk_size() * (self.0 & Self::GROUP_MASK)
     }
 
     pub fn size(&self) -> Size {
