@@ -155,8 +155,9 @@ CoTask<IOResult> ReliableForwarding::doForward(const UpdateReq &req,
     updateReq.options.commitChainVer = target.vChainId.chainVer;
   }
 
-  bool readForSyncing = req.payload.isWriteTruncateExtend() && isSyncing &&
-                        (req.options.isSyncing || req.payload.length != req.payload.chunkSize);
+  bool readForSyncing = isSyncing && !req.payload.isRemove() &&
+                        (req.options.isSyncing || req.payload.isTruncate() || req.payload.isExtend() ||
+                         (req.payload.isWrite() && req.payload.length != req.payload.chunkSize));
   if (readForSyncing) {
     auto recordGuard = syncingReadRecorder.record();
 
