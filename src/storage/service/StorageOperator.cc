@@ -349,6 +349,11 @@ CoTask<IOResult> StorageOperator::handleUpdate(ServiceRequestContext &requestCtx
     XLOG(ERR, msg);
     co_return makeError(StatusCode::kInvalidArg, std::move(msg));
   }
+  if (req.options.isSyncing && (req.payload.isTruncate() || req.payload.isExtend())) {
+    auto msg = fmt::format("reject truncate/extend request from syncing client: {}", req);
+    XLOG(ERR, msg);
+    co_return makeError(StatusCode::kInvalidArg, std::move(msg));
+  }
 
   XLOGF(DBG1, "Start the replication process, target: {}, tag: {}, req: {}", target->targetId, req.tag, req);
 
