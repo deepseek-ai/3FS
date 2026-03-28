@@ -34,7 +34,7 @@ std::vector<IoRingJob> IoRing::jobsToProc(int maxJobs) {
         if (toProc > iod) {
           toProc = iod;
         } else if (toProc < iod && timeout.count()) {
-          auto now = lastCheck_ = SteadyClock::now();
+          auto now = SteadyClock::now();
           if (!lastCheck_) {  // first time to find the (not enough) ios, wait till timeout
             lastCheck_ = now;
             break;
