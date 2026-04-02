@@ -1235,6 +1235,11 @@ void hf3fs_symlink(fuse_req_t req, const char *link, fuse_ino_t fparent, const c
                                        *ior->iora);
           if (!res2) {
             handle_error(req, res2);
+            // rollback the successful addIov before returning
+            auto rmRes = d.iovs.rmIov(name, userInfo);
+            if (rmRes.hasError()) {
+              XLOGF(ERR, "failed to rollback iov after addIoRing failure: {}", rmRes.error());
+            }
             return;
           }
           // record the ior index for later removal
