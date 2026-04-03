@@ -152,7 +152,7 @@ void MonitorInstance::periodicallyCollect(CollectorContext &context, const Monit
   }
 }
 
-void MonitorInstance::reportSamples(CollectorContext &context, std::vector<std::unique_ptr<Reporter>> reporters) {
+void MonitorInstance::reportSamples(CollectorContext &context, std::vector<std::shared_ptr<Reporter>> reporters) {
   while (!stop_) {
     SampleBatchPool::Ptr samples;
     if (!context.samplesQueue_.read(samples)) {
@@ -201,22 +201,36 @@ Result<Void> MonitorInstance::start(const Monitor::Config &config, String hostna
     Recorder::setHostname(append(hostnameResult.value()), append(podnameResult.value()));
   }
 
+  // 2. pre-create shared PromExporter (only one instance allowed since it binds a port).
+  std::shared_ptr<PromExporter> sharedPromExporter;
+  for (auto j = 0ul; j < config.reporters_length(); ++j) {
+    auto &reporterConfig = config.reporters(j);
+    if (reporterConfig.type() == "prometheus") {
+      sharedPromExporter = std::make_shared<PromExporter>(reporterConfig.prometheus());
+      RETURN_ON_ERROR(sharedPromExporter->init());
+      break;
+    }
+  }
+
   for (int i = 0; i < config.num_collectors(); ++i) {
-    // 2. create reporter.
-    std::vector<std::unique_ptr<Reporter>> reporters;
-    for (auto i = 0ul; i < config.reporters_length(); ++i) {
-      auto &reporterConfig = config.reporters(i);
+    // 3. create per-collector reporters (non-prometheus types are created independently).
+    std::vector<std::shared_ptr<Reporter>> reporters;
+    for (auto j = 0ul; j < config.reporters_length(); ++j) {
+      auto &reporterConfig = config.reporters(j);
       if (reporterConfig.type() == "clickhouse") {
-        reporters.push_back(std::make_unique<ClickHouseClient>(reporterConfig.clickhouse()));
+        reporters.push_back(std::make_shared<ClickHouseClient>(reporterConfig.clickhouse()));
       } else if (reporterConfig.type() == "log") {
-        reporters.push_back(std::make_unique<LogReporter>(reporterConfig.log()));
+        reporters.push_back(std::make_shared<LogReporter>(reporterConfig.log()));
       } else if (reporterConfig.type() == "monitor_collector") {
-        reporters.push_back(std::make_unique<MonitorCollectorClient>(reporterConfig.monitor_collector()));
+        reporters.push_back(std::make_shared<MonitorCollectorClient>(reporterConfig.monitor_collector()));
+      } else if (reporterConfig.type() == "prometheus") {
+        reporters.push_back(sharedPromExporter);
+        continue;
       }
       RETURN_ON_ERROR(reporters.back()->init());
     }
 
-    // 3. start collect and report threads.
+    // 4. start collect and report threads.
     collectorContexts_[i]->collectThread_ =
         std::jthread(&MonitorInstance::periodicallyCollect, this, std::ref(*collectorContexts_[i]), std::ref(config));
     folly::setThreadName(collectorContexts_[i]->collectThread_.get_id(), "Collector");

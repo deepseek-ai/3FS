@@ -1,4 +1,5 @@
 #include "monitor_collector/service/MonitorCollectorOperator.h"
+#include "common/monitor/PromExporter.h"
 
 #include <algorithm>
 
@@ -41,6 +42,8 @@ void MonitorCollectorOperator::connThreadFunc(std::stop_token stoken) {
     reporter = std::make_unique<LogReporter>(reporterConfig.log());
   } else if (reporterConfig.type() == "monitor_collector") {
     reporter = std::make_unique<MonitorCollectorClient>(reporterConfig.monitor_collector());
+  } else if (reporterConfig.type() == "prometheus") {
+    reporter = std::make_unique<PromExporter>(reporterConfig.prometheus());
   } else {
     XLOGF(FATAL, "Invalid reporter type: {}", reporterConfig.type());
   }

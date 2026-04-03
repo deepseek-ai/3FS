@@ -21,3 +21,9 @@ if git -C ../third_party/folly apply --reverse --check ../../patches/folly.patch
 else
     git -C ../third_party/folly apply ../../patches/folly.patch
 fi
+
+if git -C ../third_party/prometheus-cpp apply --reverse --check ../../patches/prometheus-cpp.patch &>/dev/null; then
+    echo "prometheus-cpp patch already applied. skipping."
+else
+    git -C ../third_party/prometheus-cpp apply ../../patches/prometheus-cpp.patch
+fi

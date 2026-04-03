@@ -139,3 +139,6 @@ host = ''
 passwd = ''
 port = ''
 user = ''
+
+[server.monitor_collector.reporter.prometheus]
+port = '8080'

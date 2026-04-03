@@ -17,9 +17,9 @@ class MonitorCollectorService : public serde::ServiceWrapper<MonitorCollectorSer
  public:
   class Config : public ConfigBase<Config> {
     CONFIG_OBJ(reporter, hf3fs::monitor::Monitor::ReporterConfig, [](hf3fs::monitor::Monitor::ReporterConfig &c) {
-      c.set_type("clickhouse");
+      c.set_type("prometheus"); // default to prometheus
     });
-    CONFIG_ITEM(conn_threads, 32);
+    CONFIG_ITEM(conn_threads, 1);
     CONFIG_ITEM(queue_capacity, 204800);
     CONFIG_ITEM(batch_commit_size, 4096);
     CONFIG_ITEM(blacklisted_metric_names, std::set<std::string>{});

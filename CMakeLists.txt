@@ -168,6 +168,9 @@ TARGET_INCLUDE_DIRECTORIES (absl-lib
     PUBLIC ${PROJECT_SOURCE_DIR}/third_party/clickhouse-cpp/contrib
 )
 restore_compile_flags()
+set(ENABLE_PUSH OFF CACHE BOOL "" FORCE)
+set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+add_subdirectory("third_party/prometheus-cpp" EXCLUDE_FROM_ALL)
 add_subdirectory("third_party/liburing-cmake" EXCLUDE_FROM_ALL)
 restore_compile_flags()
 

@@ -1,0 +1,187 @@
+diff --git a/.gitmodules b/.gitmodules
+index aea7ad4..50beaa7 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -40,3 +40,6 @@
+ [submodule "third_party/gtest-parallel"]
+ 	path = third_party/gtest-parallel
+ 	url = https://github.com/google/gtest-parallel.git
++[submodule "third_party/prometheus-cpp"]
++	path = third_party/prometheus-cpp
++	url = https://github.com/jupp0r/prometheus-cpp.git
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 33064fa..c83fdeb 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -168,6 +168,9 @@ TARGET_INCLUDE_DIRECTORIES (absl-lib
+     PUBLIC ${PROJECT_SOURCE_DIR}/third_party/clickhouse-cpp/contrib
+ )
+ restore_compile_flags()
++set(ENABLE_PUSH OFF CACHE BOOL "" FORCE)
++set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
++add_subdirectory("third_party/prometheus-cpp" EXCLUDE_FROM_ALL)
+ add_subdirectory("third_party/liburing-cmake" EXCLUDE_FROM_ALL)
+ restore_compile_flags()
+ 
+diff --git a/configs/monitor_collector_main.toml b/configs/monitor_collector_main.toml
+index 459b6f1..6a5f7e5 100644
+--- a/configs/monitor_collector_main.toml
++++ b/configs/monitor_collector_main.toml
+@@ -139,3 +139,6 @@ host = ''
+ passwd = ''
+ port = ''
+ user = ''
++
++[server.monitor_collector.reporter.prometheus]
++port = '8080'
+diff --git a/patches/apply.sh b/patches/apply.sh
+index 3c078b8..fde6a35 100755
+--- a/patches/apply.sh
++++ b/patches/apply.sh
+@@ -21,3 +21,9 @@ if git -C ../third_party/folly apply --reverse --check ../../patches/folly.patch
+ else
+     git -C ../third_party/folly apply ../../patches/folly.patch
+ fi
++
++if git -C ../third_party/prometheus-cpp apply --reverse --check ../../patches/prometheus-cpp.patch &>/dev/null; then
++    echo "prometheus-cpp patch already applied. skipping."
++else
++    git -C ../third_party/prometheus-cpp apply ../../patches/prometheus-cpp.patch
++fi
+diff --git a/src/common/CMakeLists.txt b/src/common/CMakeLists.txt
+index 39b7d6e..dbed11d 100644
+--- a/src/common/CMakeLists.txt
++++ b/src/common/CMakeLists.txt
+@@ -4,8 +4,10 @@ CheckGitSetup(${PROJECT_SOURCE_DIR})
+ set(FLATBUFFERS_FLATC_SCHEMA_EXTRA_ARGS --cpp-std=c++17)
+ 
+ target_add_lib(common memory-common version-info folly ibverbs scn::scn clickhouse-cpp-lib-static toml11 libzstd_static 3fs_liburing)
++target_link_libraries(common prometheus-cpp::core prometheus-cpp::pull)
+ add_dependencies(common MonitorCollectorService-fbs)
+ target_sources(common PRIVATE utils/Linenoise.c)
+ 
+ target_add_shared_lib(hf3fs_common_shared memory-common version-info folly ibverbs scn::scn clickhouse-cpp-lib-static toml11 libzstd_static 3fs_liburing)
++target_link_libraries(hf3fs_common_shared prometheus-cpp::core prometheus-cpp::pull)
+ add_dependencies(hf3fs_common_shared MonitorCollectorService-fbs)
+diff --git a/src/common/monitor/Monitor.cc b/src/common/monitor/Monitor.cc
+index e2b6eff..5dc979b 100644
+--- a/src/common/monitor/Monitor.cc
++++ b/src/common/monitor/Monitor.cc
+@@ -152,7 +152,7 @@ void MonitorInstance::periodicallyCollect(CollectorContext &context, const Monit
+   }
+ }
+ 
+-void MonitorInstance::reportSamples(CollectorContext &context, std::vector<std::unique_ptr<Reporter>> reporters) {
++void MonitorInstance::reportSamples(CollectorContext &context, std::vector<std::shared_ptr<Reporter>> reporters) {
+   while (!stop_) {
+     SampleBatchPool::Ptr samples;
+     if (!context.samplesQueue_.read(samples)) {
+@@ -201,22 +201,36 @@ Result<Void> MonitorInstance::start(const Monitor::Config &config, String hostna
+     Recorder::setHostname(append(hostnameResult.value()), append(podnameResult.value()));
+   }
+ 
++  // 2. pre-create shared PromExporter (only one instance allowed since it binds a port).
++  std::shared_ptr<PromExporter> sharedPromExporter;
++  for (auto j = 0ul; j < config.reporters_length(); ++j) {
++    auto &reporterConfig = config.reporters(j);
++    if (reporterConfig.type() == "prometheus") {
++      sharedPromExporter = std::make_shared<PromExporter>(reporterConfig.prometheus());
++      RETURN_ON_ERROR(sharedPromExporter->init());
++      break;
++    }
++  }
++
+   for (int i = 0; i < config.num_collectors(); ++i) {
+-    // 2. create reporter.
+-    std::vector<std::unique_ptr<Reporter>> reporters;
+-    for (auto i = 0ul; i < config.reporters_length(); ++i) {
+-      auto &reporterConfig = config.reporters(i);
++    // 3. create per-collector reporters (non-prometheus types are created independently).
++    std::vector<std::shared_ptr<Reporter>> reporters;
++    for (auto j = 0ul; j < config.reporters_length(); ++j) {
++      auto &reporterConfig = config.reporters(j);
+       if (reporterConfig.type() == "clickhouse") {
+-        reporters.push_back(std::make_unique<ClickHouseClient>(reporterConfig.clickhouse()));
++        reporters.push_back(std::make_shared<ClickHouseClient>(reporterConfig.clickhouse()));
+       } else if (reporterConfig.type() == "log") {
+-        reporters.push_back(std::make_unique<LogReporter>(reporterConfig.log()));
++        reporters.push_back(std::make_shared<LogReporter>(reporterConfig.log()));
+       } else if (reporterConfig.type() == "monitor_collector") {
+-        reporters.push_back(std::make_unique<MonitorCollectorClient>(reporterConfig.monitor_collector()));
++        reporters.push_back(std::make_shared<MonitorCollectorClient>(reporterConfig.monitor_collector()));
++      } else if (reporterConfig.type() == "prometheus") {
++        reporters.push_back(sharedPromExporter);
++        continue;
+       }
+       RETURN_ON_ERROR(reporters.back()->init());
+     }
+ 
+-    // 3. start collect and report threads.
++    // 4. start collect and report threads.
+     collectorContexts_[i]->collectThread_ =
+         std::jthread(&MonitorInstance::periodicallyCollect, this, std::ref(*collectorContexts_[i]), std::ref(config));
+     folly::setThreadName(collectorContexts_[i]->collectThread_.get_id(), "Collector");
+diff --git a/src/common/monitor/Monitor.h b/src/common/monitor/Monitor.h
+index 524469c..8094221 100644
+--- a/src/common/monitor/Monitor.h
++++ b/src/common/monitor/Monitor.h
+@@ -9,6 +9,7 @@
+ #include "common/monitor/ClickHouseClient.h"
+ #include "common/monitor/LogReporter.h"
+ #include "common/monitor/MonitorCollectorClient.h"
++#include "common/monitor/PromExporter.h"
+ #include "common/monitor/Recorder.h"
+ #include "common/monitor/Sample.h"
+ #include "common/utils/Address.h"
+@@ -44,6 +45,7 @@ class Monitor {
+     CONFIG_OBJ(clickhouse, ClickHouseClient::Config);
+     CONFIG_OBJ(log, LogReporter::Config);
+     CONFIG_OBJ(monitor_collector, MonitorCollectorClient::Config);
++    CONFIG_OBJ(prometheus, PromExporter::Config);
+   };
+ 
+   class Config : public ConfigBase<Config> {
+@@ -90,7 +92,7 @@ class MonitorInstance {
+   };
+ 
+   void periodicallyCollect(CollectorContext &context, const Monitor::Config &config);
+-  void reportSamples(CollectorContext &context, std::vector<std::unique_ptr<Reporter>> reporters);
++  void reportSamples(CollectorContext &context, std::vector<std::shared_ptr<Reporter>> reporters);
+ 
+   std::atomic<bool> stop_ = true;
+ 
+diff --git a/src/monitor_collector/service/MonitorCollectorOperator.cc b/src/monitor_collector/service/MonitorCollectorOperator.cc
+index 7d884f6..75f5159 100644
+--- a/src/monitor_collector/service/MonitorCollectorOperator.cc
++++ b/src/monitor_collector/service/MonitorCollectorOperator.cc
+@@ -1,4 +1,5 @@
+ #include "monitor_collector/service/MonitorCollectorOperator.h"
++#include "common/monitor/PromExporter.h"
+ 
+ #include <algorithm>
+ 
+@@ -41,6 +42,8 @@ void MonitorCollectorOperator::connThreadFunc(std::stop_token stoken) {
+     reporter = std::make_unique<LogReporter>(reporterConfig.log());
+   } else if (reporterConfig.type() == "monitor_collector") {
+     reporter = std::make_unique<MonitorCollectorClient>(reporterConfig.monitor_collector());
++  } else if (reporterConfig.type() == "prometheus") {
++    reporter = std::make_unique<PromExporter>(reporterConfig.prometheus());
+   } else {
+     XLOGF(FATAL, "Invalid reporter type: {}", reporterConfig.type());
+   }
+diff --git a/src/monitor_collector/service/MonitorCollectorService.h b/src/monitor_collector/service/MonitorCollectorService.h
+index 112d47d..56225b8 100644
+--- a/src/monitor_collector/service/MonitorCollectorService.h
++++ b/src/monitor_collector/service/MonitorCollectorService.h
+@@ -17,9 +17,9 @@ class MonitorCollectorService : public serde::ServiceWrapper<MonitorCollectorSer
+  public:
+   class Config : public ConfigBase<Config> {
+     CONFIG_OBJ(reporter, hf3fs::monitor::Monitor::ReporterConfig, [](hf3fs::monitor::Monitor::ReporterConfig &c) {
+-      c.set_type("clickhouse");
++      c.set_type("prometheus"); // default to prometheus
+     });
+-    CONFIG_ITEM(conn_threads, 32);
++    CONFIG_ITEM(conn_threads, 1);
+     CONFIG_ITEM(queue_capacity, 204800);
+     CONFIG_ITEM(batch_commit_size, 4096);
+     CONFIG_ITEM(blacklisted_metric_names, std::set<std::string>{});

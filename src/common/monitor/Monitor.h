@@ -9,6 +9,7 @@
 #include "common/monitor/ClickHouseClient.h"
 #include "common/monitor/LogReporter.h"
 #include "common/monitor/MonitorCollectorClient.h"
+#include "common/monitor/PromExporter.h"
 #include "common/monitor/Recorder.h"
 #include "common/monitor/Sample.h"
 #include "common/utils/Address.h"
@@ -44,6 +45,7 @@ class Monitor {
     CONFIG_OBJ(clickhouse, ClickHouseClient::Config);
     CONFIG_OBJ(log, LogReporter::Config);
     CONFIG_OBJ(monitor_collector, MonitorCollectorClient::Config);
+    CONFIG_OBJ(prometheus, PromExporter::Config);
   };
 
   class Config : public ConfigBase<Config> {
@@ -90,7 +92,7 @@ class MonitorInstance {
   };
 
   void periodicallyCollect(CollectorContext &context, const Monitor::Config &config);
-  void reportSamples(CollectorContext &context, std::vector<std::unique_ptr<Reporter>> reporters);
+  void reportSamples(CollectorContext &context, std::vector<std::shared_ptr<Reporter>> reporters);
 
   std::atomic<bool> stop_ = true;
 
