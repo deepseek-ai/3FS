@@ -40,3 +40,6 @@
 [submodule "third_party/gtest-parallel"]
 	path = third_party/gtest-parallel
 	url = https://github.com/google/gtest-parallel.git
+[submodule "third_party/prometheus-cpp"]
+	path = third_party/prometheus-cpp
+	url = https://github.com/jupp0r/prometheus-cpp.git
