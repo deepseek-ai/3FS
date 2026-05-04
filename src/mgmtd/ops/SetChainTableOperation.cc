@@ -53,13 +53,12 @@ CoTryTask<SetChainTableRsp> SetChainTableOperation::handle(MgmtdState &state) {
         const auto &m = ctit->second;
         XLOGF_IF(FATAL, m.empty(), "{} has no versions", tableId);
         const auto &current = m.rbegin()->second;
-        if (newChainTable.chains != current.chains) {
-          newChainTable.chainTableVersion = nextVersion(current.chainTableVersion);
-        }
         if (newChainTable.desc.empty()) {
           newChainTable.desc = current.desc;
         }
-        if (newChainTable == current) {
+        if (newChainTable.chains != current.chains || newChainTable.desc != current.desc) {
+          newChainTable.chainTableVersion = nextVersion(current.chainTableVersion);
+        } else {
           // same as the latest version, do not add new version
           co_return SetChainTableRsp::create(current.chainTableVersion);
         }

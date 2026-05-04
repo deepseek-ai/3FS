@@ -626,4 +626,61 @@ TEST_F(MgmtdOperatorTest, testSetNodeTags) {
   };
   folly::coro::blockingWait(f());
 }
+
+TEST_F(MgmtdOperatorTest, testSetChainTableVersionMonotonicity) {
+  folly::coro::blockingWait([&]() -> CoTask<void> {
+    MgmtdOperator mgmtd(env_, defaultConfig_);
+    co_await MgmtdTestHelper(mgmtd).extendLease();
+
+    // Prepare two Chains
+    co_await MgmtdTestHelper(mgmtd).setRoutingInfo([](flat::RoutingInfo &ri) {
+      for (auto cid : {flat::ChainId(1), flat::ChainId(2)}) {
+        flat::ChainInfo chain;
+        chain.chainId = cid;
+        chain.chainVersion = flat::ChainVersion(1);
+        flat::ChainTargetInfo cti;
+        cti.targetId = flat::TargetId(100 + (uint32_t)cid);
+        cti.publicState = flat::PublicTargetState::SERVING;
+        chain.targets.push_back(cti);
+        ri.chains[cid] = chain;
+      }
+    });
+
+    // Step 1: upload ChainTable, with version 1
+    {
+      mgmtd::SetChainTableReq req;
+      req.clusterId = "clusterId";
+      req.chainTableId = flat::ChainTableId(1);
+      req.chains = {flat::ChainId(1)};
+      req.desc = "old_desc";
+      auto ret = co_await mgmtd.setChainTable(req, {});
+      CO_ASSERT_OK(ret);
+      CO_ASSERT_EQ(ret->chainTableVersion, flat::ChainTableVersion(1));
+    }
+
+    // Step 2: update chains of ChainTable, increase version to 2
+    {
+      mgmtd::SetChainTableReq req;
+      req.clusterId = "clusterId";
+      req.chainTableId = flat::ChainTableId(1);
+      req.chains = {flat::ChainId(1), flat::ChainId(2)};
+      req.desc = "old_desc";
+      auto ret = co_await mgmtd.setChainTable(req, {});
+      CO_ASSERT_OK(ret);
+      CO_ASSERT_EQ(ret->chainTableVersion, flat::ChainTableVersion(2));
+    }
+
+    // Step 3: update desc of ChainTable, the version should be 3
+    {
+      mgmtd::SetChainTableReq req;
+      req.clusterId = "clusterId";
+      req.chainTableId = flat::ChainTableId(1);
+      req.chains = {flat::ChainId(1), flat::ChainId(2)};  // keep same
+      req.desc = "new_desc";                              // only desc changed
+      auto ret = co_await mgmtd.setChainTable(req, {});
+      CO_ASSERT_OK(ret);
+      CO_ASSERT_EQ(ret->chainTableVersion, flat::ChainTableVersion(3));
+    }
+  }());
+}
 }  // namespace hf3fs::mgmtd::testing
