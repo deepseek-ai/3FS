@@ -1,3 +1,4 @@
+#include <boost/core/ignore_unused.hpp>
 #include <folly/experimental/coro/BlockingWait.h>
 #include <gtest/gtest.h>
 #include <string_view>
@@ -65,6 +66,8 @@ class MockROTxn : public IReadOnlyTransaction {
   void reset() override {}
 
   void setReadVersion(int64_t) override {}
+
+  Result<Void> enableStaleRead() override { return Void{}; }
 };
 
 class MockRWTxn : public IReadWriteTransaction {
@@ -112,6 +115,12 @@ class MockRWTxn : public IReadWriteTransaction {
   void setReadVersion(int64_t) override {}
 
   void reset() override {}
+
+  Result<Void> enableStaleRead() override { return Void{}; }
+  Result<Void> setPriority(Priority priority) override {
+    boost::ignore_unused(priority);
+    return Void{};
+  }
 
  private:
   OpResultSeq &commitSeq_;

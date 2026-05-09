@@ -306,9 +306,8 @@ CoTryTask<void> GcManager::GcTask::gcDirectory(GcManager &manager) {
   auto finished = false;
   auto checked = false;
   auto handler = [&](IReadWriteTransaction &txn) -> CoTryTask<void> {
-    auto fdbTxn = dynamic_cast<kv::FDBTransaction *>(&txn);
-    if (fdbTxn && manager.config_.gc().txn_low_priority()) {
-      fdbTxn->setOption(FDBTransactionOption::FDB_TR_OPTION_PRIORITY_BATCH, {});
+    if (manager.config_.gc().txn_low_priority()) {
+      txn.setPriority(kv::Priority::LOW);
     }
     if (!checked) {
       auto loadInode = co_await Inode::load(txn, taskEntry.id);
@@ -375,9 +374,8 @@ CoTryTask<void> GcManager::GcTask::gcFile(GcManager &manager) {
   XLOGF(DBG, "Gc file {}", taskEntry.id);
 
   auto load = co_await manager.runReadOnly([&](auto &txn) -> CoTryTask<std::optional<Inode>> {
-    auto fdbTxn = dynamic_cast<kv::FDBTransaction *>(&txn);
-    if (fdbTxn && manager.config_.gc().txn_low_priority()) {
-      fdbTxn->setOption(FDBTransactionOption::FDB_TR_OPTION_PRIORITY_BATCH, {});
+    if (manager.config_.gc().txn_low_priority()) {
+      txn.setPriority(kv::Priority::LOW);
     }
     if (!manager.config_.gc().check_session()) {
       co_return co_await Inode::snapshotLoad(txn, taskEntry.id);
