@@ -137,3 +137,37 @@ def read_file(fn, hf3fs_mount_point=None, block_size=1 << 30, off=0, priority=No
         del iov
         shm.close()
         shm.unlink()
+
+# add write_file func
+def write_file(fn, data, hf3fs_mount_point=None, block_size=1 << 30, off=0, priority=None):
+    if hf3fs_mount_point is None:
+        hf3fs_mount_point = extract_mount_point(fn)
+    try:
+        fd = os.open(fn, os.O_WRONLY | os.O_CREAT| os.O_TRUNC)
+        register_fd(fd)
+        shm = multiprocessing.shared_memory.SharedMemory(size=block_size, create=True)
+        iov = make_iovec(shm, hf3fs_mount_point)
+        ior = make_ioring(hf3fs_mount_point, 1,for_read=False, priority=priority)
+
+        data_len = len(data)
+        i = 0
+        woff = off
+        while woff <  off + data_len:
+            chunk_size = min(block_size, data_len - woff)
+            shm.buf[:chunk_size] = data[woff:woff + chunk_size]
+            ior.prepare(iov[:], False, fd, woff, chunk_size)
+            done = ior.submit().wait(min_results=1)[0]
+            if done.result < 0:
+                raise OSError(-done.result)
+
+            i += 1
+            woff += chunk_size
+
+    finally:
+        deregister_fd(fd)
+        os.close(fd)
+        del ior
+        del iov
+        shm.close()
+        shm.unlink()
+
