@@ -14,7 +14,6 @@ namespace hf3fs::memory {
 #ifdef OVERRIDE_CXX_NEW_DELETE
 
 static std::once_flag gInitOnce;
-static bool gAllocatorInited = false;
 static MemoryAllocatorInterface *gAllocator = nullptr;
 static thread_local hf3fs::memory::AllocatedMemoryCounter gMemCounter;
 
@@ -73,10 +72,7 @@ exit:
 }
 
 void *allocate(size_t size) {
-  if (!gAllocatorInited) {
-    std::call_once(gInitOnce, loadMemoryAllocatorLib);
-    gAllocatorInited = true;
-  }
+  std::call_once(gInitOnce, loadMemoryAllocatorLib);
 
 #ifdef SAVE_ALLOCATE_SIZE
   const size_t headerSize = kHeaderSize;
@@ -130,10 +126,7 @@ void deallocate(void *mem) {
 }
 
 void *memalign(size_t alignment, size_t size) {
-  if (!gAllocatorInited) {
-    std::call_once(gInitOnce, loadMemoryAllocatorLib);
-    gAllocatorInited = true;
-  }
+  std::call_once(gInitOnce, loadMemoryAllocatorLib);
 
 #ifdef SAVE_ALLOCATE_SIZE
   const size_t alignedHeaderSize = std::max(alignment, kHeaderSize);
