@@ -273,7 +273,7 @@ CoTryTask<VersionedLength> BatchedOp::queryLength(const Inode &inode,
       XLOGF(DBG, "don't need update {}, current {}, hint {}", inode.id, currLength, *hintLength);
       co_return currLength;
     }
-    if (hintLength->truncateVer == currLength.truncateVer && hintLength->length > currLength.truncateVer) {
+    if (hintLength->truncateVer == currLength.truncateVer && hintLength->length > currLength.length) {
       XLOGF(DBG, "update {} to hint {}, current {}", inode.id, *hintLength, currLength);
       co_return *hintLength;
     }
