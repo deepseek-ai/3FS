@@ -129,6 +129,7 @@ Install `mgmtd` service on **meta** node.
    ```
 2. Update config files:
    - Set mgmtd `node_id = 1` in [`mgmtd_main_app.toml`](../configs/mgmtd_main_app.toml).
+     - Each mgmtd node must have a unique node_id (e.g., 2, 3, ...) when deploying multiple nodes.
    - Edit [`mgmtd_main_launcher.toml`](../configs/mgmtd_main_launcher.toml) to set the `cluster_id` and `clusterFile`:
    ```toml
    cluster_id = "stage"
@@ -174,7 +175,8 @@ Install `meta` service on **meta** node.
    ```
 2. Update config files:
    - Set meta `node_id = 100` in [`meta_main_app.toml`](../configs/meta_main_app.toml).
-   - Set `cluster_id`, `clusterFile` and mgmtd address in [`meta_main_launcher.toml`](../configs/meta_main_launcher.toml):
+     - Each meta service must have a unique node_id (e.g., 101, 102, ...) when deploying multiple nodes.
+   - Set `cluster_id` and mgmtd address in [`meta_main_launcher.toml`](../configs/meta_main_launcher.toml):
    ```toml
    cluster_id = "stage"
 
@@ -191,6 +193,9 @@ Install `meta` service on **meta** node.
 
    [server.fdb]
    clusterFile = '/opt/3fs/etc/fdb.cluster'
+
+   [server.meta.event_trace_log]
+   trace_file_dir = '/var/log/3fs/trace'
    ```
 3. Config file of meta service is managed by mgmtd service. Use `admin_cli` to upload the config file to mgmtd:
    ```bash
@@ -246,6 +251,9 @@ Install `storage` service on **storage** node.
 
    [server.targets]
    target_paths = ["/storage/data1/3fs","/storage/data2/3fs","/storage/data3/3fs","/storage/data4/3fs","/storage/data5/3fs","/storage/data6/3fs","/storage/data7/3fs","/storage/data8/3fs","/storage/data9/3fs","/storage/data10/3fs","/storage/data11/3fs","/storage/data12/3fs","/storage/data13/3fs","/storage/data14/3fs","/storage/data15/3fs","/storage/data16/3fs",]
+
+   [server.storage.event_trace_log]
+   trace_file_dir = '/var/log/3fs/trace'
    ```
 5. Config file of storage service is managed by mgmtd service. Use `admin_cli` to upload the config file to mgmtd:
    ```bash
