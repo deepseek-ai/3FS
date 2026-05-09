@@ -25,7 +25,6 @@ namespace {
 auto getParser() {
   argparse::ArgumentParser parser("dump-dentries");
   parser.add_argument("-n", "--num-dentries-perfile").default_value(uint32_t{10'000'000}).scan<'u', uint32_t>();
-  parser.add_argument("-f", "--fdb-cluster-file").default_value(std::string{"./fdb.cluster"});
   parser.add_argument("-d", "--dentry-dir").default_value(std::string{"dentries"});
   parser.add_argument("-t", "--threads").default_value(uint32_t(4)).scan<'u', uint32_t>();
   return parser;
@@ -37,14 +36,13 @@ CoTryTask<Dispatcher::OutputTable> dumpDirEntries(IEnv &ienv,
   auto &env = dynamic_cast<AdminEnv &>(ienv);
   ENSURE_USAGE(args.empty());
   ENSURE_USAGE(env.mgmtdClientGetter);
+  ENSURE_USAGE(env.kvEngineGetter);
 
-  const auto &fdbClusterFile = parser.get<std::string>("fdb-cluster-file");
   const auto &numEntriesPerFile = parser.get<uint32_t>("num-dentries-perfile");
   const auto &dentryDir = parser.get<std::string>("dentry-dir");
   const auto threads = parser.get<uint32_t>("threads");
 
   ENSURE_USAGE(threads > 0);
-  ENSURE_USAGE(!fdbClusterFile.empty());
   ENSURE_USAGE(!dentryDir.empty());
   ENSURE_USAGE(numEntriesPerFile > 0);
 
@@ -55,13 +53,13 @@ CoTryTask<Dispatcher::OutputTable> dumpDirEntries(IEnv &ienv,
 
   Dispatcher::OutputTable table;
   auto dumpRes =
-      co_await dumpDirEntriesFromFdb(fdbClusterFile, numEntriesPerFile, dentryDir, std::max(uint32_t(1), threads));
+      co_await dumpDirEntriesFromFdb(env.kvEngineGetter(), numEntriesPerFile, dentryDir, std::max(uint32_t(1), threads));
   if (!dumpRes) co_return makeError(dumpRes.error());
   co_return table;
 }
 }  // namespace
 
-CoTryTask<Void> dumpDirEntriesFromFdb(const std::string fdbClusterFile,
+CoTryTask<Void> dumpDirEntriesFromFdb(std::shared_ptr<kv::IKVEngine> kvEngine,
                                       const uint32_t numEntriesPerDir,
                                       const std::string dentryDir,
                                       const uint32_t threads) {
@@ -77,10 +75,9 @@ CoTryTask<Void> dumpDirEntriesFromFdb(const std::string fdbClusterFile,
   XLOGF(CRITICAL, "Saving directory entries to directory: {}", dentryDir);
 
   meta::server::MetaScan::Options options;
-  options.fdb_cluster_file = fdbClusterFile;
   options.threads = 8;
   options.coroutines = 32;
-  auto scan = std::make_unique<meta::server::MetaScan>(options);
+  auto scan = std::make_unique<meta::server::MetaScan>(options, kvEngine);
   auto exec = std::make_unique<folly::CPUThreadPoolExecutor>(16);
 
   time_t timestamp = UtcClock::secondsSinceEpoch();
