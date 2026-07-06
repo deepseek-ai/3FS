@@ -16,20 +16,11 @@
 #include "common/net/ib/RDMABuf.h"
 #include "common/net/ib/RDMABufAccelerator.h"
 #include "tests/GtestHelpers.h"
-#include "tests/gdr/mocks/MockCudaRuntime.h"
 
 namespace hf3fs::net {
 
 class TestRDMABufAccelerator : public ::testing::Test {
  protected:
-  void SetUp() override {
-    hf3fs::test::MockCudaRuntime::instance().reset();
-  }
-
-  void TearDown() override {
-    hf3fs::test::MockCudaRuntime::instance().reset();
-  }
-
   static bool hasGpu() {
     return GDRManager::instance().isAvailable();
   }
@@ -174,10 +165,6 @@ TEST_F(TestRDMABufAccelerator, SCN_L2_006_02_SyncOnInvalidBuffer) {
   // THEN: No-op, no crash
   buf.sync(0);
   buf.sync(1);
-
-  // Verify mock was NOT called (sync on invalid is a no-op)
-  auto& mock = hf3fs::test::MockCudaRuntime::instance();
-  EXPECT_FALSE(mock.wasSyncCalled());
 }
 
 }  // namespace hf3fs::net

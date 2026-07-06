@@ -16,25 +16,16 @@
 #include "common/net/ib/AcceleratorMemory.h"
 #include "common/net/ib/MemoryTypes.h"
 #include "tests/GtestHelpers.h"
-#include "tests/gdr/mocks/MockCudaRuntime.h"
 
 namespace hf3fs::net {
 
 // ---------------------------------------------------------------------------
-// Test fixture: Uses MockCudaRuntime for GPU-path tests on CPU-only machines.
-// Pure-logic tests (cache, memory type detection, config defaults) run everywhere.
+// Test fixture: pure-logic checks run everywhere; hardware-dependent checks
+// skip when GDR runtime support is unavailable.
 // ---------------------------------------------------------------------------
 
-class TestAcceleratorMemoryMock : public ::testing::Test {
+class TestAcceleratorMemoryGdr : public ::testing::Test {
  protected:
-  void SetUp() override {
-    hf3fs::test::MockCudaRuntime::instance().reset();
-  }
-
-  void TearDown() override {
-    hf3fs::test::MockCudaRuntime::instance().reset();
-  }
-
   static bool hasGpu() {
     return GDRManager::instance().isAvailable();
   }
@@ -45,7 +36,7 @@ class TestAcceleratorMemoryMock : public ::testing::Test {
 // ==========================================================================
 
 // @tests SCN-L1-001-01
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_001_01_SuccessfulInitWithGPUs) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_001_01_SuccessfulInitWithGPUs) {
   // GIVEN: We check if this machine has CUDA devices
   // WHEN: GDRManager::instance() is already initialized (singleton)
   auto& manager = GDRManager::instance();
@@ -61,7 +52,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_001_01_SuccessfulInitWithGPUs) {
 }
 
 // @tests SCN-L1-001-02
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_001_02_CpuOnlyMachine) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_001_02_CpuOnlyMachine) {
   // GIVEN: A machine where GDR is not available (no GPUs or not initialized)
   auto& manager = GDRManager::instance();
 
@@ -75,7 +66,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_001_02_CpuOnlyMachine) {
 }
 
 // @tests SCN-L1-001-04
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_001_04_GDRConfigDisabledByDefault) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_001_04_GDRConfigDisabledByDefault) {
   // GIVEN: A default GDRConfig
   GDRConfig config;
 
@@ -84,7 +75,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_001_04_GDRConfigDisabledByDefault) {
 }
 
 // @tests SCN-L1-001-05
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_001_05_DeviceInfoTopology) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_001_05_DeviceInfoTopology) {
   // GIVEN: An AcceleratorDeviceInfo with known PCIe coordinates
   AcceleratorDeviceInfo info;
   info.deviceId = 0;
@@ -107,7 +98,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_001_05_DeviceInfoTopology) {
 // ==========================================================================
 
 // @tests SCN-L1-002-01, SCN-L1-002-02
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_002_01_RegionCreateWithValidDescriptor) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_002_01_RegionCreateWithValidDescriptor) {
   if (!hasGpu()) {
     GTEST_SKIP() << "No GPU available for MR registration test — integration test only";
   }
@@ -119,7 +110,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_002_01_RegionCreateWithValidDescriptor)
 }
 
 // @tests SCN-L1-002-04
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_002_04_DescriptorValidation) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_002_04_DescriptorValidation) {
   // GIVEN: An AcceleratorMemoryDescriptor with invalid fields
   AcceleratorMemoryDescriptor desc;
 
@@ -143,7 +134,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_002_04_DescriptorValidation) {
 // ==========================================================================
 
 // @tests SCN-L1-003-01
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_003_01_CacheHit) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_003_01_CacheHit) {
   if (!hasGpu()) {
     GTEST_SKIP() << "No GPU available for cache test — integration test only";
   }
@@ -158,7 +149,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_003_01_CacheHit) {
 }
 
 // @tests SCN-L1-003-03
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_003_03_CacheInvalidation) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_003_03_CacheInvalidation) {
   // GIVEN: An empty cache
   GDRConfig config;
   AcceleratorMemoryRegionCache cache(config);
@@ -171,7 +162,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_003_03_CacheInvalidation) {
 }
 
 // @tests SCN-L1-003-02
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_003_02_CacheMissTriggersCreation) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_003_02_CacheMissTriggersCreation) {
   // GIVEN: Empty cache
   GDRConfig config;
   AcceleratorMemoryRegionCache cache(config);
@@ -201,7 +192,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_003_02_CacheMissTriggersCreation) {
 // ==========================================================================
 
 // @tests SCN-L1-004-01
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_004_01_DevicePointerDetection) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_004_01_DevicePointerDetection) {
   if (!hasGpu()) {
     GTEST_SKIP() << "No GPU available — integration test only";
   }
@@ -211,7 +202,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_004_01_DevicePointerDetection) {
 }
 
 // @tests SCN-L1-004-02
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_004_02_HostPointerDetected) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_004_02_HostPointerDetected) {
   // GIVEN: A host-allocated pointer
   void* hostPtr = ::malloc(4096);
   ASSERT_NE(hostPtr, nullptr);
@@ -226,7 +217,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_004_02_HostPointerDetected) {
 }
 
 // @tests SCN-L1-004-03
-TEST_F(TestAcceleratorMemoryMock, SCN_L1_004_03_NullPointerDetection) {
+TEST_F(TestAcceleratorMemoryGdr, SCN_L1_004_03_NullPointerDetection) {
   // GIVEN: nullptr
   // WHEN: detectMemoryType is called
   MemoryType type = detectMemoryType(nullptr);
@@ -240,7 +231,7 @@ TEST_F(TestAcceleratorMemoryMock, SCN_L1_004_03_NullPointerDetection) {
 // ==========================================================================
 
 // @tests REQ-L1-001
-TEST_F(TestAcceleratorMemoryMock, GDRManagerSingleton) {
+TEST_F(TestAcceleratorMemoryGdr, GDRManagerSingleton) {
   // GDRManager is a singleton
   auto& m1 = GDRManager::instance();
   auto& m2 = GDRManager::instance();
@@ -248,7 +239,7 @@ TEST_F(TestAcceleratorMemoryMock, GDRManagerSingleton) {
 }
 
 // @tests REQ-L1-001
-TEST_F(TestAcceleratorMemoryMock, GDRManagerFallbackMode) {
+TEST_F(TestAcceleratorMemoryGdr, GDRManagerFallbackMode) {
   auto& manager = GDRManager::instance();
   // Default fallback mode should be Auto
   auto mode = manager.getFallbackMode();

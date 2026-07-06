@@ -1,16 +1,17 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <folly/experimental/coro/Baton.h>
 
 #include "client/storage/StorageClient.h"
-#include "common/net/ib/AcceleratorMemory.h"
 #include "common/utils/Coroutine.h"
 #include "common/utils/Path.h"
 #include "common/utils/Uuid.h"
@@ -147,11 +148,6 @@ struct GpuShmBuf : public std::enable_shared_from_this<GpuShmBuf> {
    */
   bool isImported() const { return isImported_; }
 
-  /**
-   * Get the GPU memory region
-   */
-  std::shared_ptr<net::AcceleratorMemoryRegion> getGpuRegion() const { return gpuRegion_; }
-
   // Public fields (matching ShmBuf interface where applicable)
   Uuid id;
   void* devicePtr = nullptr;
@@ -176,7 +172,6 @@ struct GpuShmBuf : public std::enable_shared_from_this<GpuShmBuf> {
   void* importedPtr_ = nullptr;  // Pointer from cudaIpcOpenMemHandle
 
   GpuIpcHandle ipcHandle_;
-  std::shared_ptr<net::AcceleratorMemoryRegion> gpuRegion_;
 
   // For I/O registration
   std::vector<folly::atomic_shared_ptr<storage::client::IOBuffer>> memhs_;
@@ -226,6 +221,10 @@ class GpuShmBufForIO {
 
 /**
  * IPC Channel for GPU memory sharing
+ *
+ * Experimental/internal: current GDR v1 publishes GPU iovs through the
+ * existing FUSE iov table and strict GdrUri keys. This channel is not on
+ * that main path.
  *
  * Provides a mechanism for transferring GPU IPC handles between
  * processes (e.g., inference engine to fuse daemon).

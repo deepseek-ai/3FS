@@ -1,12 +1,11 @@
 #include "GpuShm.h"
 
 #include <cstring>
+#include <folly/ScopeGuard.h>
+#include <folly/logging/xlog.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-
-#include <folly/ScopeGuard.h>
-#include <folly/logging/xlog.h>
 
 #ifdef HF3FS_GDR_ENABLED
 #include <cuda_runtime.h>
@@ -26,7 +25,7 @@ std::string GpuIpcHandle::serialize() const {
   return result;
 }
 
-std::optional<GpuIpcHandle> GpuIpcHandle::deserialize(const std::string& data) {
+std::optional<GpuIpcHandle> GpuIpcHandle::deserialize(const std::string &data) {
   if (data.size() != 65) {
     return std::nullopt;
   }
@@ -39,12 +38,7 @@ std::optional<GpuIpcHandle> GpuIpcHandle::deserialize(const std::string& data) {
 
 // GpuShmBuf implementation
 
-GpuShmBuf::GpuShmBuf(void* devicePtr,
-                     size_t size,
-                     int deviceId,
-                     meta::Uid u,
-                     int pid,
-                     int ppid)
+GpuShmBuf::GpuShmBuf(void *devicePtr, size_t size, int deviceId, meta::Uid u, int pid, int ppid)
     : id(Uuid::random()),
       devicePtr(devicePtr),
       size(size),
@@ -54,8 +48,7 @@ GpuShmBuf::GpuShmBuf(void* devicePtr,
       ppid(ppid),
       isImported_(false),
       memhs_(size ? 1 : 0) {
-  XLOGF(INFO, "Creating GpuShmBuf: ptr={}, size={}, device={}, id={}",
-        devicePtr, size, deviceId, id.toHexString());
+  XLOGF(INFO, "Creating GpuShmBuf: ptr={}, size={}, device={}, id={}", devicePtr, size, deviceId, id.toHexString());
 
   // Get IPC handle for the GPU memory
 #ifdef HF3FS_GDR_ENABLED
@@ -80,27 +73,10 @@ GpuShmBuf::GpuShmBuf(void* devicePtr,
   ipcHandle_.valid = false;  // No CUDA runtime (HF3FS_GDR_ENABLED not set)
 #endif
 
-  // Create GPU memory region
-  net::AcceleratorMemoryDescriptor desc;
-  desc.devicePtr = devicePtr;
-  desc.size = size;
-  desc.deviceId = deviceId;
-
-  if (net::GDRManager::instance().isAvailable()) {
-    auto result = net::AcceleratorMemoryRegion::create(desc, net::GDRManager::instance().config());
-    if (result) {
-      gpuRegion_ = std::move(*result);
-      XLOGF(DBG, "GPU memory region created for GpuShmBuf");
-    } else {
-      XLOGF(WARN, "Failed to create GPU memory region: {}", result.error().message());
-    }
-  }
+  // RDMA registration is owned by RDMABufAccelerator in memh().
 }
 
-GpuShmBuf::GpuShmBuf(const GpuIpcHandle& ipcHandle,
-                     size_t size,
-                     int deviceId,
-                     Uuid id)
+GpuShmBuf::GpuShmBuf(const GpuIpcHandle &ipcHandle, size_t size, int deviceId, Uuid id)
     : id(id),
       devicePtr(nullptr),
       size(size),
@@ -111,8 +87,7 @@ GpuShmBuf::GpuShmBuf(const GpuIpcHandle& ipcHandle,
       isImported_(true),
       ipcHandle_(ipcHandle),
       memhs_(size ? 1 : 0) {
-  XLOGF(INFO, "Importing GpuShmBuf: size={}, device={}, id={}",
-        size, deviceId, id.toHexString());
+  XLOGF(INFO, "Importing GpuShmBuf: size={}, device={}, id={}", size, deviceId, id.toHexString());
 
   if (!ipcHandle.valid) {
     XLOGF(WARN, "IPC handle not valid for import");
@@ -142,22 +117,7 @@ GpuShmBuf::GpuShmBuf(const GpuIpcHandle& ipcHandle,
   return;
 #endif
 
-  // If we had valid imported pointer, create GPU memory region
-  if (importedPtr_) {
-    net::AcceleratorMemoryDescriptor desc;
-    desc.devicePtr = importedPtr_;
-    desc.size = size;
-    desc.deviceId = deviceId;
-    std::memcpy(desc.ipcHandle.data, ipcHandle_.data, sizeof(desc.ipcHandle.data));
-    desc.ipcHandle.valid = ipcHandle_.valid;
-
-    if (net::GDRManager::instance().isAvailable()) {
-      auto result = net::AcceleratorMemoryRegion::create(desc, net::GDRManager::instance().config());
-      if (result) {
-        gpuRegion_ = std::move(*result);
-      }
-    }
-  }
+  // RDMA registration is owned by RDMABufAccelerator in memh().
 }
 
 GpuShmBuf::~GpuShmBuf() {
@@ -169,14 +129,28 @@ GpuShmBuf::~GpuShmBuf() {
     XLOGF(WARN, "GpuShmBuf destroyed while still registered for I/O");
   }
 
-  // Close IPC handle if imported
+  for (auto &memh : memhs_) {
+    memh.store(nullptr);
+  }
+  isRegistered_ = false;
+
+  if (devicePtr) {
+    auto *cache = net::GDRManager::instance().getRegionCache();
+    if (cache) {
+      cache->invalidate(devicePtr);
+    }
+  }
+  // Close IPC handle after all MR/IOBuffer owners have been released.
   if (isImported_ && importedPtr_) {
+    void *ptr = importedPtr_;
+    importedPtr_ = nullptr;
+    devicePtr = nullptr;
 #ifdef HF3FS_GDR_ENABLED
     cudaError_t err = cudaSetDevice(deviceId);
     if (err != cudaSuccess) {
       XLOGF(WARN, "cudaSetDevice({}) failed: {}", deviceId, cudaGetErrorString(err));
     }
-    err = cudaIpcCloseMemHandle(importedPtr_);
+    err = cudaIpcCloseMemHandle(ptr);
     if (err != cudaSuccess) {
       XLOGF(WARN, "cudaIpcCloseMemHandle failed: {}", cudaGetErrorString(err));
     }
@@ -184,14 +158,14 @@ GpuShmBuf::~GpuShmBuf() {
     XLOGF(DBG, "Closing imported GPU IPC handle");
 #endif
   }
-
-  gpuRegion_.reset();
 }
 
-CoTask<void> GpuShmBuf::registerForIO(
-    folly::Executor::KeepAlive<> exec,
-    storage::client::StorageClient& sc,
-    std::function<void()>&& recordMetrics) {
+CoTask<void> GpuShmBuf::registerForIO(folly::Executor::KeepAlive<> exec,
+                                      storage::client::StorageClient &sc,
+                                      std::function<void()> &&recordMetrics) {
+  (void)exec;
+  (void)sc;
+
   if (isRegistered_) {
     co_return;
   }
@@ -215,7 +189,7 @@ CoTask<void> GpuShmBuf::registerForIO(
 
   XLOGF(DBG, "Registering GpuShmBuf for I/O: ptr={}, size={}", devicePtr, size);
 
-  for (auto& memh : memhs_) {
+  for (auto &memh : memhs_) {
     memh.store(nullptr);
   }
 
@@ -250,7 +224,7 @@ CoTask<std::shared_ptr<storage::client::IOBuffer>> GpuShmBuf::memh(size_t off) {
   }
 
   // Create IOBuffer via RDMABufAccelerator for proper GPU RDMA registration
-  auto blockPtr = static_cast<uint8_t*>(devicePtr) + blockIndex * blockSize;
+  auto blockPtr = static_cast<uint8_t *>(devicePtr) + blockIndex * blockSize;
   auto blockLen = std::min(blockSize, size - blockIndex * blockSize);
   auto gpuBuf = net::RDMABufAccelerator::createFromGpuPointer(blockPtr, blockLen, deviceId);
   if (!gpuBuf.valid()) {
@@ -258,8 +232,7 @@ CoTask<std::shared_ptr<storage::client::IOBuffer>> GpuShmBuf::memh(size_t off) {
     co_return nullptr;
   }
 
-  auto ioBuffer = std::make_shared<storage::client::IOBuffer>(
-      net::RDMABufUnified(std::move(gpuBuf)));
+  auto ioBuffer = std::make_shared<storage::client::IOBuffer>(net::RDMABufUnified(std::move(gpuBuf)));
   memhs_[blockIndex].store(ioBuffer);
 
   co_return ioBuffer;
@@ -272,7 +245,7 @@ CoTask<void> GpuShmBuf::deregisterForIO() {
 
   XLOGF(DBG, "Deregistering GpuShmBuf from I/O");
 
-  for (auto& memh : memhs_) {
+  for (auto &memh : memhs_) {
     memh.store(nullptr);
   }
   isRegistered_ = false;
@@ -311,17 +284,16 @@ std::optional<GpuIpcHandle> GpuShmBuf::getIpcHandle() const {
 }
 
 void GpuShmBuf::sync(int direction) const {
-  if (gpuRegion_) {
-    // Use the GPU memory region's sync functionality
-    // In production, this would call CUDA synchronization primitives
-    XLOGF(DBG, "GPU sync: direction={}", direction);
-  }
+  XLOGF(DBG, "GPU sync: direction={}, ptr={}, size={}", direction, devicePtr, size);
 }
 
 // GpuShmBufForIO implementation
 
-CoTryTask<storage::client::IOBuffer*> GpuShmBufForIO::memh(size_t len) const {
+CoTryTask<storage::client::IOBuffer *> GpuShmBufForIO::memh(size_t len) const {
   XLOGF(DBG, "GpuShmBufForIO::memh: off={}, len={}", off_, len);
+  if (!buf_ || off_ > buf_->size || len > buf_->size - off_) {
+    co_return makeError(StatusCode::kInvalidArg, "invalid GPU buf off and/or io len");
+  }
 
   auto result = co_await buf_->memh(off_);
   if (!result) {
@@ -347,7 +319,7 @@ class GpuIpcChannel::Impl {
     }
   }
 
-  bool init(const Path& path, bool isServer) {
+  bool init(const Path &path, bool isServer) {
     path_ = path.string();
     isServer_ = isServer;
 
@@ -364,7 +336,7 @@ class GpuIpcChannel::Impl {
 
     if (isServer) {
       unlink(path_.c_str());
-      if (bind(fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+      if (bind(fd_, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         XLOGF(ERR, "Failed to bind socket: {}", strerror(errno));
         close(fd_);
         fd_ = -1;
@@ -377,7 +349,7 @@ class GpuIpcChannel::Impl {
         return false;
       }
     } else {
-      if (connect(fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+      if (connect(fd_, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         XLOGF(ERR, "Failed to connect to socket: {}", strerror(errno));
         close(fd_);
         fd_ = -1;
@@ -388,10 +360,7 @@ class GpuIpcChannel::Impl {
     return true;
   }
 
-  bool sendHandle(const GpuIpcHandle& handle,
-                  const Uuid& id,
-                  size_t size,
-                  int deviceId) {
+  bool sendHandle(const GpuIpcHandle &handle, const Uuid &id, size_t size, int deviceId) {
     if (!ensureConnected()) {
       return false;
     }
@@ -409,11 +378,7 @@ class GpuIpcChannel::Impl {
     return sent == sizeof(buf);
   }
 
-  bool recvHandle(GpuIpcHandle& handle,
-                  Uuid& id,
-                  size_t& size,
-                  int& deviceId,
-                  int timeout) {
+  bool recvHandle(GpuIpcHandle &handle, Uuid &id, size_t &size, int &deviceId, int timeout) {
     if (!ensureConnected()) {
       return false;
     }
@@ -462,7 +427,7 @@ class GpuIpcChannel::Impl {
   bool isServer_ = false;
 };
 
-std::unique_ptr<GpuIpcChannel> GpuIpcChannel::createServer(const Path& path) {
+std::unique_ptr<GpuIpcChannel> GpuIpcChannel::createServer(const Path &path) {
   auto channel = std::unique_ptr<GpuIpcChannel>(new GpuIpcChannel());
   channel->impl_ = std::make_unique<Impl>();
   if (!channel->impl_->init(path, true)) {
@@ -471,7 +436,7 @@ std::unique_ptr<GpuIpcChannel> GpuIpcChannel::createServer(const Path& path) {
   return channel;
 }
 
-std::unique_ptr<GpuIpcChannel> GpuIpcChannel::createClient(const Path& path) {
+std::unique_ptr<GpuIpcChannel> GpuIpcChannel::createClient(const Path &path) {
   auto channel = std::unique_ptr<GpuIpcChannel>(new GpuIpcChannel());
   channel->impl_ = std::make_unique<Impl>();
   if (!channel->impl_->init(path, false)) {
@@ -482,18 +447,11 @@ std::unique_ptr<GpuIpcChannel> GpuIpcChannel::createClient(const Path& path) {
 
 GpuIpcChannel::~GpuIpcChannel() = default;
 
-bool GpuIpcChannel::sendHandle(const GpuIpcHandle& handle,
-                               const Uuid& id,
-                               size_t size,
-                               int deviceId) {
+bool GpuIpcChannel::sendHandle(const GpuIpcHandle &handle, const Uuid &id, size_t size, int deviceId) {
   return impl_->sendHandle(handle, id, size, deviceId);
 }
 
-bool GpuIpcChannel::recvHandle(GpuIpcHandle& handle,
-                               Uuid& id,
-                               size_t& size,
-                               int& deviceId,
-                               int timeout) {
+bool GpuIpcChannel::recvHandle(GpuIpcHandle &handle, Uuid &id, size_t &size, int &deviceId, int timeout) {
   return impl_->recvHandle(handle, id, size, deviceId, timeout);
 }
 
@@ -526,7 +484,7 @@ void GpuShmBufTable::remove(int index) {
     return;
   }
 
-  auto& buf = buffers_[index];
+  auto &buf = buffers_[index];
   if (buf) {
     idToIndex_.erase(buf->id);
     buf.reset();
@@ -543,7 +501,7 @@ std::shared_ptr<GpuShmBuf> GpuShmBufTable::get(int index) const {
   return buffers_[index];
 }
 
-std::shared_ptr<GpuShmBuf> GpuShmBufTable::findById(const Uuid& id) const {
+std::shared_ptr<GpuShmBuf> GpuShmBufTable::findById(const Uuid &id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto it = idToIndex_.find(id);
@@ -554,10 +512,10 @@ std::shared_ptr<GpuShmBuf> GpuShmBufTable::findById(const Uuid& id) const {
   return nullptr;
 }
 
-std::shared_ptr<GpuShmBuf> GpuShmBufTable::findByPtr(void* devicePtr) const {
+std::shared_ptr<GpuShmBuf> GpuShmBufTable::findByPtr(void *devicePtr) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  for (const auto& buf : buffers_) {
+  for (const auto &buf : buffers_) {
     if (buf && buf->devicePtr == devicePtr) {
       return buf;
     }
@@ -570,7 +528,7 @@ std::vector<std::shared_ptr<GpuShmBuf>> GpuShmBufTable::getByDevice(int deviceId
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<std::shared_ptr<GpuShmBuf>> result;
-  for (const auto& buf : buffers_) {
+  for (const auto &buf : buffers_) {
     if (buf && buf->deviceId == deviceId) {
       result.push_back(buf);
     }
@@ -583,7 +541,7 @@ size_t GpuShmBufTable::size() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   size_t count = 0;
-  for (const auto& buf : buffers_) {
+  for (const auto &buf : buffers_) {
     if (buf) ++count;
   }
 

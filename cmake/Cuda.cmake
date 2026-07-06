@@ -4,26 +4,24 @@
 # GDR enables direct data transfers between storage and GPU memory.
 #
 # Options:
-#   ENABLE_GDR - Enable GPU Direct RDMA support (default: OFF)
+#   HF3FS_ENABLE_GDR - Enable GPU Direct RDMA support (default: OFF)
 #
-# When ENABLE_GDR is ON:
+# When HF3FS_ENABLE_GDR is ON:
 #   - CUDA Toolkit will be searched
 #   - HF3FS_GDR_ENABLED will be defined
 #   - CUDA libraries will be linked to relevant targets
 #
 # Usage in CMakeLists.txt:
 #   include(cmake/Cuda.cmake)
-#   if(HF3FS_GDR_AVAILABLE)
-#     target_link_libraries(mytarget ${HF3FS_CUDA_LIBRARIES})
-#   endif()
+#   target_add_gdr_support(mytarget SCOPE PRIVATE)
 
-option(ENABLE_GDR "Enable GPU Direct RDMA (GDR) support" OFF)
+option(HF3FS_ENABLE_GDR "Enable GPU Direct RDMA (GDR) support" OFF)
 
 set(HF3FS_GDR_AVAILABLE OFF)
 set(HF3FS_CUDA_LIBRARIES "")
 set(HF3FS_CUDA_INCLUDE_DIRS "")
 
-if(ENABLE_GDR)
+if(HF3FS_ENABLE_GDR)
     message(STATUS "GDR support requested, searching for CUDA...")
 
     # Try to find CUDA Toolkit
@@ -52,8 +50,6 @@ if(ENABLE_GDR)
     endif()
 
     if(HF3FS_GDR_AVAILABLE)
-        # Define compile flag
-        add_compile_definitions(HF3FS_GDR_ENABLED)
         message(STATUS "GDR support enabled")
 
         # Check for nvidia_peermem (informational only)
@@ -63,17 +59,25 @@ if(ENABLE_GDR)
             message(STATUS "nvidia_peermem module not detected (required at runtime for GDR)")
         endif()
     else()
-        message(WARNING "CUDA not found, GDR support disabled")
+        message(FATAL_ERROR "HF3FS_ENABLE_GDR=ON requires CUDA Toolkit, but CUDA was not found")
     endif()
 else()
-    message(STATUS "GDR support disabled (use -DENABLE_GDR=ON to enable)")
+    message(STATUS "GDR support disabled (use -DHF3FS_ENABLE_GDR=ON to enable)")
 endif()
 
 # Helper function to add GDR support to a target
 function(target_add_gdr_support TARGET)
+    cmake_parse_arguments(GDR "" "SCOPE" "" ${ARGN})
+    if(NOT GDR_SCOPE)
+        set(GDR_SCOPE PRIVATE)
+    endif()
+
     if(HF3FS_GDR_AVAILABLE)
+        target_compile_definitions(${TARGET} ${GDR_SCOPE} HF3FS_GDR_ENABLED)
         target_include_directories(${TARGET} PRIVATE ${HF3FS_CUDA_INCLUDE_DIRS})
-        target_link_libraries(${TARGET} ${HF3FS_CUDA_LIBRARIES})
-        message(STATUS "Added GDR support to target: ${TARGET}")
+        # Existing project helpers use the plain target_link_libraries signature.
+        # Appending LINK_LIBRARIES keeps CUDA linkage private to this target.
+        set_property(TARGET ${TARGET} APPEND PROPERTY LINK_LIBRARIES ${HF3FS_CUDA_LIBRARIES})
+        message(STATUS "Added GDR support to target: ${TARGET} (${GDR_SCOPE})")
     endif()
 endfunction()

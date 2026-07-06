@@ -1,12 +1,20 @@
 #include "IovTable.h"
 
+#include <charconv>
+#include <cstdint>
+#include <cstring>
 #include <folly/experimental/coro/BlockingWait.h>
+#include <optional>
+#include <string_view>
+#include <system_error>
+#include <vector>
 
 #include "IoRing.h"
 #include "fbs/meta/Common.h"
 #ifdef HF3FS_GDR_ENABLED
 #include "common/net/ib/AcceleratorMemory.h"
 #endif
+#include "lib/common/GdrUri.h"
 
 namespace hf3fs::fuse {
 
@@ -14,52 +22,39 @@ using hf3fs::lib::IorAttrs;
 
 const Path linkPref = "/dev/shm";
 
-#ifdef HF3FS_GDR_ENABLED
 namespace {
-// Parse GDR URI: gdr://v1/device/{id}/size/{size}/ipc/{hex}
-// Returns false if the target is not a valid GDR URI.
-struct ParsedGdrTarget {
-  int deviceId = -1;
-  size_t size = 0;
-  uint8_t ipcHandle[64] = {};
-};
 
-bool decodeHexBytes(const std::string &hex, uint8_t *out, size_t outLen) {
-  if (hex.size() != outLen * 2) return false;
-  for (size_t i = 0; i < outLen; ++i) {
-    auto toNibble = [](char c) -> int {
-      if (c >= '0' && c <= '9') return c - '0';
-      if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-      if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-      return -1;
-    };
-    int hi = toNibble(hex[2 * i]);
-    int lo = toNibble(hex[2 * i + 1]);
-    if (hi < 0 || lo < 0) return false;
-    out[i] = static_cast<uint8_t>((hi << 4) | lo);
+std::optional<size_t> parsePositiveSize(std::string_view text) {
+  if (text.empty()) return std::nullopt;
+  size_t value = 0;
+  auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (ec != std::errc{} || ptr != text.data() + text.size() || value == 0) {
+    return std::nullopt;
   }
-  return true;
+  return value;
 }
 
-bool parseGdrTarget(const std::string &target, ParsedGdrTarget &out) {
-  int deviceId = -1;
-  unsigned long long size = 0;
-  char ipcHex[129] = {};
-  if (std::sscanf(target.c_str(),
-                  "gdr://v1/device/%d/size/%llu/ipc/%128[0-9a-fA-F]",
-                  &deviceId, &size, ipcHex) == 3) {
-    auto prefix = fmt::format("gdr://v1/device/{}/size/{}/ipc/", deviceId, size);
-    if (target.rfind(prefix, 0) != 0) return false;
-    std::string encoded = target.substr(prefix.size());
-    if (!decodeHexBytes(encoded, out.ipcHandle, 64)) return false;
-    out.deviceId = deviceId;
-    out.size = static_cast<size_t>(size);
-    return true;
+std::optional<int> parseNonNegativeInt(std::string_view text) {
+  if (text.empty()) return std::nullopt;
+  int value = 0;
+  auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (ec != std::errc{} || ptr != text.data() + text.size() || value < 0) {
+    return std::nullopt;
   }
-  return false;
+  return value;
 }
+
+std::optional<uint64_t> parseBinaryFlags(std::string_view text) {
+  if (text.empty()) return std::nullopt;
+  uint64_t value = 0;
+  auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value, 2);
+  if (ec != std::errc{} || ptr != text.data() + text.size()) {
+    return std::nullopt;
+  }
+  return value;
+}
+
 }  // namespace
-#endif
 
 void IovTable::init(const Path &mount, int cap) {
   mountName = mount.native();
@@ -82,6 +77,9 @@ static Result<IovAttrs> parseKey(const char *key) {
 
   std::vector<std::string> fnParts;
   folly::split('.', key, fnParts);
+  if (fnParts.empty() || fnParts[0].empty()) {
+    return makeError(StatusCode::kInvalidArg, "invalid shm key");
+  }
 
   auto idRes = Uuid::fromHexString(fnParts[0]);
   RETURN_ON_ERROR(idRes);
@@ -89,22 +87,28 @@ static Result<IovAttrs> parseKey(const char *key) {
 
   for (size_t i = 1; i < fnParts.size(); ++i) {
     auto dec = fnParts[i];
+    if (dec.empty()) {
+      return makeError(StatusCode::kInvalidArg, "empty attr in shm key");
+    }
     switch (dec[0]) {
       case 'b': {  // block size
-        auto i = atoll(dec.c_str() + 1);
-        if (i <= 0) {
+        auto blockSize = parsePositiveSize(std::string_view(dec).substr(1));
+        if (!blockSize) {
           return makeError(StatusCode::kInvalidArg, "invalid block size set in shm key");
         }
-        iova.blockSize = (size_t)i;
+        iova.blockSize = *blockSize;
         break;
       }
 
       case 'r':
       case 'w': {  // is io ring
-        auto i = atoll(dec.c_str() + 1);
+        auto depth = parseNonNegativeInt(std::string_view(dec).substr(1));
+        if (!depth) {
+          return makeError(StatusCode::kInvalidArg, "invalid io batch size set in shm key");
+        }
         iova.isIoRing = true;
         iova.forRead = dec[0] == 'r';
-        iova.ioDepth = i;
+        iova.ioDepth = *depth;
         break;
       }
 
@@ -112,11 +116,11 @@ static Result<IovAttrs> parseKey(const char *key) {
         if (!iova.iora) {
           iova.iora = IorAttrs{};
         }
-        auto i = atoi(dec.c_str() + 1);
-        if (i < 0) {
+        auto timeoutMs = parseNonNegativeInt(std::string_view(dec).substr(1));
+        if (!timeoutMs) {
           return makeError(StatusCode::kInvalidArg, "invalid io job check timeout {}", dec.c_str() + 1);
         }
-        iova.iora->timeout = Duration(std::chrono::nanoseconds((uint64_t)i * 1000000));
+        iova.iora->timeout = Duration(std::chrono::nanoseconds((uint64_t)*timeoutMs * 1000000));
         break;
       }
 
@@ -124,18 +128,20 @@ static Result<IovAttrs> parseKey(const char *key) {
         if (!iova.iora) {
           iova.iora = IorAttrs{};
         }
-        char *ep;
-        auto i = strtoull(dec.c_str() + 1, &ep, 2);
-        if (*ep != 0 || i < 0) {
+        auto flags = parseBinaryFlags(std::string_view(dec).substr(1));
+        if (!flags) {
           return makeError(StatusCode::kInvalidArg, "invalid io exec flags {}", dec.c_str() + 1);
         }
-        iova.iora->flags = i;
+        iova.iora->flags = *flags;
         break;
       }
 
       case 'p':  // should be io ring, priority
         if (!iova.iora) {
           iova.iora = IorAttrs{};
+        }
+        if (dec.size() > 2) {
+          return makeError(StatusCode::kInvalidArg, "invalid priority set in shm key");
         }
         switch (dec.c_str()[1]) {
           case 'l':
@@ -156,22 +162,38 @@ static Result<IovAttrs> parseKey(const char *key) {
       case 'g':  // gdr marker (e.g. ".gdr")
         if (dec == "gdr") {
           iova.isGdr = true;
+        } else {
+          return makeError(StatusCode::kInvalidArg, "invalid gdr attr in shm key");
         }
         break;
 
       case 'd': {  // gpu device id (e.g. ".d0", ".d1")
-        auto devId = atoi(dec.c_str() + 1);
-        if (devId < 0) {
+        auto devId = parseNonNegativeInt(std::string_view(dec).substr(1));
+        if (!devId) {
           return makeError(StatusCode::kInvalidArg, "invalid gpu device id in key");
         }
-        iova.gpuDeviceId = devId;
+        iova.gpuDeviceId = *devId;
         break;
       }
+      default:
+        return makeError(StatusCode::kInvalidArg, "unknown attr in shm key");
     }
   }
 
-  if (!iova.isIoRing && iova.iora) {
-    return makeError(StatusCode::kInvalidArg, "ioring attrs set for non-ioring");
+  if (iova.isGdr) {
+    if (iova.gpuDeviceId < 0) {
+      return makeError(StatusCode::kInvalidArg, "gdr key missing gpu device id");
+    }
+    if (iova.blockSize != 0 || iova.isIoRing || iova.iora) {
+      return makeError(StatusCode::kInvalidArg, "gdr key does not support block or io-ring attrs");
+    }
+  } else {
+    if (!iova.isIoRing && iova.iora) {
+      return makeError(StatusCode::kInvalidArg, "ioring attrs set for non-ioring");
+    }
+    if (iova.gpuDeviceId >= 0) {
+      return makeError(StatusCode::kInvalidArg, "gpu device id set for non-gdr key");
+    }
   }
 
   return iova;
@@ -214,19 +236,24 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
 #ifdef HF3FS_GDR_ENABLED
   // GDR path: shmPath is a gdr:// URI, not a filesystem path
   if (iovaRes->isGdr) {
-    ParsedGdrTarget gdrTarget;
-    if (!parseGdrTarget(shmPath.native(), gdrTarget)) {
+    auto gdrTarget = lib::parseGdrUri(shmPath.native());
+    if (!gdrTarget) {
       return makeError(StatusCode::kInvalidArg, "failed to parse GDR target URI");
     }
+    if (iovaRes->gpuDeviceId != gdrTarget->deviceId) {
+      return makeError(StatusCode::kInvalidArg,
+                       "gdr key device {} does not match URI device {}",
+                       iovaRes->gpuDeviceId,
+                       gdrTarget->deviceId);
+    }
 
-    // parseGdrTarget success guarantees a valid IPC handle
+    // parseGdrUri success guarantees a valid IPC handle.
     lib::GpuIpcHandle ipcHandle;
-    std::memcpy(ipcHandle.data, gdrTarget.ipcHandle, 64);
+    std::memcpy(ipcHandle.data, gdrTarget->ipcHandle.data(), lib::kGdrIpcHandleBytes);
     ipcHandle.valid = true;
 
     // Import the GPU memory via IPC handle
-    auto gpuShm = std::make_shared<lib::GpuShmBuf>(
-        ipcHandle, gdrTarget.size, gdrTarget.deviceId, iovaRes->id);
+    auto gpuShm = std::make_shared<lib::GpuShmBuf>(ipcHandle, gdrTarget->size, gdrTarget->deviceId, iovaRes->id);
 
     if (!gpuShm->devicePtr) {
       return makeError(StatusCode::kInvalidArg, "failed to import GPU memory via IPC handle");
@@ -256,22 +283,27 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
     // Register GPU memory for RDMA I/O
     auto recordMetrics = []() {};
     folly::coro::blockingWait(gpuShm->registerForIO(exec, sc, std::move(recordMetrics)));
+    auto memh = folly::coro::blockingWait(gpuShm->memh(0));
+    if (!memh) {
+      folly::coro::blockingWait(gpuShm->deregisterForIO());
+      return makeError(StatusCode::kIOError, "failed to register GPU memory for RDMA");
+    }
+
+    {
+      std::lock_guard lock(gpuShmLock);
+      gpuShmsById[iovaRes->id] = gpuShm;
+      gpuIovMetaByIovd[iovd] = GpuIovMeta{std::string(key), shmPath, ui.uid, ui.gid, pid};
+    }
 
     {
       std::unique_lock lock(iovdLock_);
       iovds_[key] = iovd;
     }
 
-    {
-      std::lock_guard lock(gpuShmLock);
-      gpuShmsById[iovaRes->id] = gpuShm;
-      gpuIovMetaByIovd[iovd] = GpuIovMeta{std::string(key), shmPath, ui.uid, ui.gid};
-    }
-
     // For GPU iovs, we return the GDR URI as the symlink target
-    auto inode = meta::Inode{
-        meta::InodeId::iov(iovd),
-        meta::InodeData{meta::Symlink{shmPath}, meta::Acl{ui.uid, ui.gid, meta::Permission(0400)}}};
+    auto inode =
+        meta::Inode{meta::InodeId::iov(iovd),
+                    meta::InodeData{meta::Symlink{shmPath}, meta::Acl{ui.uid, ui.gid, meta::Permission(0400)}}};
 
     dealloc = false;
     return std::make_pair(inode, std::shared_ptr<lib::ShmBuf>());
@@ -310,29 +342,29 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
 
     std::shared_ptr<lib::ShmBuf> shm;
     try {
-      shm.reset(
-          new lib::ShmBuf(shmOpenPath, 0, st.st_size, iovaRes->blockSize, iovaRes->id),
-          [uids,
-           &shmSizeCount = shmSizeCount,
-           &mapTimesCount = mapTimesCount,
-           &mapBytesDist = mapBytesDist,
-           &allocLatency = allocLatency,
-           &ibRegLatency = ibRegLatency](auto p) {
-            auto start = SteadyClock::now();
-            folly::coro::blockingWait(p->deregisterForIO());
-            auto now = SteadyClock::now();
-            ibRegLatency.addSample(now - start, monitor::TagSet{{"instance", "dereg"}, {"uid", uids}});
+      shm.reset(new lib::ShmBuf(shmOpenPath, 0, st.st_size, iovaRes->blockSize, iovaRes->id),
+                [uids,
+                 &shmSizeCount = shmSizeCount,
+                 &mapTimesCount = mapTimesCount,
+                 &mapBytesDist = mapBytesDist,
+                 &allocLatency = allocLatency,
+                 &ibRegLatency = ibRegLatency](auto p) {
+                  auto start = SteadyClock::now();
+                  folly::coro::blockingWait(p->deregisterForIO());
+                  auto now = SteadyClock::now();
+                  ibRegLatency.addSample(now - start, monitor::TagSet{{"instance", "dereg"}, {"uid", uids}});
 
-            start = now;
-            p->unmapBuf();
-            allocLatency.addSample(SteadyClock::now() - start, monitor::TagSet{{"instance", "free"}, {"uid", uids}});
+                  start = now;
+                  p->unmapBuf();
+                  allocLatency.addSample(SteadyClock::now() - start,
+                                         monitor::TagSet{{"instance", "free"}, {"uid", uids}});
 
-            mapTimesCount.addSample(1, monitor::TagSet{{"instance", "free"}, {"uid", uids}});
-            mapBytesDist.addSample(p->size, monitor::TagSet{{"instance", "free"}, {"uid", uids}});
-            shmSizeCount.addSample(-p->size);
+                  mapTimesCount.addSample(1, monitor::TagSet{{"instance", "free"}, {"uid", uids}});
+                  mapBytesDist.addSample(p->size, monitor::TagSet{{"instance", "free"}, {"uid", uids}});
+                  shmSizeCount.addSample(-p->size);
 
-            delete p;
-          });
+                  delete p;
+                });
     } catch (const std::runtime_error &e) {
       return makeError(ClientAgentCode::kIovShmFail, std::string("failed to open/map shm for iov ") + e.what());
     }
@@ -480,6 +512,93 @@ Result<meta::Inode> IovTable::lookupIov(const char *key, const meta::UserInfo &u
   return statIov(iovd, ui);
 }
 
+std::vector<int> IovTable::removeIovsByPid(pid_t pid) {
+  struct IovToRemove {
+    std::string key;
+    meta::UserInfo ui;
+    std::optional<int> ioRingIndex;
+  };
+#ifdef HF3FS_GDR_ENABLED
+  struct GpuIovToRemove {
+    int iovd;
+    GpuIovMeta meta;
+  };
+#endif
+
+  std::vector<IovToRemove> targets;
+  std::vector<int> ioRingIndexes;
+#ifdef HF3FS_GDR_ENABLED
+  std::vector<GpuIovToRemove> gpuTargets;
+#endif
+
+  auto n = iovs->slots.nextAvail.load();
+  targets.reserve(n);
+  for (int i = 0; i < n; ++i) {
+    auto iov = iovs->table[i].load();
+    if (!iov || iov->pid != pid) {
+      continue;
+    }
+    targets.push_back(IovToRemove{iov->key,
+                                  meta::UserInfo{iov->user, meta::Gid{iov->user.toUnderType()}},
+                                  iov->isIoRing ? std::optional<int>{iov->iorIndex} : std::nullopt});
+  }
+
+#ifdef HF3FS_GDR_ENABLED
+  {
+    std::lock_guard lock(gpuShmLock);
+    for (const auto &[iovd, meta] : gpuIovMetaByIovd) {
+      if (meta.pid != pid) {
+        continue;
+      }
+      gpuTargets.push_back(GpuIovToRemove{iovd, meta});
+    }
+  }
+#endif
+
+  ioRingIndexes.reserve(targets.size());
+  for (const auto &target : targets) {
+    XLOGF(INFO, "unlinking iov {} symlink from dead pid {}", target.key, pid);
+    auto removeResult = rmIov(target.key.c_str(), target.ui);
+    if (!removeResult) {
+      XLOGF(WARN, "failed to unlink iov {} from dead pid {}: {}", target.key, pid, removeResult.error());
+    }
+    if (target.ioRingIndex) {
+      ioRingIndexes.push_back(*target.ioRingIndex);
+    }
+  }
+
+#ifdef HF3FS_GDR_ENABLED
+  for (const auto &target : gpuTargets) {
+    XLOGF(INFO, "unlinking gpu iov {} symlink from dead pid {}", target.meta.key, pid);
+    auto parseResult = parseKey(target.meta.key.c_str());
+    if (!parseResult) {
+      XLOGF(WARN, "failed to parse gpu iov key {} from dead pid cleanup: {}", target.meta.key, parseResult.error());
+      continue;
+    }
+
+    bool removed = false;
+    {
+      std::unique_lock iovdLock(iovdLock_);
+      std::lock_guard lock(gpuShmLock);
+      auto metaIt = gpuIovMetaByIovd.find(target.iovd);
+      if (metaIt == gpuIovMetaByIovd.end() || metaIt->second.key != target.meta.key || metaIt->second.pid != pid) {
+        continue;
+      }
+      iovds_.erase(target.meta.key);
+      gpuShmsById.erase(parseResult->id);
+      gpuIovMetaByIovd.erase(metaIt);
+      removed = true;
+    }
+
+    if (removed) {
+      iovs->dealloc(target.iovd);
+    }
+  }
+#endif
+
+  return ioRingIndexes;
+}
+
 std::pair<std::shared_ptr<std::vector<meta::DirEntry>>, std::shared_ptr<std::vector<std::optional<meta::Inode>>>>
 IovTable::listIovs(const meta::UserInfo &ui) {
   meta::DirEntry de{meta::InodeId::iovDir(), ""};
@@ -528,10 +647,10 @@ IovTable::listIovs(const meta::UserInfo &ui) {
     if (git != gpuMetaSnapshot.end() && git->second.user == ui.uid) {
       de.name = git->second.key;
       des.emplace_back(de);
-      ins.emplace_back(meta::Inode{
-          meta::InodeId{meta::InodeId::iov(i)},
-          meta::InodeData{meta::Symlink{git->second.target},
-                          meta::Acl{git->second.user, git->second.gid, meta::Permission{0400}}}});
+      ins.emplace_back(
+          meta::Inode{meta::InodeId{meta::InodeId::iov(i)},
+                      meta::InodeData{meta::Symlink{git->second.target},
+                                      meta::Acl{git->second.user, git->second.gid, meta::Permission{0400}}}});
     }
 #endif
   }

@@ -1,13 +1,12 @@
 # GDR (GPU Direct RDMA) Tests
 #
-# All GDR test sources are consolidated here for unified build control.
-# Unit tests use mock CUDA runtime (no real GPU required).
-# Integration tests use GTEST_SKIP when hardware unavailable.
+# All CUDA/GDR-dependent test sources are consolidated here for unified build control.
+# Hardware-dependent tests use GTEST_SKIP when runtime support is unavailable.
 #
-# Test sources reference files from tests/common/, tests/lib/, tests/fuse/
-# via file(GLOB) below. MockCudaRuntime.h provides link-time CUDA stubs.
+# target_add_test() picks up local *.cc files. The FUSE parser/metadata test
+# stays in tests/fuse and is added explicitly below.
 
-if(ENABLE_GDR OR HF3FS_GDR_ENABLED)
+if(HF3FS_GDR_AVAILABLE)
   # libfuse3 search paths (mirrored from src/fuse/CMakeLists.txt)
   if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     link_directories(/usr/local/lib/x86_64-linux-gnu/ /usr/lib64 /usr/local/lib64)
@@ -15,20 +14,11 @@ if(ENABLE_GDR OR HF3FS_GDR_ENABLED)
     link_directories(/usr/local/lib/aarch64-linux-gnu/ /usr/lib64 /usr/local/lib64)
   endif()
 
-  # Collect all GDR test sources from their natural directories
-  set(GDR_TEST_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/net/ib/TestAcceleratorMemoryMock.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/net/ib/TestRDMABufAccelerator.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/api/TestUsrbIoGdr.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/../fuse/TestIovTableGdr.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/mocks/MockCudaRuntime.h
-  )
-
   target_add_test(test_gdr hf3fs_api common hf3fs_fuse fdb mgmtd-fbs)
-  target_sources(test_gdr PRIVATE ${GDR_TEST_SOURCES})
-  target_compile_definitions(test_gdr PRIVATE HF3FS_GDR_ENABLED)
+  target_sources(test_gdr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../fuse/TestIovTableGdr.cc)
+  target_add_gdr_support(test_gdr SCOPE PRIVATE)
   target_include_directories(test_gdr PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..  # For tests/gdr/mocks/ include path
+    ${CMAKE_CURRENT_SOURCE_DIR}/..  # For tests/GtestHelpers.h
     ${CMAKE_SOURCE_DIR}/src         # For source headers
   )
 endif()

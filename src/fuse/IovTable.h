@@ -1,6 +1,9 @@
 #pragma once
 
+#include <optional>
 #include <string>
+#include <sys/types.h>
+#include <vector>
 
 #include "common/utils/AtomicSharedPtrTable.h"
 #include "fbs/meta/Schema.h"
@@ -24,6 +27,7 @@ class IovTable {
   Result<meta::Inode> lookupIov(const char *key, const meta::UserInfo &ui);
   std::optional<int> iovDesc(meta::InodeId iid);
   Result<meta::Inode> statIov(int key, const meta::UserInfo &ui);
+  std::vector<int> removeIovsByPid(pid_t pid);
 
  public:
   std::pair<std::shared_ptr<std::vector<meta::DirEntry>>, std::shared_ptr<std::vector<std::optional<meta::Inode>>>>
@@ -46,6 +50,7 @@ class IovTable {
     Path target;  // the gdr:// URI
     meta::Uid user{0};
     meta::Gid gid{0};
+    pid_t pid = 0;
   };
   robin_hood::unordered_map<int, GpuIovMeta> gpuIovMetaByIovd;
 #endif

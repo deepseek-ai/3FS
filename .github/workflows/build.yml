@@ -48,5 +48,6 @@ jobs:
     - name: Build
       run: |
         cargo build --release
-        cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DSHUFFLE_METHOD=g++11 -DENABLE_GDR=ON
+        cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DSHUFFLE_METHOD=g++11 -DHF3FS_ENABLE_GDR=ON
         cmake --build build -j 32
+        ctest --test-dir build -R test_gdr --output-on-failure

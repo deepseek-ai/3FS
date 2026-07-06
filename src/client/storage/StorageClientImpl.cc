@@ -1,12 +1,15 @@
 #include "StorageClientImpl.h"
 
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <random>
+
 #include <boost/core/ignore_unused.hpp>
 #include <folly/Random.h>
 #include <folly/experimental/coro/Collect.h>
 #include <folly/experimental/coro/Sleep.h>
 #include <folly/experimental/symbolizer/Symbolizer.h>
-#include <memory>
-#include <random>
 
 #include "TargetSelection.h"
 #include "common/logging/LogHelper.h"
@@ -689,8 +692,9 @@ typename hf3fs::storage::BatchReadReq buildBatchRequest(const ClientRequestConte
   for (auto &op : ops) {
     hf3fs::storage::GlobalKey key{op->routingTarget.getVersionedChainId(), op->chunkId};
 
-    size_t offset = op->data - op->buffer->data();
-    auto remoteBuf = op->buffer->subrangeRemote(offset, op->length);
+    auto offset = op->buffer->offsetOf(op->data, op->length);
+    XLOGF_IF(DFATAL, !offset, "Read IO data range was not validated before request build");
+    auto remoteBuf = op->buffer->subrangeRemote(offset.value_or(0), op->length);
 
     requestedBytes += op->length;
     tagged_bytes_per_operation->addSample(op->length);
@@ -901,9 +905,12 @@ CoTryTask<Rsp> StorageClientImpl::callMessengerMethod(StorageMessenger &messenge
 template <typename IO>
 std::vector<IO *> validateDataRange(const std::vector<IO *> &ios, bool checkOverlappingBuffers) {
   std::vector<IO *> sortedIOs(begin(ios), end(ios));
+  auto addrOf = [](const uint8_t *ptr) { return reinterpret_cast<uintptr_t>(ptr); };
 
   if (checkOverlappingBuffers) {
-    std::sort(begin(sortedIOs), end(sortedIOs), [](const IO *a, const IO *b) { return a->data < b->data; });
+    std::sort(begin(sortedIOs), end(sortedIOs), [addrOf](const IO *a, const IO *b) {
+      return addrOf(a->data) < addrOf(b->data);
+    });
   }
 
   std::vector<IO *> validIOs;
@@ -940,7 +947,17 @@ std::vector<IO *> validateDataRange(const std::vector<IO *> &ios, bool checkOver
       return {};
     }
 
-    if (checkOverlappingBuffers && lastIO != nullptr && io->data < lastIO->dataEnd()) {
+    if (checkOverlappingBuffers && lastIO != nullptr) {
+      auto lastStart = addrOf(lastIO->data);
+      auto lastEnd = lastStart > std::numeric_limits<uintptr_t>::max() - lastIO->length
+                         ? std::numeric_limits<uintptr_t>::max()
+                         : lastStart + lastIO->length;
+      if (addrOf(io->data) >= lastEnd) {
+        validIOs.push_back(io);
+        lastIO = io;
+        continue;
+      }
+
       XLOGF(ERR,
             "#{}/{} User data overlaps: current data starts at {}, length {}; "
             "last data starts at {}, ends at {}, length {}",
@@ -949,7 +966,7 @@ std::vector<IO *> validateDataRange(const std::vector<IO *> &ios, bool checkOver
             fmt::ptr(io->data),
             io->length,
             fmt::ptr(lastIO->data),
-            fmt::ptr(lastIO->dataEnd()),
+            fmt::ptr(reinterpret_cast<const void *>(lastEnd)),
             lastIO->length);
       setErrorCodeOfOps(sortedIOs, StorageClientCode::kInvalidArg);
       return {};
@@ -977,11 +994,23 @@ std::vector<ReadIO *> splitReadIOs(StorageClientImpl &client,
       uint32_t ioLen = std::min(ioEnd - offset, length);
       assert(ioLen > 0);
 
+      auto parentDataOffset = parentIO->buffer->offsetOf(parentIO->data, parentIO->length);
+      XLOGF_IF(DFATAL, !parentDataOffset, "Parent read IO data range was not validated before split");
+      auto childDelta = static_cast<size_t>(offset - parentIO->offset);
+      auto childOffset = parentDataOffset.value_or(0);
+      XLOGF_IF(DFATAL,
+               childDelta > std::numeric_limits<size_t>::max() - childOffset,
+               "Split read IO data offset overflow");
+      childOffset = childDelta > std::numeric_limits<size_t>::max() - childOffset
+                        ? std::numeric_limits<size_t>::max()
+                        : childOffset + childDelta;
+      auto childData = parentIO->buffer->dataAtOffset(childOffset);
+
       parentIO->splittedIOs.push_back(client.createReadIO(parentIO->routingTarget.chainId,
                                                           parentIO->chunkId,
                                                           offset,
                                                           ioLen,
-                                                          parentIO->data + (offset - parentIO->offset),
+                                                          childData,
                                                           parentIO->buffer));
 
       XLOGF(DBG5,
@@ -1892,11 +1921,9 @@ CoTryTask<void> StorageClientImpl::sendWriteRequest(ClientRequestContext &reques
                                             hf3fs::storage::ChainVer(writeIO->routingTarget.chainVer)};
   hf3fs::storage::GlobalKey key{vChainId, hf3fs::storage::ChunkId(writeIO->chunkId)};
 
-  // Pointer subtraction is safe for GPU buffers: both are device addresses
-  // within the same CUDA allocation. The result is an integer offset used
-  // only by subrangeRemote(), not as a CPU pointer.
-  size_t offset = writeIO->data - writeIO->buffer->data();
-  auto remoteBuf = writeIO->buffer->subrangeRemote(offset, writeIO->length);
+  auto offset = writeIO->buffer->offsetOf(writeIO->data, writeIO->length);
+  XLOGF_IF(DFATAL, !offset, "Write IO data range was not validated before request build");
+  auto remoteBuf = writeIO->buffer->subrangeRemote(offset.value_or(0), writeIO->length);
 
   bytes_per_operation.addSample(writeIO->length, requestCtx.requestTagSet);
   bytes_per_request.addSample(writeIO->length, requestCtx.requestTagSet);

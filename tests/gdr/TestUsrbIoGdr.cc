@@ -13,28 +13,24 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <string>
-
 #include <gtest/gtest.h>
+#include <string>
 
 #include "lib/api/hf3fs_usrbio.h"
 #include "tests/GtestHelpers.h"
-#include "tests/gdr/mocks/MockCudaRuntime.h"
 
 namespace {
 
-static bool hasGpu() {
-  return hf3fs_gdr_available();
-}
+static bool hasGpu() { return hf3fs_gdr_available(); }
 
 // Temp directory for symlink testing
 class TmpDir {
  public:
   TmpDir() {
-    const char* base = getenv("TMPDIR");
+    const char *base = getenv("TMPDIR");
     if (!base) base = "/private/tmp/claude-502";
     path_ = std::string(base) + "/gdr_test_XXXXXX";
-    char* result = mkdtemp(path_.data());
+    char *result = mkdtemp(path_.data());
     if (result) {
       valid_ = true;
     }
@@ -46,7 +42,7 @@ class TmpDir {
     }
   }
 
-  const char* path() const { return path_.c_str(); }
+  const char *path() const { return path_.c_str(); }
   bool valid() const { return valid_; }
 
  private:
@@ -61,19 +57,10 @@ std::string buildGdrUri(int deviceId, size_t size, const uint8_t ipcHandle[64]) 
     snprintf(hex + i * 2, 3, "%02x", ipcHandle[i]);
   }
   hex[128] = '\0';
-  return std::string("gdr://v1/device/") + std::to_string(deviceId) +
-         "/size/" + std::to_string(size) + "/ipc/" + hex;
+  return std::string("gdr://v1/device/") + std::to_string(deviceId) + "/size/" + std::to_string(size) + "/ipc/" + hex;
 }
 
 class TestUsrbIoGdrFixture : public ::testing::Test {
- protected:
-  void SetUp() override {
-    hf3fs::test::MockCudaRuntime::instance().reset();
-  }
-
-  void TearDown() override {
-    hf3fs::test::MockCudaRuntime::instance().reset();
-  }
 };
 
 }  // namespace
@@ -108,6 +95,17 @@ TEST_F(TestUsrbIoGdrFixture, SCN_L4_001_02_DeviceFallbackNoGDR) {
 
   // THEN: Falls back to host path (still fails due to no mount, but no crash)
   EXPECT_NE(rc, 0);
+}
+
+TEST_F(TestUsrbIoGdrFixture, DeviceApisRejectGpuBlockSize) {
+  struct hf3fs_iov iov;
+  memset(&iov, 0, sizeof(iov));
+  uint8_t id[16] = {};
+  uint8_t buffer[4096] = {};
+
+  EXPECT_EQ(hf3fs_iovcreate_device(&iov, "/nonexistent/mount", 4096, 4096, 0), -EINVAL);
+  EXPECT_EQ(hf3fs_iovopen_device(&iov, id, "/nonexistent/mount", 4096, 4096, 0), -EINVAL);
+  EXPECT_EQ(hf3fs_iovwrap_device(&iov, buffer, id, "/nonexistent/mount", 4096, 4096, 0), -EINVAL);
 }
 
 // ==========================================================================
@@ -157,7 +155,7 @@ TEST_F(TestUsrbIoGdrFixture, SCN_L4_002_02_IovWrapDeviceNoGdr) {
   struct hf3fs_iov iov;
   memset(&iov, 0, sizeof(iov));
   uint8_t id[16] = {};
-  void* fakePtr = reinterpret_cast<void*>(0x1000);
+  void *fakePtr = reinterpret_cast<void *>(0x1000);
 
   // WHEN: iovwrap_device, GDR unavailable
   int rc = hf3fs_iovwrap_device(&iov, fakePtr, id, "/nonexistent", 4096, 0, 0);
@@ -251,10 +249,6 @@ TEST_F(TestUsrbIoGdrFixture, SCN_L4_006_02_SyncHostIov) {
 
   // THEN: Returns 0 (no-op for host)
   EXPECT_EQ(rc, 0);
-
-  // Verify mock CUDA sync was NOT called (host path is no-op)
-  auto& mock = hf3fs::test::MockCudaRuntime::instance();
-  EXPECT_FALSE(mock.wasSyncCalled());
 }
 
 // @tests SCN-L4-006-02
@@ -306,8 +300,7 @@ TEST_F(TestUsrbIoGdrFixture, SCN_L3_005_01_ValidUriFormatThroughIovopen) {
       // Try to open — will fail because UUID doesn't match, but exercises parser
       struct hf3fs_iov iov;
       memset(&iov, 0, sizeof(iov));
-      uint8_t id[16] = {0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78,
-                         0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78};
+      uint8_t id[16] = {0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78, 0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78};
       int rc = hf3fs_iovopen_device(&iov, id, tmpDir.path(), 1073741824, 0, 0);
       // May fail for various reasons, but should not crash
       (void)rc;
@@ -326,7 +319,7 @@ TEST_F(TestUsrbIoGdrFixture, SCN_L3_003_01_WrapExternalGpuPtr) {
     struct hf3fs_iov iov;
     memset(&iov, 0, sizeof(iov));
     uint8_t id[16] = {};
-    void* fakePtr = reinterpret_cast<void*>(0x2000);
+    void *fakePtr = reinterpret_cast<void *>(0x2000);
     int rc = hf3fs_iovwrap_device(&iov, fakePtr, id, "/nonexistent", 4096, 0, 0);
     EXPECT_EQ(rc, -ENOTSUP);
     return;

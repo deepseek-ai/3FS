@@ -87,7 +87,7 @@ class RDMARemoteBuf {
   }
 
   RDMARemoteBuf subrange(size_t offset, size_t len) const {
-    if (UNLIKELY(offset + len > length_)) {
+    if (UNLIKELY(offset > length_ || len > length_ - offset)) {
       return RDMARemoteBuf();
     }
     RDMARemoteBuf remote = *this;

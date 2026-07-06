@@ -10,98 +10,92 @@
  * Key parsing (REQ-L5-001): parseKey() is static in IovTable.cc.
  * Tested through IovTable::lookupIov() which calls parseKey() internally.
  *
- * URI parsing (REQ-L5-002): parseGdrTarget() is in anonymous namespace.
- * Tested through IovTable::addIov() which calls parseGdrTarget() internally.
+ * URI parsing (REQ-L5-002): tested through IovTable::addIov(), which calls
+ * the shared lib::parseGdrUri() helper.
  */
 
 #include <cstring>
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
 #include <memory>
 #include <string>
+#include <string_view>
 
-#include <gtest/gtest.h>
-
+#include "client/storage/StorageClient.h"
 #include "fuse/IovTable.h"
 #include "tests/GtestHelpers.h"
-#include "tests/gdr/mocks/MockCudaRuntime.h"
 
 #ifdef HF3FS_GDR_ENABLED
 #include "lib/common/GpuShm.h"
 #endif
 
 namespace hf3fs::fuse {
+namespace {
+
+meta::UserInfo rootUser() {
+  meta::UserInfo ui;
+  ui.uid = meta::Uid(0);
+  ui.gid = meta::Gid(0);
+  return ui;
+}
+
+auto addIovForParser(IovTable &table, const char *key, const Path &target) {
+  storage::client::StorageClient storageClient;
+  return table.addIov(key, target, 1234, rootUser(), folly::Executor::KeepAlive<>{}, storageClient);
+}
+
+void expectParserError(IovTable &table, const char *key, std::string_view message) {
+  auto result = addIovForParser(table, key, Path("/dev/shm/unused"));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(std::string(result.error().message()), testing::HasSubstr(std::string(message)));
+}
+
+}  // namespace
 
 // ==========================================================================
 // REQ-L5-001: GDR Key Parsing in IovTable
 // ==========================================================================
 
 class TestIovTableGdr : public ::testing::Test {
- protected:
-  void SetUp() override {
-    hf3fs::test::MockCudaRuntime::instance().reset();
-  }
-
-  void TearDown() override {
-    hf3fs::test::MockCudaRuntime::instance().reset();
-  }
 };
 
 // @tests SCN-L5-001-01
 TEST_F(TestIovTableGdr, SCN_L5_001_01_ValidGdrKeyParsing) {
-  // GIVEN: key = "abcdef1234567890abcdef1234567890.gdr.d0"
-  // WHEN: lookupIov(key) is called — this internally calls parseKey(key)
   IovTable table;
 
-  meta::UserInfo ui;
-  ui.uid = meta::Uid(0);
-  ui.gid = meta::Gid(0);
-
-  // IovTable not init'd, so lookupIov will fail after parseKey succeeds
-  // The error path tells us whether parseKey succeeded:
-  // - If parseKey fails: error is about "invalid key format"
-  // - If parseKey succeeds but iov not found: error is about "not found"
-  auto result = table.lookupIov(
-      "abcdef1234567890abcdef1234567890.gdr.d0", ui);
-
-  // THEN: parseKey should succeed (valid GDR key format) but lookup fails
-  // because the IovTable is not initialized. The key thing is it does NOT
-  // fail with "invalid key format" — it gets past parsing.
-  EXPECT_TRUE(result.hasError());
-  // The error should NOT be about invalid key format — parseKey succeeded
+  auto result = addIovForParser(table, "abcdef1234567890abcdef1234567890.gdr.d0", Path("gdr://invalid"));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(std::string(result.error().message()), testing::HasSubstr("failed to parse GDR target URI"));
 }
 
 // @tests SCN-L5-001-02
 TEST_F(TestIovTableGdr, SCN_L5_001_02_NonGdrKeyParsing) {
-  // GIVEN: key = "abcdef1234567890abcdef1234567890.b4096" (host key)
   IovTable table;
 
-  meta::UserInfo ui;
-  ui.uid = meta::Uid(0);
-  ui.gid = meta::Gid(0);
-
-  // WHEN: lookupIov is called — internally calls parseKey
-  auto result = table.lookupIov(
-      "abcdef1234567890abcdef1234567890.b4096", ui);
-
-  // THEN: parseKey recognizes this as a non-GDR key (host format)
-  // Should get past parseKey but fail for other reasons
-  EXPECT_TRUE(result.hasError());
+  auto result = addIovForParser(table, "abcdef1234567890abcdef1234567890.b4096", Path("/dev/shm/hf3fs-missing-iov"));
+  ASSERT_TRUE(result.hasError());
+  EXPECT_THAT(std::string(result.error().message()), testing::HasSubstr("failed to stat shm path"));
 }
 
 // @tests SCN-L5-001-01
 TEST_F(TestIovTableGdr, InvalidKeyFormatRejected) {
   IovTable table;
 
-  meta::UserInfo ui;
-  ui.uid = meta::Uid(0);
-  ui.gid = meta::Gid(0);
-
-  // Empty key
-  auto r1 = table.lookupIov("", ui);
-  EXPECT_TRUE(r1.hasError());
-
-  // Missing device number after .gdr.d
-  auto r2 = table.lookupIov("abcdef1234567890abcdef1234567890.gdr.d", ui);
-  EXPECT_TRUE(r2.hasError());
+  expectParserError(table, "", "invalid shm key");
+  expectParserError(table, "abcdef1234567890abcdef1234567890..gdr.d0", "empty attr");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.gdr.d", "invalid gpu device id");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.gdr.d-1", "invalid gpu device id");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.gdr.d1x", "invalid gpu device id");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.gpu.d0", "invalid gdr attr");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.gdr.d0.unknown", "unknown attr");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.d0", "gpu device id set for non-gdr key");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.gdr", "gdr key missing gpu device id");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.gdr.d0.b4096", "gdr key does not support");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.gdr.d0.r4", "gdr key does not support");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.gdr.d0.t10", "gdr key does not support");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.r4.phx", "invalid priority");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.b0", "invalid block size");
+  expectParserError(table, "abcdef1234567890abcdef1234567890.r", "invalid io batch size");
 }
 
 // ==========================================================================
@@ -117,7 +111,7 @@ TEST_F(TestIovTableGdr, SCN_L5_002_02_InvalidGdrUriThroughAddIov) {
 
   // THEN: URI does not match expected format "gdr://v1/device/{N}/size/{S}/ipc/{hex128}"
   EXPECT_EQ(invalidUri.find("gdr://v1/"), std::string::npos);
-  // This URI would fail parseGdrTarget() inside addIov
+  // This URI would fail lib::parseGdrUri() inside addIov.
 }
 
 // @tests SCN-L5-002-04
@@ -171,6 +165,35 @@ TEST_F(TestIovTableGdr, SCN_L5_003_01_RmIovOnEmptyTable) {
   EXPECT_TRUE(result.hasError());
 }
 
+#ifdef HF3FS_GDR_ENABLED
+
+TEST_F(TestIovTableGdr, RemoveIovsByPidCleansGpuNullSlotMetadata) {
+  IovTable table;
+  table.init(Path("/mnt/3fs"), 8);
+
+  auto iovd = table.iovs->alloc();
+  ASSERT_TRUE(iovd);
+  table.iovs->table[*iovd].store(nullptr);
+
+  auto id = Uuid::fromHexString("abcdef1234567890abcdef1234567890");
+  ASSERT_TRUE(id);
+  table.gpuIovMetaByIovd[*iovd] = IovTable::GpuIovMeta{"abcdef1234567890abcdef1234567890.gdr.d0",
+                                                       Path("gdr://v1/device/0/size/4096/ipc/00"),
+                                                       meta::Uid(7),
+                                                       meta::Gid(7),
+                                                       4242};
+  table.gpuShmsById[*id] = std::shared_ptr<lib::GpuShmBuf>();
+
+  auto ioRings = table.removeIovsByPid(4242);
+
+  EXPECT_TRUE(ioRings.empty());
+  EXPECT_TRUE(table.gpuIovMetaByIovd.empty());
+  EXPECT_TRUE(table.gpuShmsById.empty());
+  EXPECT_EQ(table.iovs->slots.nextAvail.load(), 0);
+}
+
+#endif  // HF3FS_GDR_ENABLED
+
 // ==========================================================================
 // REQ-L5-004: lookupBufs Lambda -- Host-then-GPU Lookup
 // ==========================================================================
@@ -209,7 +232,7 @@ TEST_F(TestIovTableGdr, SCN_L6_001_VariantTypeCheck) {
 
   // Verify it has ptr() and offset() methods
   // (static_assert on method existence through decltype)
-  static_assert(std::is_same_v<decltype(std::declval<GpuShmBufForIO>().ptr()), uint8_t*>,
+  static_assert(std::is_same_v<decltype(std::declval<GpuShmBufForIO>().ptr()), uint8_t *>,
                 "GpuShmBufForIO::ptr() must return uint8_t*");
   static_assert(std::is_same_v<decltype(std::declval<GpuShmBufForIO>().offset()), size_t>,
                 "GpuShmBufForIO::offset() must return size_t");
@@ -267,57 +290,20 @@ TEST_F(TestIovTableGdr, SCN_L6_002_03_IpcHandleSerialization) {
 TEST_F(TestIovTableGdr, SCN_L6_004_01_OffsetPtrArithmetic) {
   using namespace hf3fs::lib;
 
-  // GIVEN: A GpuShmBuf with known devicePtr (mock-allocated)
-  // We need to test that GpuShmBufForIO::ptr() returns devicePtr + offset
-  //
-  // To test without real CUDA, we configure the mock and create a minimal
-  // GpuShmBuf. However, GpuShmBuf constructor calls cudaIpcOpenMemHandle
-  // which needs link-time mock.
-  //
-  // On machines with mock linked:
-  auto& mock = hf3fs::test::MockCudaRuntime::instance();
-  mock.setDeviceCount(1);
+  // GIVEN: A GpuShmBuf with a known devicePtr. The owner-side constructor keeps
+  // the pointer even if CUDA IPC export is unavailable in the local runtime.
+  void *knownPtr = reinterpret_cast<void *>(0x10000);
+  auto gpuShm = std::make_shared<GpuShmBuf>(knownPtr, 0x10000, 0, meta::Uid(0), 1234, 1);
+  ASSERT_EQ(gpuShm->devicePtr, knownPtr);
 
-  // Configure mock IPC open to return a known pointer
-  void* knownPtr = reinterpret_cast<void*>(0x10000);
-  mock.setIpcOpenHandleBehavior(
-      [knownPtr](void** devPtr, cudaIpcMemHandle_t handle, unsigned int flags) -> cudaError_t {
-        (void)handle;
-        (void)flags;
-        *devPtr = knownPtr;
-        return cudaSuccess;
-      });
+  GpuShmBufForIO forIO(gpuShm, 4096);
+  EXPECT_EQ(forIO.ptr(), static_cast<uint8_t *>(knownPtr) + 4096);
+  EXPECT_EQ(forIO.offset(), 4096u);
+  EXPECT_EQ(forIO.buffer(), gpuShm);
 
-  // Create IPC handle
-  GpuIpcHandle ipcHandle;
-  for (int i = 0; i < 64; i++) ipcHandle.data[i] = static_cast<uint8_t>(i);
-  ipcHandle.valid = true;
-
-  Uuid testId;
-  memset(&testId, 0x42, sizeof(testId));
-
-  // Create GpuShmBuf via IPC import
-  auto gpuShm = std::make_shared<GpuShmBuf>(ipcHandle, 0x10000, 0, testId);
-
-  // Verify devicePtr was set by mock
-  if (gpuShm->devicePtr != nullptr) {
-    // GpuShmBufForIO with offset 4096
-    GpuShmBufForIO forIO(gpuShm, 4096);
-
-    // THEN: ptr() == devicePtr + 4096
-    uint8_t* expected = static_cast<uint8_t*>(gpuShm->devicePtr) + 4096;
-    EXPECT_EQ(forIO.ptr(), expected);
-    EXPECT_EQ(forIO.offset(), 4096u);
-    EXPECT_EQ(forIO.buffer(), gpuShm);
-
-    // Test with offset 0
-    GpuShmBufForIO forIO0(gpuShm, 0);
-    EXPECT_EQ(forIO0.ptr(), static_cast<uint8_t*>(gpuShm->devicePtr));
-    EXPECT_EQ(forIO0.offset(), 0u);
-  } else {
-    // Mock not linked — skip actual arithmetic test
-    GTEST_SKIP() << "Mock CUDA not linked — cannot create GpuShmBuf";
-  }
+  GpuShmBufForIO forIO0(gpuShm, 0);
+  EXPECT_EQ(forIO0.ptr(), static_cast<uint8_t *>(knownPtr));
+  EXPECT_EQ(forIO0.offset(), 0u);
 }
 
 #endif  // HF3FS_GDR_ENABLED

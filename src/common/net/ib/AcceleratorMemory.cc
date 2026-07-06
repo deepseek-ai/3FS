@@ -5,13 +5,12 @@
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#include <fmt/format.h>
+#include <folly/FileUtil.h>
+#include <folly/logging/xlog.h>
 #include <sys/stat.h>
 #include <tuple>
 #include <unistd.h>
-
-#include <folly/FileUtil.h>
-#include <folly/logging/xlog.h>
-#include <fmt/format.h>
 
 #ifdef HF3FS_GDR_ENABLED
 #include <cuda_runtime.h>
@@ -19,30 +18,28 @@
 
 #include "common/monitor/Recorder.h"
 
-// Forward declarations for CUDA functions (loaded dynamically to avoid hard dependency)
-// In production, these would be loaded via dlopen/dlsym or linked conditionally
-
 namespace hf3fs::net {
 
 namespace {
 
 monitor::CountRecorder gdrMemRegistered("common.ib.gdr_mem_registered", {}, false);
 monitor::CountRecorder gdrMemCached("common.ib.gdr_mem_cached", {}, false);
+monitor::CountRecorder gdrMemCacheHit("common.ib.gdr_mem_cache_hit", {}, false);
+monitor::CountRecorder gdrMemCacheMiss("common.ib.gdr_mem_cache_miss", {}, false);
+monitor::CountRecorder gdrMemCacheExpired("common.ib.gdr_mem_cache_expired", {}, false);
+monitor::CountRecorder gdrMemCacheInvalidate("common.ib.gdr_mem_cache_invalidate", {}, false);
 
 // Access flags for GDR memory registration
 constexpr int kGDRAccessFlags =
-    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
-    IBV_ACCESS_RELAXED_ORDERING;
+    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_RELAXED_ORDERING;
 
 }  // namespace
 
 // AcceleratorMemoryRegion implementation
 
-AcceleratorMemoryRegion::~AcceleratorMemoryRegion() {
-  deregister();
-}
+AcceleratorMemoryRegion::~AcceleratorMemoryRegion() { deregister(); }
 
-AcceleratorMemoryRegion::AcceleratorMemoryRegion(AcceleratorMemoryRegion&& other) noexcept
+AcceleratorMemoryRegion::AcceleratorMemoryRegion(AcceleratorMemoryRegion &&other) noexcept
     : desc_(other.desc_),
       mrs_(other.mrs_),
       registered_(other.registered_) {
@@ -50,7 +47,7 @@ AcceleratorMemoryRegion::AcceleratorMemoryRegion(AcceleratorMemoryRegion&& other
   other.registered_ = false;
 }
 
-AcceleratorMemoryRegion& AcceleratorMemoryRegion::operator=(AcceleratorMemoryRegion&& other) noexcept {
+AcceleratorMemoryRegion &AcceleratorMemoryRegion::operator=(AcceleratorMemoryRegion &&other) noexcept {
   if (this != &other) {
     deregister();
     desc_ = other.desc_;
@@ -63,8 +60,8 @@ AcceleratorMemoryRegion& AcceleratorMemoryRegion::operator=(AcceleratorMemoryReg
 }
 
 Result<std::unique_ptr<AcceleratorMemoryRegion>> AcceleratorMemoryRegion::create(
-    const AcceleratorMemoryDescriptor& desc,
-    const GDRConfig& config) {
+    const AcceleratorMemoryDescriptor &desc,
+    const GDRConfig &config) {
   if (!desc.isValid()) {
     return makeError(StatusCode::kInvalidArg, "Invalid GPU memory descriptor");
   }
@@ -82,7 +79,7 @@ Result<std::unique_ptr<AcceleratorMemoryRegion>> AcceleratorMemoryRegion::create
   }
 
   auto region = std::make_unique<AcceleratorMemoryRegion>();
-   region->desc_ = desc;
+  region->desc_ = desc;
 
   auto result = region->registerWithDevices(config);
   if (!result) {
@@ -93,23 +90,22 @@ Result<std::unique_ptr<AcceleratorMemoryRegion>> AcceleratorMemoryRegion::create
   return std::move(region);
 }
 
-ibv_mr* AcceleratorMemoryRegion::getMR(int devId) const {
-   if (devId < 0 || static_cast<size_t>(devId) >= mrs_.size()) {
-     return nullptr;
-   }
-   return mrs_[devId];
- }
+ibv_mr *AcceleratorMemoryRegion::getMR(int devId) const {
+  if (devId < 0 || static_cast<size_t>(devId) >= mrs_.size()) {
+    return nullptr;
+  }
+  return mrs_[devId];
+}
 
- std::optional<uint32_t> AcceleratorMemoryRegion::getRkey(int devId) const {
-   auto mr = getMR(devId);
-   if (mr) {
-     return mr->rkey;
-   }
-   return std::nullopt;
- }
+std::optional<uint32_t> AcceleratorMemoryRegion::getRkey(int devId) const {
+  auto mr = getMR(devId);
+  if (mr) {
+    return mr->rkey;
+  }
+  return std::nullopt;
+}
 
- bool AcceleratorMemoryRegion::getAllRkeys(
-     std::array<uint32_t, IBDevice::kMaxDeviceCnt>& rkeys) const {
+bool AcceleratorMemoryRegion::getAllRkeys(std::array<uint32_t, IBDevice::kMaxDeviceCnt> &rkeys) const {
   bool hasAny = false;
   for (size_t i = 0; i < mrs_.size(); ++i) {
     if (mrs_[i]) {
@@ -122,14 +118,14 @@ ibv_mr* AcceleratorMemoryRegion::getMR(int devId) const {
   return hasAny;
 }
 
-Result<Void> AcceleratorMemoryRegion::registerWithDevices(const GDRConfig& config) {
+Result<Void> AcceleratorMemoryRegion::registerWithDevices(const GDRConfig &config) {
   (void)config;
   if (!IBManager::initialized()) {
     return makeError(RPCCode::kIBDeviceNotInitialized, "IB not initialized");
   }
 
   size_t registeredCount = 0;
-  for (const auto& dev : IBDevice::all()) {
+  for (const auto &dev : IBDevice::all()) {
     if (dev->id() >= IBDevice::kMaxDeviceCnt) {
       XLOGF(ERR, "Device ID {} exceeds maximum {}", dev->id(), IBDevice::kMaxDeviceCnt);
       continue;
@@ -192,55 +188,59 @@ void AcceleratorMemoryRegion::deregister() {
 
 // AcceleratorMemoryRegionCache implementation
 
-AcceleratorMemoryRegionCache::AcceleratorMemoryRegionCache(const GDRConfig& config)
+AcceleratorMemoryRegionCache::AcceleratorMemoryRegionCache(const GDRConfig &config)
     : config_(config) {}
 
-AcceleratorMemoryRegionCache::~AcceleratorMemoryRegionCache() {
-  clear();
-}
+AcceleratorMemoryRegionCache::~AcceleratorMemoryRegionCache() { clear(); }
 
 Result<std::shared_ptr<AcceleratorMemoryRegion>> AcceleratorMemoryRegionCache::getOrCreate(
-    const AcceleratorMemoryDescriptor& desc) {
+    const AcceleratorMemoryDescriptor &desc) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Check cache first
   auto it = cache_.find(desc.devicePtr);
   if (it != cache_.end()) {
-    auto& cached = it->second;
-    // Verify the cached region matches
-    if (cached->size() >= desc.size && cached->deviceId() == desc.deviceId) {
+    auto cached = it->second.lock();
+    if (!cached) {
+      cache_.erase(it);
+      gdrMemCached.addSample(-1);
+      gdrMemCacheExpired.addSample(1);
+    } else if (cached->size() == desc.size && cached->deviceId() == desc.deviceId) {
+      gdrMemCacheHit.addSample(1);
       return cached;
+    } else {
+      cache_.erase(it);
+      gdrMemCached.addSample(-1);
     }
-    // Size mismatch, remove and recreate
-    cache_.erase(it);
   }
+  gdrMemCacheMiss.addSample(1);
 
   // Evict if needed
   evictIfNeeded();
 
   // Create new region
-   auto result = AcceleratorMemoryRegion::create(desc, config_);
-   if (!result) {
-     return makeError(result.error());
-   }
+  auto result = AcceleratorMemoryRegion::create(desc, config_);
+  if (!result) {
+    return makeError(result.error());
+  }
 
-   auto region = std::shared_ptr<AcceleratorMemoryRegion>(std::move(*result));
+  auto region = std::shared_ptr<AcceleratorMemoryRegion>(std::move(*result));
   cache_[desc.devicePtr] = region;
   gdrMemCached.addSample(1);
 
   return region;
 }
 
-void AcceleratorMemoryRegionCache::invalidate(void* devicePtr) {
-   std::lock_guard<std::mutex> lock(mutex_);
-   auto it = cache_.find(devicePtr);
-   if (it != cache_.end()) {
-     cache_.erase(it);
-     gdrMemCached.addSample(-1);
-   }
- }
+void AcceleratorMemoryRegionCache::invalidate(void *devicePtr) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = cache_.find(devicePtr);
+  if (it != cache_.end()) {
+    cache_.erase(it);
+    gdrMemCached.addSample(-1);
+    gdrMemCacheInvalidate.addSample(1);
+  }
+}
 
- void AcceleratorMemoryRegionCache::clear() {
+void AcceleratorMemoryRegionCache::clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   auto count = cache_.size();
   cache_.clear();
@@ -250,13 +250,22 @@ void AcceleratorMemoryRegionCache::invalidate(void* devicePtr) {
 }
 
 size_t AcceleratorMemoryRegionCache::size() const {
-   std::lock_guard<std::mutex> lock(mutex_);
-   return cache_.size();
- }
+  std::lock_guard<std::mutex> lock(mutex_);
+  return cache_.size();
+}
 
- void AcceleratorMemoryRegionCache::evictIfNeeded() {
-  // Simple LRU-like eviction: if cache is full, remove oldest entries
-  // In a production implementation, we'd use a proper LRU cache
+void AcceleratorMemoryRegionCache::evictIfNeeded() {
+  for (auto it = cache_.begin(); it != cache_.end();) {
+    if (it->second.expired()) {
+      it = cache_.erase(it);
+      gdrMemCached.addSample(-1);
+      gdrMemCacheExpired.addSample(1);
+    } else {
+      ++it;
+    }
+  }
+
+  // Simple LRU-like eviction: if cache is full, remove oldest entries.
   while (cache_.size() >= config_.max_cached_regions()) {
     // Remove first entry (arbitrary in unordered_map, but simple)
     auto it = cache_.begin();
@@ -269,16 +278,14 @@ size_t AcceleratorMemoryRegionCache::size() const {
 
 // GDRManager implementation
 
-GDRManager& GDRManager::instance() {
+GDRManager &GDRManager::instance() {
   static GDRManager instance;
   return instance;
 }
 
-GDRManager::~GDRManager() {
-  shutdown();
-}
+GDRManager::~GDRManager() { shutdown(); }
 
-Result<Void> GDRManager::init(const GDRConfig& config) {
+Result<Void> GDRManager::init(const GDRConfig &config) {
   if (initialized_.load()) {
     return Void{};
   }
@@ -286,7 +293,7 @@ Result<Void> GDRManager::init(const GDRConfig& config) {
   config_ = config;
 
   // Parse HF3FS_GDR_ENABLED env var
-  const char* gdrEnabledEnv = std::getenv("HF3FS_GDR_ENABLED");
+  const char *gdrEnabledEnv = std::getenv("HF3FS_GDR_ENABLED");
   if (gdrEnabledEnv) {
     if (std::string(gdrEnabledEnv) == "0") {
       XLOGF(INFO, "GDR disabled by HF3FS_GDR_ENABLED=0");
@@ -297,7 +304,7 @@ Result<Void> GDRManager::init(const GDRConfig& config) {
 
   // Parse HF3FS_GDR_FALLBACK env var
   fallbackMode_ = FallbackMode::Auto;  // default
-  const char* fallbackEnv = std::getenv("HF3FS_GDR_FALLBACK");
+  const char *fallbackEnv = std::getenv("HF3FS_GDR_FALLBACK");
   if (fallbackEnv) {
     std::string fallback(fallbackEnv);
     if (fallback == "host") {
@@ -363,7 +370,7 @@ bool GDRManager::isGdrSupported(int deviceId) const {
     return false;
   }
 
-  for (const auto& dev : gpuDevices_) {
+  for (const auto &dev : gpuDevices_) {
     if (dev.deviceId == deviceId) {
       return dev.gdrSupported;
     }
@@ -395,9 +402,7 @@ Result<Void> GDRManager::detectGpuDevices() {
       cudaGetLastError();  // Clear CUDA error state
       return Void{};
     }
-    return makeError(StatusCode::kIOError,
-                     fmt::format("cudaGetDeviceCount failed: {}",
-                                 cudaGetErrorString(err)));
+    return makeError(StatusCode::kIOError, fmt::format("cudaGetDeviceCount failed: {}", cudaGetErrorString(err)));
   }
 
   if (deviceCount <= 0) {
@@ -411,19 +416,14 @@ Result<Void> GDRManager::detectGpuDevices() {
     peermemLoaded = true;
     close(fd);
   }
-  XLOGF_IF(WARN,
-           !peermemLoaded,
-           "nvidia_peermem module not loaded, GDR registration may fail at runtime");
+  XLOGF_IF(WARN, !peermemLoaded, "nvidia_peermem module not loaded, GDR registration may fail at runtime");
 
   gpuDevices_.reserve(deviceCount);
   for (int deviceId = 0; deviceId < deviceCount; ++deviceId) {
     cudaDeviceProp prop;
     err = cudaGetDeviceProperties(&prop, deviceId);
     if (err != cudaSuccess) {
-      XLOGF(WARN,
-            "cudaGetDeviceProperties({}) failed: {}",
-            deviceId,
-            cudaGetErrorString(err));
+      XLOGF(WARN, "cudaGetDeviceProperties({}) failed: {}", deviceId, cudaGetErrorString(err));
       cudaGetLastError();
       continue;
     }
@@ -436,16 +436,13 @@ Result<Void> GDRManager::detectGpuDevices() {
     info.gdrSupported = true;
 
     int value = 0;
-    if (cudaDeviceGetAttribute(&value, cudaDevAttrPciDomainId, deviceId) ==
-        cudaSuccess) {
+    if (cudaDeviceGetAttribute(&value, cudaDevAttrPciDomainId, deviceId) == cudaSuccess) {
       info.pciDomainId = value;
     }
-    if (cudaDeviceGetAttribute(&value, cudaDevAttrPciBusId, deviceId) ==
-        cudaSuccess) {
+    if (cudaDeviceGetAttribute(&value, cudaDevAttrPciBusId, deviceId) == cudaSuccess) {
       info.pciBusId = value;
     }
-    if (cudaDeviceGetAttribute(&value, cudaDevAttrPciDeviceId, deviceId) ==
-        cudaSuccess) {
+    if (cudaDeviceGetAttribute(&value, cudaDevAttrPciDeviceId, deviceId) == cudaSuccess) {
       info.pciDeviceId = value;
     }
 
@@ -480,7 +477,7 @@ struct IBDeviceTopology {
 };
 
 // Read a single integer from a sysfs file, return -1 on failure
-int readSysfsInt(const std::string& path) {
+int readSysfsInt(const std::string &path) {
   std::string content;
   if (!folly::readFile(path.c_str(), content)) {
     return -1;
@@ -495,7 +492,7 @@ int readSysfsInt(const std::string& path) {
 // Parse PCI BDF from sysfs device symlink target
 // e.g. /sys/class/infiniband/mlx5_0/device -> ../../../0000:3b:00.0
 // Returns {domain, bus, device} or {-1,-1,-1} on failure
-std::tuple<int, int, int> parseIBDevicePciBdf(const std::string& ibDevName) {
+std::tuple<int, int, int> parseIBDevicePciBdf(const std::string &ibDevName) {
   std::string devicePath = fmt::format("/sys/class/infiniband/{}/device", ibDevName);
   char buf[PATH_MAX] = {};
   ssize_t len = readlink(devicePath.c_str(), buf, sizeof(buf) - 1);
@@ -520,7 +517,7 @@ std::tuple<int, int, int> parseIBDevicePciBdf(const std::string& ibDevName) {
 //   2: same PCI domain, different bus
 //   1: different domain but same NUMA node
 //   0: no known affinity
-int computeAffinityScore(const AcceleratorDeviceInfo& gpu, const IBDeviceTopology& ib) {
+int computeAffinityScore(const AcceleratorDeviceInfo &gpu, const IBDeviceTopology &ib) {
   if (gpu.pciDomainId >= 0 && ib.pciDomain >= 0 && gpu.pciDomainId == ib.pciDomain) {
     if (gpu.pciBusId >= 0 && ib.pciBus >= 0 && gpu.pciBusId == ib.pciBus) {
       return 3;  // Same PCIe switch
@@ -540,7 +537,7 @@ Result<Void> GDRManager::setupGpuIBMapping() {
   // For each GPU, find the IB device with the shortest PCIe path by comparing
   // PCI domain/bus (same PCIe switch) and NUMA node from sysfs.
 
-  const auto& ibDevices = IBDevice::all();
+  const auto &ibDevices = IBDevice::all();
   if (ibDevices.empty()) {
     XLOGF(WARN, "No IB devices available for GPU-IB mapping");
     return Void{};
@@ -551,7 +548,7 @@ Result<Void> GDRManager::setupGpuIBMapping() {
   ibTopo.reserve(ibDevices.size());
   bool hasTopology = false;
 
-  for (const auto& ibDev : ibDevices) {
+  for (const auto &ibDev : ibDevices) {
     IBDeviceTopology topo;
     topo.devId = ibDev->id();
     topo.name = ibDev->name();
@@ -563,34 +560,35 @@ Result<Void> GDRManager::setupGpuIBMapping() {
 
     if (domain >= 0) {
       // Read NUMA node from the PCI device sysfs entry
-      std::string numaPath = fmt::format(
-          "/sys/bus/pci/devices/{:04x}:{:02x}:{:02x}.0/numa_node",
-          domain, bus, dev);
+      std::string numaPath = fmt::format("/sys/bus/pci/devices/{:04x}:{:02x}:{:02x}.0/numa_node", domain, bus, dev);
       topo.numaNode = readSysfsInt(numaPath);
       hasTopology = true;
     }
 
-    XLOGF(DBG, "IB device {} PCI {:04x}:{:02x}:{:02x} NUMA {}",
-           topo.name, std::max(0, topo.pciDomain), std::max(0, topo.pciBus),
-           std::max(0, topo.pciDevice), topo.numaNode);
+    XLOGF(DBG,
+          "IB device {} PCI {:04x}:{:02x}:{:02x} NUMA {}",
+          topo.name,
+          std::max(0, topo.pciDomain),
+          std::max(0, topo.pciBus),
+          std::max(0, topo.pciDevice),
+          topo.numaNode);
     ibTopo.push_back(std::move(topo));
   }
 
   // Read GPU NUMA nodes from sysfs if not already populated
-  for (auto& gpu : gpuDevices_) {
+  for (auto &gpu : gpuDevices_) {
     if (gpu.numaNode < 0 && gpu.pciBusId >= 0) {
-      std::string numaPath = fmt::format(
-          "/sys/bus/pci/devices/{}/numa_node", gpu.pciBdf());
+      std::string numaPath = fmt::format("/sys/bus/pci/devices/{}/numa_node", gpu.pciBdf());
       gpu.numaNode = readSysfsInt(numaPath);
     }
   }
 
   // For each GPU, pick the IB device with the best affinity score
-  for (const auto& gpu : gpuDevices_) {
+  for (const auto &gpu : gpuDevices_) {
     int bestScore = -1;
     uint8_t bestIbId = ibTopo[0].devId;
 
-    for (const auto& ib : ibTopo) {
+    for (const auto &ib : ibTopo) {
       int score = hasTopology ? computeAffinityScore(gpu, ib) : -1;
       if (score > bestScore) {
         bestScore = score;
@@ -599,8 +597,7 @@ Result<Void> GDRManager::setupGpuIBMapping() {
     }
 
     gpuToIBMapping_[gpu.deviceId] = bestIbId;
-    XLOGF(INFO, "GPU {} (PCI {}) → IB device {} (score {})",
-           gpu.deviceId, gpu.pciBdf(), bestIbId, bestScore);
+    XLOGF(INFO, "GPU {} (PCI {}) → IB device {} (score {})", gpu.deviceId, gpu.pciBdf(), bestIbId, bestScore);
   }
 
   if (!hasTopology && !gpuDevices_.empty()) {
@@ -617,7 +614,7 @@ Result<Void> GDRManager::setupGpuIBMapping() {
 
 // detectMemoryType implementation
 
-MemoryType detectMemoryType(const void* ptr) {
+MemoryType detectMemoryType(const void *ptr) {
   if (!ptr) {
     return MemoryType::Unknown;
   }
@@ -625,7 +622,7 @@ MemoryType detectMemoryType(const void* ptr) {
 #ifdef HF3FS_GDR_ENABLED
   cudaPointerAttributes attrs;
   cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
-  
+
   if (err != cudaSuccess) {
     // Not a CUDA-known pointer, treat as host memory
     cudaGetLastError();  // Clear the error

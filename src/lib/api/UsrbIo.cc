@@ -237,6 +237,10 @@ int hf3fs_iovcreate_device(struct hf3fs_iov *iov,
                            size_t size,
                            size_t block_size,
                            int device_id) {
+  if (block_size != 0) {
+    XLOGF(ERR, "device iov does not support block_size: {}", block_size);
+    return -EINVAL;
+  }
 #ifdef HF3FS_GDR_ENABLED
   if (hf3fs_gdr_available()) {
     XLOGF(DBG, "Using GDR path for device {}", device_id);
@@ -317,6 +321,10 @@ int hf3fs_iovopen_device(struct hf3fs_iov *iov,
                          size_t size,
                          size_t block_size,
                          int device_id) {
+  if (block_size != 0) {
+    XLOGF(ERR, "device iov does not support block_size: {}", block_size);
+    return -EINVAL;
+  }
   if (hf3fs_gdr_available()) {
     XLOGF(DBG, "Using GDR path for iovopen_device, device {}", device_id);
     return hf3fs_iovopen_gpu_internal(iov, id, hf3fs_mount_point, size, block_size, device_id);
@@ -400,6 +408,10 @@ int hf3fs_iovwrap_device(struct hf3fs_iov *iov,
                          size_t size,
                          size_t block_size,
                          int device_id) {
+  if (block_size != 0) {
+    XLOGF(ERR, "device iov does not support block_size: {}", block_size);
+    return -EINVAL;
+  }
   if (hf3fs_gdr_available()) {
     XLOGF(DBG, "Using GDR path for iovwrap_device, device {}", device_id);
     return hf3fs_iovwrap_gpu_internal(iov, device_ptr, id, hf3fs_mount_point, size, block_size, device_id);

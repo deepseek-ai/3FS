@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdint>
+#include <limits>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -55,11 +58,34 @@ class IOBuffer : public folly::MoveOnly {
 
   size_t size() const { return rdmabuf_.size(); }
 
-  // Pointer comparison is valid for GPU buffers: both pointers are device
-  // addresses within the same CUDA allocation (flat GPU address space).
+  // Use integer address arithmetic so GPU device addresses do not go through
+  // host pointer comparison/addition rules.
   bool contains(const uint8_t *data, uint32_t len) const {
-    auto p = rdmabuf_.ptr();
-    return p <= data && data + len <= p + rdmabuf_.capacity();
+    auto *basePtr = rdmabuf_.ptr();
+    if (!basePtr || !data) {
+      return false;
+    }
+    auto base = reinterpret_cast<uintptr_t>(basePtr);
+    auto dataAddr = reinterpret_cast<uintptr_t>(data);
+    auto capacity = rdmabuf_.capacity();
+    return dataAddr >= base && dataAddr - base <= capacity && len <= capacity - (dataAddr - base);
+  }
+
+  std::optional<size_t> offsetOf(const uint8_t *data, uint32_t len) const {
+    if (!contains(data, len)) {
+      return std::nullopt;
+    }
+    return reinterpret_cast<uintptr_t>(data) - reinterpret_cast<uintptr_t>(rdmabuf_.ptr());
+  }
+
+  uint8_t *dataAtOffset(size_t offset) const {
+    auto *basePtr = rdmabuf_.ptr();
+    auto capacity = rdmabuf_.capacity();
+    auto base = reinterpret_cast<uintptr_t>(basePtr);
+    if (!basePtr || offset > capacity || base > std::numeric_limits<uintptr_t>::max() - offset) {
+      return nullptr;
+    }
+    return reinterpret_cast<uint8_t *>(base + offset);
   }
 
   net::RDMABuf subrange(size_t offset, size_t length) const {
@@ -145,7 +171,16 @@ class IOBase : public folly::MoveOnly {
   status_code_t statusCode() const { return hf3fs::getStatusCode(result.lengthInfo); }
   uint32_t resultLen() const { return result.lengthInfo ? *result.lengthInfo : 0; }
   uint32_t dataLen() const { return length; }
-  uint8_t *dataEnd() const { return data + length; }
+  uint8_t *dataEnd() const {
+    if (!data) {
+      return nullptr;
+    }
+    auto addr = reinterpret_cast<uintptr_t>(data);
+    if (addr > std::numeric_limits<uintptr_t>::max() - length) {
+      return nullptr;
+    }
+    return reinterpret_cast<uint8_t *>(addr + length);
+  }
   ChunkIdRange chunkRange() const { return {chunkId, chunkId, 1}; }
   uint32_t numProcessedChunks() const { return bool(result.lengthInfo); }
   void resetResult() { result = IOResult{}; }

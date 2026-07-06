@@ -295,10 +295,14 @@ CoTask<void> FuseClients::ioRingWorker(int i, int ths) {
             };
         auto lookupBufs =
             [this](std::vector<Result<IoBufForIO>> &bufs, const IoArgs *args, const IoSqe *sqe, int sqec) {
+              auto rangeFits = [](size_t size, auto off, auto len) {
+                auto offset = static_cast<size_t>(off);
+                auto length = static_cast<size_t>(len);
+                return offset <= size && length <= size - offset;
+              };
               auto lastId = Uuid::zero();
               std::shared_ptr<lib::ShmBuf> lastShm;
 #ifdef HF3FS_GDR_ENABLED
-              std::shared_ptr<lib::GpuShmBuf> lastGpuShm;
               bool lastWasGpu = false;
               // Indices that missed the host table and need GPU lookup.
               // We collect them while holding shmLock, then look them up
@@ -323,7 +327,7 @@ CoTask<void> FuseClients::ioRingWorker(int i, int ths) {
                       continue;
                     }
 #endif
-                    if (lastShm->size < arg.bufOff + arg.ioLen) {
+                    if (!rangeFits(lastShm->size, arg.bufOff, arg.ioLen)) {
                       bufs.emplace_back(makeError(StatusCode::kInvalidArg, "invalid buf off and/or io len"));
                       continue;
                     }
@@ -339,7 +343,7 @@ CoTask<void> FuseClients::ioRingWorker(int i, int ths) {
                     if (!shm) {
                       bufs.emplace_back(makeError(StatusCode::kInvalidArg, "buf id not found"));
                       continue;
-                    } else if (shm->size < arg.bufOff + arg.ioLen) {
+                    } else if (!rangeFits(shm->size, arg.bufOff, arg.ioLen)) {
                       bufs.emplace_back(makeError(StatusCode::kInvalidArg, "invalid buf off and/or io len"));
                       continue;
                     }
@@ -375,12 +379,11 @@ CoTask<void> FuseClients::ioRingWorker(int i, int ths) {
                   auto git = iovs.gpuShmsById.find(id);
                   if (git != iovs.gpuShmsById.end()) {
                     auto gpuShm = git->second;
-                    if (gpuShm->size < arg.bufOff + arg.ioLen) {
+                    if (!rangeFits(gpuShm->size, arg.bufOff, arg.ioLen)) {
                       bufs[i] = makeError(StatusCode::kInvalidArg, "invalid buf off and/or io len");
                       continue;
                     }
                     lastId = id;
-                    lastGpuShm = gpuShm;
                     lastWasGpu = true;
                     bufs[i] = IoBufForIO{lib::GpuShmBufForIO(std::move(gpuShm), arg.bufOff)};
                     continue;

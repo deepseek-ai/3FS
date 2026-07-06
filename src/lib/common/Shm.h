@@ -67,7 +67,7 @@ struct ShmBuf {
    * @return true if memory is on a device (GPU, etc.)
    */
   bool isAcceleratorMemory() const {
-    return memoryType_ == net::MemoryType::Device || 
+    return memoryType_ == net::MemoryType::Device ||
            memoryType_ == net::MemoryType::Managed;
   }
 

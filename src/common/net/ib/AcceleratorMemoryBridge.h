@@ -14,6 +14,10 @@ namespace hf3fs::net {
 /**
  * GPU Memory Import Support
  *
+ * Experimental/internal: the production GDR v1 path uses GpuShmBuf,
+ * GdrUri, and RDMABufAccelerator directly. Keep this bridge out of the
+ * main path until it has a concrete call site and ownership contract.
+ *
  * This module provides mechanisms for importing GPU memory from external
  * processes and registering it for RDMA operations. This is essential for
  * scenarios where:

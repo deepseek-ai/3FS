@@ -35,11 +35,17 @@ training checkpoint reload, and large-scale data ingest.
 3FS must be compiled with GDR support enabled:
 
 ```bash
-cmake -DHF3FS_GDR_ENABLED=ON ...
+cmake -DHF3FS_ENABLE_GDR=ON ...
 ```
 
+| Layer | Name | Meaning |
+| --- | --- | --- |
+| CMake option | `HF3FS_ENABLE_GDR` | Requests CUDA/GDR support at configure time. Configure fails if CUDA is unavailable. |
+| C++ macro | `HF3FS_GDR_ENABLED` | Target-scoped compile definition added by `target_add_gdr_support(...)`. |
+| Runtime env | `HF3FS_GDR_ENABLED=0` | Disables runtime GDR initialization in a GDR-capable build. |
+
 Functions behind the `#ifdef HF3FS_GDR_ENABLED` guard (`hf3fs_iovopen_device`,
-`hf3fs_iovwrap_device`) are only available in GDR-enabled builds.
+`hf3fs_iovwrap_device`) are only available in targets compiled with GDR support.
 
 ### Runtime
 
@@ -83,6 +89,8 @@ int hf3fs_iovcreate_device(struct hf3fs_iov *iov,
                            int device_id);
 ```
 
+GPU-backed iovs do not support block partitioning yet; pass `block_size = 0`.
+
 **Returns:** `0` on success, `-EINVAL`, `-ENODEV`, `-ENOMEM`. On GDR fallback,
 returns the result of host memory allocation.
 
@@ -105,8 +113,9 @@ int hf3fs_iovopen_device(struct hf3fs_iov *iov,
                          int device_id);
 ```
 
-`id` is the 16-byte UUID from the original `iov->id`; `size` and `block_size`
-must match the original allocation.
+`id` is the 16-byte UUID from the original `iov->id`; `size` and `device_id`
+must match the original allocation. GPU-backed iovs do not support block
+partitioning yet; pass `block_size = 0`.
 
 **Returns:** `0` on success, `-ENOTSUP`, `-ENOENT`, `-ENODEV`, `-EINVAL`.
 
@@ -133,6 +142,8 @@ int hf3fs_iovwrap_device(struct hf3fs_iov *iov,
 `device_ptr` must point to existing GPU memory and remain valid for the iov's
 lifetime. `id` is a caller-provided 16-byte UUID, unique within the mount
 namespace.
+
+GPU-backed iovs do not support block partitioning yet; pass `block_size = 0`.
 
 **Returns:** `0` on success, `-ENOTSUP`, `-ENODEV`, `-ENOMEM`.
 
@@ -838,7 +849,7 @@ int main(void) {
 
 GDR availability is determined by two independent gates:
 
-1. **Compile-time gate** (`HF3FS_GDR_ENABLED`): controls whether
+1. **Compile-time gate** (`HF3FS_ENABLE_GDR` -> `HF3FS_GDR_ENABLED`): controls whether
    `hf3fs_iovopen_device` and `hf3fs_iovwrap_device` are declared in the header
    and compiled into the library. `hf3fs_iovcreate_device` is always compiled
    (it contains the fallback path).
@@ -870,6 +881,21 @@ memory, even when the data iov is on the GPU. The ring contains metadata (file
 offsets, lengths, completion status), not bulk data. Only the data buffer
 (`struct hf3fs_iov`) resides in GPU VRAM.
 
+Host io-rings may submit I/O against GPU iovs. GPU-backed io-ring metadata is
+not supported in this implementation.
+
+### GDR Symlink Contract
+
+The fuse daemon accepts only strict v1 GDR targets:
+
+```text
+{uuid}.gdr.d{device_id} -> gdr://v1/device/{device_id}/size/{bytes}/ipc/{128 hex chars}
+```
+
+The key device, URI device, requested API device, and requested size must match.
+GDR keys reject block-size suffixes (`.b...`) and io-ring suffixes (`.r...`,
+`.w...`, `.t...`, `.f...`, `.p...`).
+
 ### Automatic Skip of CPU-Side Operations
 
 When the fuse daemon and client library detect a GPU iov:
@@ -893,14 +919,24 @@ When the fuse daemon and client library detect a GPU iov:
 
 - **Cross-process lifetime is caller-coordinated.** There is no distributed
   reference count for shared GPU iovs. The exporting process (the one that
-  called `iovcreate_device`) must call `iovdestroy` last. Destroying the
-  exporter's iov while an importer still holds an open handle causes undefined
-  behavior (stale CUDA IPC handle, potential RDMA errors).
+  called `iovcreate_device` or owns the wrapped allocation) must keep the CUDA
+  allocation and iov alive until every importer has closed its iov and all RDMA
+  operations using the buffer have completed. Destroying the exporter's iov
+  early causes undefined behavior (stale CUDA IPC handle, potential RDMA
+  errors). Fuse dead-pid cleanup removes 3FS metadata and closes importer-side
+  resources; it does not make the exporting allocation safe to free.
 
 - **GPU-NIC affinity is sysfs-based.** The current implementation selects the
-  RDMA device based on sysfs PCI topology. A future improvement will use NVML
-  topology queries for finer-grained PCIe switch distance awareness, enabling
-  better placement when multiple NICs and GPUs share a complex PCIe fabric.
+  RDMA device based on sysfs PCI topology and treats the result as a best-effort
+  affinity score, not a guarantee that the GPU and NIC share the optimal switch.
+  A future improvement will use NVML topology queries for finer-grained PCIe
+  switch distance awareness, enabling better placement when multiple NICs and
+  GPUs share a complex PCIe fabric.
+
+- **Experimental/internal import abstractions.** `AcceleratorMemoryBridge` and
+  related bridge/import-manager code are not on the main GDR data path described
+  above. Treat them as internal experiments unless they are wired into a specific
+  caller and covered by tests.
 
 - **Future: `dmabuf` support.** To support non-NVIDIA accelerators (AMD ROCm,
   Intel Level Zero), a `dmabuf`-based memory registration path is planned as an

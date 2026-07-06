@@ -100,6 +100,7 @@ int hf3fs_iovwrap(struct hf3fs_iov *iov,
 // Device memory IOV creation (e.g., GPU via GDR)
 // device_id: accelerator device index (0, 1, 2, ...)
 // Falls back to host memory (numa=0) if device runtime is unavailable
+// GDR v1 does not support block partitioning; block_size must be 0.
 int hf3fs_iovcreate_device(struct hf3fs_iov *iov,
                            const char *hf3fs_mount_point,
                            size_t size,
@@ -109,6 +110,7 @@ int hf3fs_iovcreate_device(struct hf3fs_iov *iov,
 #ifdef HF3FS_GDR_ENABLED
 // Open an existing device memory IOV by UUID (cross-process reopen)
 // Returns -ENOTSUP when GDR runtime is not available
+// GDR v1 does not support block partitioning; block_size must be 0.
 // Only declared when HF3FS_GDR_ENABLED is defined at compile time.
 int hf3fs_iovopen_device(struct hf3fs_iov *iov,
                          const uint8_t id[16],
@@ -120,6 +122,7 @@ int hf3fs_iovopen_device(struct hf3fs_iov *iov,
 // Wrap externally-allocated device memory as IOV
 // device_ptr must remain valid for the lifetime of the iov
 // Returns -ENOTSUP when GDR runtime is not available
+// GDR v1 does not support block partitioning; block_size must be 0.
 // Only declared when HF3FS_GDR_ENABLED is defined at compile time.
 int hf3fs_iovwrap_device(struct hf3fs_iov *iov,
                          void *device_ptr,
