@@ -1234,7 +1234,14 @@ void hf3fs_symlink(fuse_req_t req, const char *link, fuse_ino_t fparent, const c
                                        ior->ioDepth,
                                        *ior->iora);
           if (!res2) {
-            handle_error(req, res);
+            auto rollback = d.iovs.rmIov(name, userInfo, ior);
+            XLOGF_IF(ERR,
+                     !rollback,
+                     "failed to roll back iov {} after io-ring creation failed: {}",
+                     name,
+                     rollback.error());
+            handle_error(req, res2);
+            return;
           }
           // record the ior index for later removal
           res->second->iorIndex = *res2;

@@ -1,245 +1,249 @@
 /**
- * GPU Direct RDMA (GDR) Extension Implementation
+ * GPU Direct RDMA (GDR) user API implementation.
  *
- * This implements the simplified GDR API that mirrors the standard usrbio
- * interface. All CUDA complexity is hidden internally.
+ * The application process owns only CUDA allocation/IPC publication. GPU
+ * memory registration is performed by the FUSE process when the publication
+ * symlink is resolved.
  */
 
+#include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <fmt/format.h>
 #include <folly/logging/xlog.h>
 #include <memory>
 #include <mutex>
+#include <new>
+#include <optional>
 #include <string>
+#include <unistd.h>
 #include <unordered_map>
 
+#include "UsrbIoGdrInternal.h"
 #include "hf3fs_usrbio.h"
 
 #ifdef HF3FS_GDR_ENABLED
 #include <cuda_runtime.h>
 #endif
 
-#include "common/logging/LogInit.h"
-#include "common/net/ib/AcceleratorMemory.h"
-#include "common/net/ib/IBDevice.h"
 #include "common/utils/Uuid.h"
+#include "lib/common/CudaIpcMemory.h"
 #include "lib/common/GdrUri.h"
 
 namespace {
 
-// Magic value to identify GPU iovs (stored in numa field)
-constexpr int kGpuIovMagicNuma = -0x6472;  // 0x64='d', 0x72='r' → "dr" for "direct RDMA"
-
-// Forward declaration — used by GpuIovHandle destructor.
-void freeGpuMemory(void *devicePtr, int deviceId);
+static_assert(hf3fs::lib::kCudaIpcHandleBytes == hf3fs::lib::kGdrIpcHandleBytes);
 
 struct GpuIovHandle {
-  // GPU memory region registered with RDMA
-  std::shared_ptr<hf3fs::net::AcceleratorMemoryRegion> region;
-
-  // GPU device ID
   int deviceId = -1;
 
-  // Original device pointer
-  void *devicePtr = nullptr;
+  void *allocationBase = nullptr;
+  size_t allocationSize = 0;
+  void *viewPtr = nullptr;
+  size_t viewOffset = 0;
+  size_t viewSize = 0;
 
-  // Whether memory was allocated by this library (needs cudaFree on destroy)
   bool ownsMemory = false;
+  bool ownsPublication = false;
+  std::unique_ptr<hf3fs::lib::CudaIpcMapping> importedMapping;
+  hf3fs::lib::CudaIpcHandle ipcHandle{};
 
-  // Whether this was imported via IPC
-  bool isIpcImported = false;
-
-  // IPC handle for cross-process sharing
-  hf3fs::net::AcceleratorMemoryDescriptor::IpcHandle ipcHandle;
-
-  // Memory size
-  size_t size = 0;
-
-  ~GpuIovHandle() { release(); }
-
-  void release() {
-    if (!devicePtr) {
-      region.reset();
-      return;
-    }
-
-    auto *cache = hf3fs::net::GDRManager::instance().getRegionCache();
-    if (cache) {
-      cache->invalidate(devicePtr);
-    }
-    region.reset();
-
-    void *ptr = devicePtr;
-    devicePtr = nullptr;
-    if (ownsMemory) {
-      freeGpuMemory(ptr, deviceId);
-    } else if (isIpcImported) {
+  ~GpuIovHandle() {
+    importedMapping.reset();
+    if (ownsMemory && allocationBase) {
 #ifdef HF3FS_GDR_ENABLED
-      cudaError_t err = cudaSetDevice(deviceId);
-      if (err != cudaSuccess) {
-        XLOGF(WARN, "cudaSetDevice({}) failed: {}", deviceId, cudaGetErrorString(err));
+      auto error = cudaSetDevice(deviceId);
+      if (error != cudaSuccess) {
+        XLOGF(WARN, "cudaSetDevice({}) failed before freeing GPU iov: {}", deviceId, cudaGetErrorString(error));
       }
-      err = cudaIpcCloseMemHandle(ptr);
-      if (err != cudaSuccess) {
-        XLOGF(WARN, "cudaIpcCloseMemHandle failed: {}", cudaGetErrorString(err));
+      error = cudaFree(allocationBase);
+      if (error != cudaSuccess) {
+        XLOGF(WARN, "cudaFree failed for GPU iov: {}", cudaGetErrorString(error));
       }
 #endif
     }
   }
 };
 
-// Global registry of GPU iov handles (for tracking and cleanup)
 std::mutex gGpuIovMutex;
 std::unordered_map<void *, std::unique_ptr<GpuIovHandle>> gGpuIovHandles;
 
-// GDR initialization state
-std::once_flag gGdrInitOnce;
-bool gGdrInitialized = false;
+int resultToErrno(const hf3fs::Status &status) {
+  switch (status.code()) {
+    case hf3fs::StatusCode::kInvalidArg:
+      return -EINVAL;
+    case hf3fs::StatusCode::kNotImplemented:
+      return -ENOTSUP;
+    case hf3fs::StatusCode::kNotEnoughMemory:
+      return -ENOMEM;
+    default:
+      return -EIO;
+  }
+}
 
-bool ensureGdrInitialized() {
-  std::call_once(gGdrInitOnce, []() {
-    // Logging is already initialized by the static Hf3fsInitLib in UsrbIo.cc.
-    XLOGF(INFO, "Initializing GDR support");
+std::string gpuIovLink(const struct hf3fs_iov &iov, int deviceId) {
+  hf3fs::Uuid uuid;
+  std::memcpy(uuid.data, iov.id, sizeof(uuid.data));
+  return fmt::format("{}/3fs-virt/iovs/{}.gdr.d{}", iov.mount_point, uuid.toHexString(), deviceId);
+}
 
-    // Check IB availability
-    if (!hf3fs::net::IBManager::initialized()) {
-      XLOGF(WARN, "IB not initialized - GDR may have limited functionality");
+int createGpuIovSymlink(const struct hf3fs_iov &iov, const GpuIovHandle &handle) {
+  auto target = hf3fs::lib::formatGdrUri(handle.deviceId,
+                                         handle.allocationSize,
+                                         handle.viewOffset,
+                                         handle.viewSize,
+                                         handle.ipcHandle.data(),
+                                         handle.ipcHandle.size());
+  if (target.empty()) {
+    return -EINVAL;
+  }
+
+  auto link = gpuIovLink(iov, handle.deviceId);
+  if (symlink(target.c_str(), link.c_str()) < 0) {
+    auto error = errno;
+    XLOGF(WARN, "Failed to publish GPU iov {} -> {}: {}", link, target, strerror(error));
+    return -error;
+  }
+
+  XLOGF(DBG, "Published GPU iov {} -> {}", link, target);
+  return 0;
+}
+
+int removeGpuIovSymlink(const struct hf3fs_iov &iov, int deviceId) {
+  auto link = gpuIovLink(iov, deviceId);
+  if (unlink(link.c_str()) == 0) {
+    return 0;
+  }
+
+  auto error = errno;
+  if (error != ENOENT) {
+    XLOGF(WARN, "Failed to unlink GPU iov {}: {}", link, strerror(error));
+  }
+  return -error;
+}
+
+struct GpuIovSnapshot {
+  int deviceId;
+  bool ownsPublication;
+};
+
+std::optional<GpuIovSnapshot> getGpuHandleSnapshot(const struct hf3fs_iov *iov) {
+  if (!iov || !iov->iovh) {
+    return std::nullopt;
+  }
+  std::lock_guard lock(gGpuIovMutex);
+  auto it = gGpuIovHandles.find(iov->iovh);
+  if (it == gGpuIovHandles.end()) {
+    return std::nullopt;
+  }
+  return GpuIovSnapshot{it->second->deviceId, it->second->ownsPublication};
+}
+
+std::unique_ptr<GpuIovHandle> unregisterGpuIov(const struct hf3fs_iov *iov) {
+  if (!iov || !iov->iovh) {
+    return nullptr;
+  }
+  std::lock_guard lock(gGpuIovMutex);
+  auto it = gGpuIovHandles.find(iov->iovh);
+  if (it == gGpuIovHandles.end()) {
+    return nullptr;
+  }
+  auto handle = std::move(it->second);
+  gGpuIovHandles.erase(it);
+  return handle;
+}
+
+int finalizeGpuIov(struct hf3fs_iov *iov,
+                   std::unique_ptr<GpuIovHandle> handle,
+                   const uint8_t id[16],
+                   const char *mountPoint,
+                   size_t blockSize) {
+  if (!iov || !handle || !id || !mountPoint || std::strlen(mountPoint) >= sizeof(iov->mount_point)) {
+    return -EINVAL;
+  }
+
+  struct hf3fs_iov result{};
+  result.base = static_cast<uint8_t *>(handle->viewPtr);
+  result.iovh = handle.get();
+  std::memcpy(result.id, id, sizeof(result.id));
+  std::strcpy(result.mount_point, mountPoint);
+  result.size = handle->viewSize;
+  result.block_size = blockSize;
+  result.numa = -1;
+
+  if (handle->ownsPublication) {
+    auto aliveResult = hf3fs_ensure_iov_mount_fd_internal(mountPoint);
+    if (aliveResult != 0) {
+      XLOGF(ERR, "Failed to hold iovs directory for mount {}: {}", mountPoint, strerror(-aliveResult));
+      return aliveResult;
     }
+  }
 
-    // Initialize GDR manager
-    hf3fs::net::GDRConfig config;
-    config.set_enabled(true);
-
-    auto result = hf3fs::net::GDRManager::instance().init(config);
-    if (!result) {
-      XLOGF(ERR, "GDR initialization failed: {}", result.error().message());
-      return;
+  auto *key = handle.get();
+  try {
+    std::lock_guard lock(gGpuIovMutex);
+    auto [it, inserted] = gGpuIovHandles.try_emplace(key);
+    if (!inserted) {
+      return -EEXIST;
     }
+    it->second = std::move(handle);
+  } catch (const std::bad_alloc &) {
+    return -ENOMEM;
+  }
 
-    gGdrInitialized = true;
-    XLOGF(INFO, "GDR support initialized successfully");
-  });
+  if (key->ownsPublication) {
+    auto publishResult = createGpuIovSymlink(result, *key);
+    if (publishResult != 0) {
+      auto rollback = unregisterGpuIov(&result);
+      XLOGF_IF(FATAL, !rollback, "GPU iov handle disappeared during publication rollback");
+      return publishResult;
+    }
+  }
 
-  return gGdrInitialized;
+  *iov = result;
+  return 0;
+}
+
+int registerAndPublishGpuIov(struct hf3fs_iov *iov,
+                             std::unique_ptr<GpuIovHandle> handle,
+                             const uint8_t id[16],
+                             const char *mountPoint,
+                             size_t blockSize) {
+  handle->ownsPublication = true;
+  return finalizeGpuIov(iov, std::move(handle), id, mountPoint, blockSize);
+}
+
+int validateGpuDevice(int deviceId) {
+  auto available = hf3fs::lib::cudaIpcDeviceAvailable(deviceId);
+  if (!available) {
+    XLOGF(ERR, "Failed to query CUDA device {}: {}", deviceId, available.error());
+    return resultToErrno(available.error());
+  }
+  return *available ? 0 : -ENODEV;
 }
 
 int allocateGpuMemory(size_t size, int deviceId, void **devicePtr) {
   if (!devicePtr || size == 0) {
     return -EINVAL;
   }
-
-  XLOGF(DBG, "Allocating GPU memory: size={}, device={}", size, deviceId);
-
 #ifdef HF3FS_GDR_ENABLED
-  cudaError_t err = cudaSetDevice(deviceId);
-  if (err != cudaSuccess) {
-    XLOGF(ERR, "cudaSetDevice({}) failed: {}", deviceId, cudaGetErrorString(err));
+  auto error = cudaSetDevice(deviceId);
+  if (error != cudaSuccess) {
+    XLOGF(ERR, "cudaSetDevice({}) failed: {}", deviceId, cudaGetErrorString(error));
     return -ENODEV;
   }
-
-  err = cudaMalloc(devicePtr, size);
-  if (err != cudaSuccess) {
-    XLOGF(ERR, "cudaMalloc({}) failed: {}", size, cudaGetErrorString(err));
-    return -ENOMEM;
+  error = cudaMalloc(devicePtr, size);
+  if (error != cudaSuccess) {
+    XLOGF(ERR, "cudaMalloc({}) failed: {}", size, cudaGetErrorString(error));
+    return error == cudaErrorMemoryAllocation ? -ENOMEM : -EIO;
   }
-
-  XLOGF(INFO,
-        "Allocated GPU memory: ptr={}, size={}, device={}",
-        static_cast<const void *>(*devicePtr),
-        size,
-        deviceId);
   return 0;
 #else
-  XLOGF(WARN, "GPU memory allocation requires CUDA runtime - stub implementation");
+  (void)deviceId;
   *devicePtr = nullptr;
   return -ENOTSUP;
 #endif
-}
-
-void freeGpuMemory(void *devicePtr, int deviceId) {
-  if (!devicePtr) {
-    return;
-  }
-
-  XLOGF(DBG, "Freeing GPU memory: ptr={}, device={}", static_cast<const void *>(devicePtr), deviceId);
-
-#ifdef HF3FS_GDR_ENABLED
-  cudaError_t err = cudaSetDevice(deviceId);
-  if (err != cudaSuccess) {
-    XLOGF(ERR, "cudaSetDevice({}) failed: {}", deviceId, cudaGetErrorString(err));
-    return;
-  }
-  err = cudaFree(devicePtr);
-  if (err != cudaSuccess) {
-    XLOGF(ERR, "cudaFree failed: {}", cudaGetErrorString(err));
-  }
-#endif
-}
-
-void registerGpuIov(struct hf3fs_iov *iov, std::unique_ptr<GpuIovHandle> handle) {
-  std::lock_guard<std::mutex> lock(gGpuIovMutex);
-  gGpuIovHandles[iov->iovh] = std::move(handle);
-}
-
-std::unique_ptr<GpuIovHandle> unregisterGpuIov(struct hf3fs_iov *iov) {
-  std::lock_guard<std::mutex> lock(gGpuIovMutex);
-  auto it = gGpuIovHandles.find(iov->iovh);
-  if (it != gGpuIovHandles.end()) {
-    auto handle = std::move(it->second);
-    gGpuIovHandles.erase(it);
-    return handle;
-  }
-  return nullptr;
-}
-
-GpuIovHandle *getGpuHandle(const struct hf3fs_iov *iov) {
-  if (!iov || iov->numa != kGpuIovMagicNuma || !iov->iovh) {
-    return nullptr;
-  }
-  std::lock_guard<std::mutex> lock(gGpuIovMutex);
-  auto it = gGpuIovHandles.find(iov->iovh);
-  return it != gGpuIovHandles.end() ? it->second.get() : nullptr;
-}
-
-int createGpuIovSymlink(const struct hf3fs_iov *iov,
-                        int deviceId,
-                        const hf3fs::net::AcceleratorMemoryDescriptor::IpcHandle *ipcHandle) {
-  hf3fs::Uuid uuid;
-  std::memcpy(uuid.data, iov->id, sizeof(uuid.data));
-
-  auto link = fmt::format("{}/3fs-virt/iovs/{}.gdr.d{}", iov->mount_point, uuid.toHexString(), deviceId);
-
-  if (!ipcHandle || !ipcHandle->valid) {
-    XLOGF(ERR,
-          "Cannot create GDR symlink without valid IPC handle; "
-          "cudaIpcGetMemHandle must succeed before registering GPU iov");
-    return -EINVAL;
-  }
-
-  std::string target = hf3fs::lib::formatGdrUri(deviceId, iov->size, ipcHandle->data, hf3fs::lib::kGdrIpcHandleBytes);
-  if (target.empty()) {
-    XLOGF(ERR, "Cannot create GDR symlink with invalid target fields: device={}, size={}", deviceId, iov->size);
-    return -EINVAL;
-  }
-
-  int result = symlink(target.c_str(), link.c_str());
-  if (result < 0) {
-    XLOGF(WARN, "Failed to create GDR symlink {} -> {}: {}", link, target, strerror(errno));
-    return -errno;
-  }
-
-  XLOGF(DBG, "Created GDR symlink: {} -> {}", link, target);
-  return 0;
-}
-
-void removeGpuIovSymlink(const struct hf3fs_iov *iov, int deviceId) {
-  hf3fs::Uuid uuid;
-  std::memcpy(uuid.data, iov->id, sizeof(uuid.data));
-
-  auto link = fmt::format("{}/3fs-virt/iovs/{}.gdr.d{}", iov->mount_point, uuid.toHexString(), deviceId);
-
-  unlink(link.c_str());
 }
 
 }  // namespace
@@ -247,19 +251,22 @@ void removeGpuIovSymlink(const struct hf3fs_iov *iov, int deviceId) {
 extern "C" {
 
 bool hf3fs_gdr_available(void) {
-  if (!ensureGdrInitialized()) {
+  auto count = hf3fs::lib::cudaIpcDeviceCount();
+  if (!count) {
     return false;
   }
-  auto &mgr = hf3fs::net::GDRManager::instance();
-  // GDR is only available if initialized AND has a valid region cache
-  return mgr.isAvailable() && mgr.getRegionCache() != nullptr;
+  for (int deviceId = 0; deviceId < *count; ++deviceId) {
+    auto available = hf3fs::lib::cudaIpcDeviceAvailable(deviceId);
+    if (available && *available) {
+      return true;
+    }
+  }
+  return false;
 }
 
 int hf3fs_gdr_device_count(void) {
-  if (!ensureGdrInitialized()) {
-    return 0;
-  }
-  return static_cast<int>(hf3fs::net::GDRManager::instance().getGpuDevices().size());
+  auto count = hf3fs::lib::cudaIpcDeviceCount();
+  return count ? *count : 0;
 }
 
 int hf3fs_iovcreate_gpu_internal(struct hf3fs_iov *iov,
@@ -271,103 +278,47 @@ int hf3fs_iovcreate_gpu_internal(struct hf3fs_iov *iov,
     return -EINVAL;
   }
   if (block_size != 0) {
-    XLOGF(ERR, "GDR iov does not support block_size: {}", block_size);
     return -EINVAL;
   }
-
-  if (!ensureGdrInitialized()) {
-    return -ENOTSUP;
+  auto deviceResult = validateGpuDevice(gpu_device_id);
+  if (deviceResult != 0) {
+    return deviceResult;
   }
 
-  // Validate device ID
-  int deviceCount = hf3fs_gdr_device_count();
-  if (gpu_device_id < 0 || gpu_device_id >= deviceCount) {
-    XLOGF(ERR, "Invalid GPU device ID: {} (have {} devices)", gpu_device_id, deviceCount);
-    return -ENODEV;
-  }
-
-  // Validate mount point length
-  if (strlen(hf3fs_mount_point) >= sizeof(iov->mount_point)) {
-    XLOGF(ERR, "Mount point too long: {}", hf3fs_mount_point);
-    return -EINVAL;
-  }
-
-  XLOGF(DBG, "Creating GPU iov: size={}, device={}", size, gpu_device_id);
-
-  // Allocate GPU memory
   void *devicePtr = nullptr;
-  int allocResult = allocateGpuMemory(size, gpu_device_id, &devicePtr);
-  if (allocResult != 0) {
-    return allocResult;
+  auto allocationResult = allocateGpuMemory(size, gpu_device_id, &devicePtr);
+  if (allocationResult != 0) {
+    return allocationResult;
   }
 
-  // Create internal handle
   auto handle = std::make_unique<GpuIovHandle>();
   handle->deviceId = gpu_device_id;
-  handle->devicePtr = devicePtr;
+  handle->allocationBase = devicePtr;
+  handle->allocationSize = size;
+  handle->viewPtr = devicePtr;
+  handle->viewSize = size;
   handle->ownsMemory = true;
-  handle->size = size;
 
-  // Create GPU memory descriptor for RDMA registration
-  hf3fs::net::AcceleratorMemoryDescriptor desc;
-  desc.devicePtr = devicePtr;
-  desc.size = size;
-  desc.deviceId = gpu_device_id;
-
-  // Register with RDMA subsystem
-  auto *cache = hf3fs::net::GDRManager::instance().getRegionCache();
-  if (!cache) {
-    XLOGF(ERR, "GDR region cache not available");
-    return -ENOTSUP;
+  auto ipcExport = hf3fs::lib::exportCudaIpcMemory(devicePtr, size, gpu_device_id);
+  if (!ipcExport) {
+    XLOGF(ERR, "Failed to export allocated GPU iov: {}", ipcExport.error());
+    return resultToErrno(ipcExport.error());
   }
-  auto regionResult = cache->getOrCreate(desc);
-  if (!regionResult) {
-    XLOGF(ERR, "Failed to register GPU memory with RDMA: {}", regionResult.error().message());
-    return -ENOMEM;
+  if (ipcExport->allocationBase != devicePtr || ipcExport->offset != 0) {
+    XLOGF(ERR, "cudaMalloc returned a pointer that is not the CUDA allocation base");
+    return -EIO;
   }
-  handle->region = *regionResult;
+  handle->allocationBase = ipcExport->allocationBase;
+  handle->allocationSize = ipcExport->allocationSize;
+  handle->viewOffset = ipcExport->offset;
+  handle->ipcHandle = ipcExport->ipcHandle;
 
-#ifdef HF3FS_GDR_ENABLED
-  cudaIpcMemHandle_t cudaHandle;
-  cudaError_t ipcErr = cudaIpcGetMemHandle(&cudaHandle, devicePtr);
-  if (ipcErr == cudaSuccess) {
-    std::memcpy(handle->ipcHandle.data, &cudaHandle, sizeof(cudaHandle));
-    handle->ipcHandle.valid = true;
-    XLOGF(DBG,
-          "Auto-exported IPC handle for GPU iov: ptr={}, device={}",
-          static_cast<const void *>(devicePtr),
-          gpu_device_id);
-  } else {
-    XLOGF(WARN, "Failed to auto-export IPC handle: {} (non-fatal)", cudaGetErrorString(ipcErr));
-  }
-#endif
-
-  // Generate UUID for this iov
-  hf3fs::Uuid uuid = hf3fs::Uuid::random();
-
-  // Initialize the iov structure
-  std::memset(iov, 0, sizeof(*iov));
-  iov->base = static_cast<uint8_t *>(devicePtr);
-  iov->size = size;
-  iov->block_size = block_size;
-  iov->numa = kGpuIovMagicNuma;  // Magic value to identify GPU iovs
-  iov->iovh = handle.get();      // Store handle pointer
-  std::memcpy(iov->id, uuid.data, sizeof(iov->id));
-  std::strncpy(iov->mount_point, hf3fs_mount_point, sizeof(iov->mount_point) - 1);
-
-  // Register with fuse daemon
-  int symlinkResult = createGpuIovSymlink(iov, gpu_device_id, &handle->ipcHandle);
-  if (symlinkResult != 0) {
-    std::memset(iov, 0, sizeof(*iov));
-    return symlinkResult;
-  }
-
-  // Track the handle
-  registerGpuIov(iov, std::move(handle));
-
-  XLOGF(INFO, "Created GPU iov: ptr={}, size={}, device={}", static_cast<const void *>(devicePtr), size, gpu_device_id);
-
-  return 0;
+  auto uuid = hf3fs::Uuid::random();
+  return registerAndPublishGpuIov(iov,
+                                  std::move(handle),
+                                  reinterpret_cast<const uint8_t *>(uuid.data),
+                                  hf3fs_mount_point,
+                                  block_size);
 }
 
 int hf3fs_iovopen_gpu_internal(struct hf3fs_iov *iov,
@@ -376,137 +327,56 @@ int hf3fs_iovopen_gpu_internal(struct hf3fs_iov *iov,
                                size_t size,
                                size_t block_size,
                                int gpu_device_id) {
-  if (!iov || !id || !hf3fs_mount_point || size == 0) {
+  if (!iov || !id || !hf3fs_mount_point || size == 0 || std::strlen(hf3fs_mount_point) >= sizeof(iov->mount_point)) {
     return -EINVAL;
   }
   if (block_size != 0) {
-    XLOGF(ERR, "GDR iov does not support block_size: {}", block_size);
     return -EINVAL;
   }
-
-  if (!ensureGdrInitialized()) {
-    return -ENOTSUP;
-  }
-
-  // Validate device ID
-  int deviceCount = hf3fs_gdr_device_count();
-  if (gpu_device_id < 0 || gpu_device_id >= deviceCount) {
-    XLOGF(ERR, "Invalid GPU device ID: {}", gpu_device_id);
-    return -ENODEV;
-  }
-
-  // Validate mount point length
-  if (strlen(hf3fs_mount_point) >= sizeof(iov->mount_point)) {
-    return -EINVAL;
+  auto deviceResult = validateGpuDevice(gpu_device_id);
+  if (deviceResult != 0) {
+    return deviceResult;
   }
 
   hf3fs::Uuid uuid;
   std::memcpy(uuid.data, id, sizeof(uuid.data));
-  XLOGF(DBG, "Opening GPU iov: id={}, size={}, device={}", uuid.toHexString(), size, gpu_device_id);
-
-  // Look up existing iov in fuse namespace
   auto link = fmt::format("{}/3fs-virt/iovs/{}.gdr.d{}", hf3fs_mount_point, uuid.toHexString(), gpu_device_id);
 
   char target[512];
-  ssize_t len = readlink(link.c_str(), target, sizeof(target) - 1);
-  if (len < 0) {
-    XLOGF(ERR, "GPU iov not found: {}", link);
-    return -ENOENT;
+  auto length = readlink(link.c_str(), target, sizeof(target) - 1);
+  if (length < 0) {
+    return -errno;
   }
-  target[len] = '\0';
+  target[length] = '\0';
 
-  auto parsedTarget = hf3fs::lib::parseGdrUri(target);
-  if (!parsedTarget) {
-    XLOGF(ERR, "Invalid GPU iov target: {}", target);
+  auto parsed = hf3fs::lib::parseGdrUri(target);
+  if (!parsed || parsed->deviceId != gpu_device_id || parsed->size != size) {
     return -EINVAL;
   }
 
-  // Verify consistency
-  if (parsedTarget->deviceId != gpu_device_id) {
-    XLOGF(ERR, "GPU device mismatch: expected {}, got {}", gpu_device_id, parsedTarget->deviceId);
-    return -EINVAL;
+  hf3fs::lib::CudaIpcHandle ipcHandle;
+  std::copy(parsed->ipcHandle.begin(), parsed->ipcHandle.end(), ipcHandle.begin());
+  auto mapping = hf3fs::lib::CudaIpcMapping::open(gpu_device_id, ipcHandle, parsed->allocationSize);
+  if (!mapping) {
+    XLOGF(ERR, "Failed to import GPU iov {}: {}", uuid.toHexString(), mapping.error());
+    return resultToErrno(mapping.error());
   }
-  if (parsedTarget->size != size) {
-    XLOGF(ERR, "GPU size mismatch: expected {}, got {}", size, parsedTarget->size);
-    return -EINVAL;
+  auto view = mapping->view(parsed->offset, parsed->size);
+  if (!view) {
+    return resultToErrno(view.error());
   }
 
-  // Create handle for the existing GPU memory
   auto handle = std::make_unique<GpuIovHandle>();
   handle->deviceId = gpu_device_id;
-  handle->ownsMemory = false;  // We don't own it, just opening
-  handle->size = parsedTarget->size;
+  handle->allocationBase = mapping->allocationBase();
+  handle->allocationSize = parsed->allocationSize;
+  handle->viewPtr = *view;
+  handle->viewOffset = parsed->offset;
+  handle->viewSize = parsed->size;
+  handle->ipcHandle = ipcHandle;
+  handle->importedMapping = std::make_unique<hf3fs::lib::CudaIpcMapping>(std::move(*mapping));
 
-  // Import GPU memory via CUDA IPC handle
-#ifdef HF3FS_GDR_ENABLED
-  {
-    cudaError_t err = cudaSetDevice(gpu_device_id);
-    if (err != cudaSuccess) {
-      XLOGF(ERR, "cudaSetDevice({}) failed while opening GPU iov: {}", gpu_device_id, cudaGetErrorString(err));
-      return -ENODEV;
-    }
-
-    cudaIpcMemHandle_t cudaHandle;
-    std::memcpy(&cudaHandle, parsedTarget->ipcHandle.data(), sizeof(cudaHandle));
-    void *importedPtr = nullptr;
-    err = cudaIpcOpenMemHandle(&importedPtr, cudaHandle, cudaIpcMemLazyEnablePeerAccess);
-    if (err != cudaSuccess) {
-      XLOGF(ERR, "cudaIpcOpenMemHandle failed while opening GPU iov: {}", cudaGetErrorString(err));
-      return -EINVAL;
-    }
-    handle->devicePtr = importedPtr;
-    handle->isIpcImported = true;
-    std::memcpy(handle->ipcHandle.data, parsedTarget->ipcHandle.data(), hf3fs::lib::kGdrIpcHandleBytes);
-    handle->ipcHandle.valid = true;
-  }
-#else
-  XLOGF(ERR, "GPU iov target requires CUDA IPC, but CUDA is disabled in this build");
-  return -ENOTSUP;
-#endif
-
-  if (!handle->devicePtr) {
-    XLOGF(ERR, "GPU iov target resolved to null pointer");
-    return -EINVAL;
-  }
-
-  // Register with RDMA
-  hf3fs::net::AcceleratorMemoryDescriptor desc;
-  desc.devicePtr = handle->devicePtr;
-  desc.size = parsedTarget->size;
-  desc.deviceId = gpu_device_id;
-  desc.ipcHandle = handle->ipcHandle;
-
-  auto *cache = hf3fs::net::GDRManager::instance().getRegionCache();
-  if (!cache) {
-    XLOGF(ERR, "GDR region cache not available");
-    return -ENOTSUP;
-  }
-  auto regionResult = cache->getOrCreate(desc);
-  if (!regionResult) {
-    XLOGF(ERR, "Failed to register opened GPU memory: {}", regionResult.error().message());
-    return -ENOMEM;
-  }
-  handle->region = *regionResult;
-
-  // Initialize iov
-  std::memset(iov, 0, sizeof(*iov));
-  iov->base = static_cast<uint8_t *>(handle->devicePtr);
-  iov->size = parsedTarget->size;
-  iov->block_size = block_size;
-  iov->numa = kGpuIovMagicNuma;
-  iov->iovh = handle.get();
-  std::memcpy(iov->id, id, sizeof(iov->id));
-  std::strncpy(iov->mount_point, hf3fs_mount_point, sizeof(iov->mount_point) - 1);
-
-  registerGpuIov(iov, std::move(handle));
-
-  XLOGF(INFO,
-        "Opened GPU iov: id={}, ptr={}, size={}",
-        uuid.toHexString(),
-        static_cast<const void *>(iov->base),
-        iov->size);
-
-  return 0;
+  return finalizeGpuIov(iov, std::move(handle), id, hf3fs_mount_point, block_size);
 }
 
 int hf3fs_iovwrap_gpu_internal(struct hf3fs_iov *iov,
@@ -520,200 +390,114 @@ int hf3fs_iovwrap_gpu_internal(struct hf3fs_iov *iov,
     return -EINVAL;
   }
   if (block_size != 0) {
-    XLOGF(ERR, "GDR iov does not support block_size: {}", block_size);
     return -EINVAL;
   }
-
-  if (!ensureGdrInitialized()) {
-    return -ENOTSUP;
+  auto deviceResult = validateGpuDevice(gpu_device_id);
+  if (deviceResult != 0) {
+    return deviceResult;
   }
 
-  // Validate device ID
-  int deviceCount = hf3fs_gdr_device_count();
-  if (gpu_device_id < 0 || gpu_device_id >= deviceCount) {
-    XLOGF(ERR, "Invalid GPU device ID: {} (have {} devices)", gpu_device_id, deviceCount);
-    return -ENODEV;
+  auto ipcExport = hf3fs::lib::exportCudaIpcMemory(gpu_ptr, size, gpu_device_id);
+  if (!ipcExport) {
+    XLOGF(ERR, "Failed to export wrapped GPU iov: {}", ipcExport.error());
+    return resultToErrno(ipcExport.error());
   }
 
-  // Validate mount point
-  if (strlen(hf3fs_mount_point) >= sizeof(iov->mount_point)) {
-    return -EINVAL;
-  }
-
-  XLOGF(DBG,
-        "Wrapping GPU memory: ptr={}, size={}, device={}",
-        static_cast<const void *>(gpu_ptr),
-        size,
-        gpu_device_id);
-
-  // Create handle (we don't own the memory)
   auto handle = std::make_unique<GpuIovHandle>();
   handle->deviceId = gpu_device_id;
-  handle->devicePtr = gpu_ptr;
-  handle->ownsMemory = false;
-  handle->size = size;
+  handle->allocationBase = ipcExport->allocationBase;
+  handle->allocationSize = ipcExport->allocationSize;
+  handle->viewPtr = gpu_ptr;
+  handle->viewOffset = ipcExport->offset;
+  handle->viewSize = size;
+  handle->ipcHandle = ipcExport->ipcHandle;
 
-#ifdef HF3FS_GDR_ENABLED
-  cudaError_t ipcSetDeviceErr = cudaSetDevice(gpu_device_id);
-  if (ipcSetDeviceErr == cudaSuccess) {
-    cudaIpcMemHandle_t cudaHandle;
-    cudaError_t ipcErr = cudaIpcGetMemHandle(&cudaHandle, gpu_ptr);
-    if (ipcErr == cudaSuccess) {
-      std::memcpy(handle->ipcHandle.data, &cudaHandle, sizeof(cudaHandle));
-      handle->ipcHandle.valid = true;
-    } else {
-      XLOGF(WARN, "Failed to auto-export IPC handle for wrapped GPU buffer: {}", cudaGetErrorString(ipcErr));
-    }
-  } else {
-    XLOGF(WARN,
-          "cudaSetDevice({}) failed while exporting wrapped GPU buffer IPC handle: {}",
-          gpu_device_id,
-          cudaGetErrorString(ipcSetDeviceErr));
-  }
-#endif
-
-  // Create GPU memory descriptor
-  hf3fs::net::AcceleratorMemoryDescriptor desc;
-  desc.devicePtr = gpu_ptr;
-  desc.size = size;
-  desc.deviceId = gpu_device_id;
-  if (handle->ipcHandle.valid) {
-    desc.ipcHandle = handle->ipcHandle;
-  }
-
-  // Register with RDMA
-  auto *cache = hf3fs::net::GDRManager::instance().getRegionCache();
-  if (!cache) {
-    XLOGF(ERR, "GDR region cache not available");
-    return -ENOTSUP;
-  }
-  auto regionResult = cache->getOrCreate(desc);
-  if (!regionResult) {
-    XLOGF(ERR, "Failed to register GPU memory with RDMA: {}", regionResult.error().message());
-    return -ENOMEM;
-  }
-  handle->region = *regionResult;
-
-  // Initialize iov structure
-  std::memset(iov, 0, sizeof(*iov));
-  iov->base = static_cast<uint8_t *>(gpu_ptr);
-  iov->size = size;
-  iov->block_size = block_size;
-  iov->numa = kGpuIovMagicNuma;
-  iov->iovh = handle.get();
-  std::memcpy(iov->id, id, sizeof(iov->id));
-  std::strncpy(iov->mount_point, hf3fs_mount_point, sizeof(iov->mount_point) - 1);
-
-  // Register with fuse daemon
-  int symlinkResult = createGpuIovSymlink(iov, gpu_device_id, &handle->ipcHandle);
-  if (symlinkResult != 0) {
-    std::memset(iov, 0, sizeof(*iov));
-    return symlinkResult;
-  }
-
-  // Track handle
-  registerGpuIov(iov, std::move(handle));
-
-  XLOGF(INFO,
-        "Wrapped GPU memory: ptr={}, size={}, device={}",
-        static_cast<const void *>(gpu_ptr),
-        size,
-        gpu_device_id);
-
-  return 0;
+  return registerAndPublishGpuIov(iov, std::move(handle), id, hf3fs_mount_point, block_size);
 }
 
-void hf3fs_iovunlink_gpu_internal(struct hf3fs_iov *iov) {
-  if (!iov) {
-    return;
+int hf3fs_iovunlink_gpu_internal(struct hf3fs_iov *iov) {
+  if (!iov || !iov->iovh) {
+    return 0;
   }
 
-  GpuIovHandle *handle = getGpuHandle(iov);
-  if (!handle) {
-    XLOGF(WARN, "hf3fs_iovunlink_gpu called on non-GPU iov");
-    return;
+  std::lock_guard lock(gGpuIovMutex);
+  auto it = gGpuIovHandles.find(iov->iovh);
+  if (it == gGpuIovHandles.end() || !it->second->ownsPublication) {
+    return 0;
   }
 
-  // Remove the symlink from fuse namespace
-  removeGpuIovSymlink(iov, handle->deviceId);
+  auto result = removeGpuIovSymlink(*iov, it->second->deviceId);
+  if (result == 0 || result == -ENOENT) {
+    it->second->ownsPublication = false;
+    return 0;
+  }
+  return result;
+}
 
-  XLOGF(DBG, "Unlinked GPU iov: ptr={}, device={}", static_cast<const void *>(iov->base), handle->deviceId);
+int hf3fs_iovunlink_gpu_publication_internal(const struct hf3fs_iov *iov, int device_id, bool owns_publication) {
+  if (!iov || !owns_publication) {
+    return 0;
+  }
+  return removeGpuIovSymlink(*iov, device_id);
 }
 
 void hf3fs_iovdestroy_gpu_internal(struct hf3fs_iov *iov) {
-  if (!iov) {
+  if (!iov || !iov->iovh) {
     return;
   }
 
-  // Unlink first
-  hf3fs_iovunlink_gpu_internal(iov);
+  std::unique_ptr<GpuIovHandle> handle;
+  {
+    std::lock_guard lock(gGpuIovMutex);
+    auto it = gGpuIovHandles.find(iov->iovh);
+    if (it == gGpuIovHandles.end()) {
+      return;
+    }
 
-  // Get and remove the handle
-  auto handle = unregisterGpuIov(iov);
-  if (!handle) {
-    XLOGF(WARN, "hf3fs_iovdestroy_gpu_internal: no handle found");
-    return;
+    if (it->second->ownsPublication) {
+      auto unlinkResult = removeGpuIovSymlink(*iov, it->second->deviceId);
+      if (unlinkResult != 0 && unlinkResult != -ENOENT) {
+        XLOGF(ERR, "GPU iov destroy retained handle after publication unlink failed: {}", strerror(-unlinkResult));
+        return;
+      }
+      it->second->ownsPublication = false;
+    }
+
+    handle = std::move(it->second);
+    gGpuIovHandles.erase(it);
   }
 
-  XLOGF(DBG,
-        "Destroying GPU iov: ptr={}, size={}, device={}, ownsMemory={}",
-        static_cast<const void *>(handle->devicePtr),
-        handle->size,
-        handle->deviceId,
-        handle->ownsMemory);
-
-  // Handle destruction (including potential memory free) happens in destructor
   handle.reset();
-
-  // Clear the iov structure
   std::memset(iov, 0, sizeof(*iov));
 }
 
-bool hf3fs_iov_is_gpu_internal(const struct hf3fs_iov *iov) {
-  if (!iov) {
-    return false;
-  }
-  return iov->numa == kGpuIovMagicNuma && getGpuHandle(iov) != nullptr;
-}
+bool hf3fs_iov_is_gpu_internal(const struct hf3fs_iov *iov) { return getGpuHandleSnapshot(iov).has_value(); }
 
 int hf3fs_iov_gpu_device_internal(const struct hf3fs_iov *iov) {
-  GpuIovHandle *handle = getGpuHandle(iov);
+  auto handle = getGpuHandleSnapshot(iov);
   return handle ? handle->deviceId : -1;
 }
 
 int hf3fs_iovsync_gpu_internal(const struct hf3fs_iov *iov, int direction) {
-  if (!iov) {
-    return -EINVAL;
-  }
-
-  GpuIovHandle *handle = getGpuHandle(iov);
+  auto handle = getGpuHandleSnapshot(iov);
   if (!handle) {
     return -EINVAL;
   }
-
-  XLOGF(DBG,
-        "GPU sync: ptr={}, size={}, device={}, direction={}",
-        static_cast<const void *>(handle->devicePtr),
-        handle->size,
-        handle->deviceId,
-        direction);
-
 #ifdef HF3FS_GDR_ENABLED
-  cudaError_t err = cudaSetDevice(handle->deviceId);
-  if (err != cudaSuccess) {
-    XLOGF(ERR, "cudaSetDevice({}) failed: {}", handle->deviceId, cudaGetErrorString(err));
+  auto error = cudaSetDevice(handle->deviceId);
+  if (error != cudaSuccess) {
     return -ENODEV;
   }
-  err = cudaDeviceSynchronize();
-  if (err != cudaSuccess) {
-    XLOGF(ERR, "cudaDeviceSynchronize failed: {}", cudaGetErrorString(err));
+  error = cudaDeviceSynchronize();
+  if (error != cudaSuccess) {
+    XLOGF(ERR, "cudaDeviceSynchronize failed: {}", cudaGetErrorString(error));
     return -EIO;
   }
 #else
   (void)direction;
+  return -ENOTSUP;
 #endif
-
-  // For most cases, nvidia_peermem handles coherency automatically
+  (void)direction;
   return 0;
 }
 

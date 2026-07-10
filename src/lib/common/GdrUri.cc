@@ -8,7 +8,9 @@
 namespace hf3fs::lib {
 namespace {
 
-constexpr std::string_view kPrefix = "gdr://v1/device/";
+constexpr std::string_view kPrefix = "gdr://v2/device/";
+constexpr std::string_view kAllocationSep = "/allocation/";
+constexpr std::string_view kOffsetSep = "/offset/";
 constexpr std::string_view kSizeSep = "/size/";
 constexpr std::string_view kIpcSep = "/ipc/";
 
@@ -69,11 +71,25 @@ std::optional<GdrUri> parseGdrUri(std::string_view uri) {
   }
 
   uri.remove_prefix(kPrefix.size());
+  auto allocationPos = uri.find(kAllocationSep);
+  if (allocationPos == std::string_view::npos) {
+    return std::nullopt;
+  }
+  auto deviceText = uri.substr(0, allocationPos);
+  uri.remove_prefix(allocationPos + kAllocationSep.size());
+
+  auto offsetPos = uri.find(kOffsetSep);
+  if (offsetPos == std::string_view::npos) {
+    return std::nullopt;
+  }
+  auto allocationText = uri.substr(0, offsetPos);
+  uri.remove_prefix(offsetPos + kOffsetSep.size());
+
   auto sizePos = uri.find(kSizeSep);
   if (sizePos == std::string_view::npos) {
     return std::nullopt;
   }
-  auto deviceText = uri.substr(0, sizePos);
+  auto offsetText = uri.substr(0, sizePos);
   uri.remove_prefix(sizePos + kSizeSep.size());
 
   auto ipcPos = uri.find(kIpcSep);
@@ -84,13 +100,19 @@ std::optional<GdrUri> parseGdrUri(std::string_view uri) {
   auto ipcHex = uri.substr(ipcPos + kIpcSep.size());
 
   auto device = parseUnsigned(deviceText);
+  auto allocationSize = parseUnsigned(allocationText);
+  auto offset = parseUnsigned(offsetText);
   auto size = parseUnsigned(sizeText);
-  if (!device || *device > static_cast<size_t>(std::numeric_limits<int>::max()) || !size || *size == 0) {
+  if (!device || *device > static_cast<size_t>(std::numeric_limits<int>::max()) || !allocationSize ||
+      *allocationSize == 0 || !offset || !size || *size == 0 || *offset > *allocationSize ||
+      *size > *allocationSize - *offset) {
     return std::nullopt;
   }
 
   GdrUri parsed;
   parsed.deviceId = static_cast<int>(*device);
+  parsed.allocationSize = *allocationSize;
+  parsed.offset = *offset;
   parsed.size = *size;
   if (!decodeHex(ipcHex, parsed.ipcHandle)) {
     return std::nullopt;
@@ -98,16 +120,27 @@ std::optional<GdrUri> parseGdrUri(std::string_view uri) {
   return parsed;
 }
 
-std::string formatGdrUri(int deviceId, size_t size, const uint8_t *ipcHandle, size_t ipcHandleSize) {
-  if (deviceId < 0 || size == 0 || ipcHandle == nullptr || ipcHandleSize != kGdrIpcHandleBytes) {
+std::string formatGdrUri(int deviceId,
+                         size_t allocationSize,
+                         size_t offset,
+                         size_t size,
+                         const uint8_t *ipcHandle,
+                         size_t ipcHandleSize) {
+  if (deviceId < 0 || allocationSize == 0 || size == 0 || offset > allocationSize || size > allocationSize - offset ||
+      ipcHandle == nullptr || ipcHandleSize != kGdrIpcHandleBytes) {
     return {};
   }
 
   auto ipcHex = encodeHex(ipcHandle, ipcHandleSize);
   std::string uri;
-  uri.reserve(kPrefix.size() + 20 + kSizeSep.size() + 20 + kIpcSep.size() + ipcHex.size());
+  uri.reserve(kPrefix.size() + 20 + kAllocationSep.size() + 20 + kOffsetSep.size() + 20 + kSizeSep.size() + 20 +
+              kIpcSep.size() + ipcHex.size());
   uri += kPrefix;
   uri += std::to_string(deviceId);
+  uri += kAllocationSep;
+  uri += std::to_string(allocationSize);
+  uri += kOffsetSep;
+  uri += std::to_string(offset);
   uri += kSizeSep;
   uri += std::to_string(size);
   uri += kIpcSep;

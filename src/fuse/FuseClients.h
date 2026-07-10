@@ -176,6 +176,17 @@ struct DirEntryInodeVector {
         inodes(std::move(inodes)) {}
 };
 
+namespace detail {
+
+void lookupIovBuffers(const IovTable &iovs,
+                      std::vector<Result<IoBufForIO>> &output,
+                      meta::Uid requester,
+                      const IoArgs *args,
+                      const IoSqe *sqes,
+                      int count);
+
+}  // namespace detail
+
 struct FuseClients {
   FuseClients() = default;
   ~FuseClients();
@@ -239,5 +250,8 @@ struct FuseClients {
 
   std::unique_ptr<folly::IOThreadPoolExecutor> notifyInvalExec;
   const FuseConfig *config;
+#ifdef HF3FS_GDR_ENABLED
+  bool managesGdr = false;
+#endif
 };
 }  // namespace hf3fs::fuse

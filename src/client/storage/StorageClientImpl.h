@@ -16,6 +16,8 @@ namespace hf3fs::storage::client {
 
 class ClientRequestContext;
 
+uint32_t buildWriteFeatureFlagsFromOptions(const DebugOptions &debugOptions, bool computeChecksumOnServer);
+
 class StorageClientImpl : public StorageClient {
  public:
   StorageClientImpl(const ClientId &clientId, const Config &config, hf3fs::client::ICommonMgmtdClient &mgmtdClient);

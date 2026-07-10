@@ -2,21 +2,36 @@
  * Scenario tests for Layer 3+4: UsrbIoGdr + UsrbIo (unified C API)
  *
  * Tests GPU IOV create/open/wrap/destroy, query functions, and sync.
- * Covers core dispatch paths and fallback behavior.
+ * Covers core dispatch paths and unsupported-device behavior.
  *
  * Covers: REQ-L3-001, REQ-L3-003, REQ-L3-005
  *         REQ-L4-001 through REQ-L4-006
  *         INV-GDR-001, INV-GDR-002
  */
 
+#include <array>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <folly/ScopeGuard.h>
 #include <gtest/gtest.h>
+#include <limits.h>
+#include <limits>
 #include <string>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
+#ifdef HF3FS_GDR_ENABLED
+#include <cuda_runtime.h>
+#endif
+
+#include "common/utils/Uuid.h"
+#include "lib/api/UsrbIoGdrInternal.h"
 #include "lib/api/hf3fs_usrbio.h"
+#include "lib/common/CudaIpcMemory.h"
+#include "lib/common/GdrUri.h"
 #include "tests/GtestHelpers.h"
 
 namespace {
@@ -28,8 +43,7 @@ class TmpDir {
  public:
   TmpDir() {
     const char *base = getenv("TMPDIR");
-    if (!base) base = "/private/tmp/claude-502";
-    path_ = std::string(base) + "/gdr_test_XXXXXX";
+    path_ = std::string(base ? base : std::filesystem::temp_directory_path().c_str()) + "/gdr_test_XXXXXX";
     char *result = mkdtemp(path_.data());
     if (result) {
       valid_ = true;
@@ -51,17 +65,88 @@ class TmpDir {
 };
 
 // Helper to build a well-formed GDR URI
-std::string buildGdrUri(int deviceId, size_t size, const uint8_t ipcHandle[64]) {
+std::string buildGdrUri(int deviceId, size_t allocationSize, size_t offset, size_t size, const uint8_t ipcHandle[64]) {
   char hex[129];
   for (int i = 0; i < 64; i++) {
     snprintf(hex + i * 2, 3, "%02x", ipcHandle[i]);
   }
   hex[128] = '\0';
-  return std::string("gdr://v1/device/") + std::to_string(deviceId) + "/size/" + std::to_string(size) + "/ipc/" + hex;
+  return std::string("gdr://v2/device/") + std::to_string(deviceId) + "/allocation/" + std::to_string(allocationSize) +
+         "/offset/" + std::to_string(offset) + "/size/" + std::to_string(size) + "/ipc/" + hex;
 }
 
-class TestUsrbIoGdrFixture : public ::testing::Test {
-};
+hf3fs::Uuid iovUuid(const struct hf3fs_iov &iov) {
+  hf3fs::Uuid id;
+  std::memcpy(id.data, iov.id, sizeof(id.data));
+  return id;
+}
+
+std::string publicationPath(const struct hf3fs_iov &iov, int deviceId) {
+  return std::string(iov.mount_point) + "/3fs-virt/iovs/" + iovUuid(iov).toHexString() + ".gdr.d" +
+         std::to_string(deviceId);
+}
+
+bool isSymlink(const std::string &path) {
+  struct stat statbuf{};
+  return lstat(path.c_str(), &statbuf) == 0 && S_ISLNK(statbuf.st_mode);
+}
+
+std::string currentExecutable() {
+  std::array<char, PATH_MAX> path{};
+  auto length = readlink("/proc/self/exe", path.data(), path.size() - 1);
+  if (length <= 0) {
+    return {};
+  }
+  path[length] = '\0';
+  return path.data();
+}
+
+bool runImporterProcess(const struct hf3fs_iov &publisher, int deviceId, uint8_t expectedByte) {
+  auto executable = currentExecutable();
+  if (executable.empty()) {
+    return false;
+  }
+
+  auto size = std::to_string(publisher.size);
+  auto device = std::to_string(deviceId);
+  auto expected = std::to_string(expectedByte);
+  auto id = iovUuid(publisher).toHexString();
+  setenv("HF3FS_GDR_IMPORT_MOUNT", publisher.mount_point, 1);
+  setenv("HF3FS_GDR_IMPORT_ID", id.c_str(), 1);
+  setenv("HF3FS_GDR_IMPORT_SIZE", size.c_str(), 1);
+  setenv("HF3FS_GDR_IMPORT_DEVICE", device.c_str(), 1);
+  setenv("HF3FS_GDR_IMPORT_EXPECTED_BYTE", expected.c_str(), 1);
+  SCOPE_EXIT {
+    unsetenv("HF3FS_GDR_IMPORT_MOUNT");
+    unsetenv("HF3FS_GDR_IMPORT_ID");
+    unsetenv("HF3FS_GDR_IMPORT_SIZE");
+    unsetenv("HF3FS_GDR_IMPORT_DEVICE");
+    unsetenv("HF3FS_GDR_IMPORT_EXPECTED_BYTE");
+  };
+
+  auto child = fork();
+  if (child == 0) {
+    execl(executable.c_str(),
+          executable.c_str(),
+          "--gtest_filter=TestUsrbIoGdrFixture.ImporterProcessKeepsPublisherPublication",
+          "--gtest_color=no",
+          static_cast<char *>(nullptr));
+    _exit(127);
+  }
+  if (child < 0) {
+    return false;
+  }
+
+  int status = 0;
+  while (waitpid(child, &status, 0) < 0) {
+    if (errno != EINTR) {
+      return false;
+    }
+  }
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+class TestUsrbIoGdrFixture : public ::testing::Test {};
 
 }  // namespace
 
@@ -82,7 +167,7 @@ TEST_F(TestUsrbIoGdrFixture, SCN_L4_001_01b_DeviceApiDispatch) {
 }
 
 // @tests SCN-L4-001-02
-TEST_F(TestUsrbIoGdrFixture, SCN_L4_001_02_DeviceFallbackNoGDR) {
+TEST_F(TestUsrbIoGdrFixture, SCN_L4_001_02_DeviceCreateRejectsUnavailableGDR) {
   if (hasGpu()) {
     GTEST_SKIP() << "Test for machines without GPU";
   }
@@ -93,8 +178,8 @@ TEST_F(TestUsrbIoGdrFixture, SCN_L4_001_02_DeviceFallbackNoGDR) {
   // WHEN: iovcreate_device, GDR unavailable
   int rc = hf3fs_iovcreate_device(&iov, "/nonexistent/mount", 4096, 0, 0);
 
-  // THEN: Falls back to host path (still fails due to no mount, but no crash)
-  EXPECT_NE(rc, 0);
+  // THEN: Device creation never silently substitutes host memory.
+  EXPECT_EQ(rc, -ENOTSUP);
 }
 
 TEST_F(TestUsrbIoGdrFixture, DeviceApisRejectGpuBlockSize) {
@@ -106,6 +191,245 @@ TEST_F(TestUsrbIoGdrFixture, DeviceApisRejectGpuBlockSize) {
   EXPECT_EQ(hf3fs_iovcreate_device(&iov, "/nonexistent/mount", 4096, 4096, 0), -EINVAL);
   EXPECT_EQ(hf3fs_iovopen_device(&iov, id, "/nonexistent/mount", 4096, 4096, 0), -EINVAL);
   EXPECT_EQ(hf3fs_iovwrap_device(&iov, buffer, id, "/nonexistent/mount", 4096, 4096, 0), -EINVAL);
+}
+
+TEST_F(TestUsrbIoGdrFixture, PublicationRemovalRespectsOwnershipWithoutCuda) {
+  TmpDir tmpDir;
+  ASSERT_TRUE(tmpDir.valid());
+  std::filesystem::create_directories(std::string(tmpDir.path()) + "/3fs-virt/iovs");
+
+  struct hf3fs_iov iov{};
+  auto id = hf3fs::Uuid::random();
+  std::memcpy(iov.id, id.data, sizeof(iov.id));
+  std::strcpy(iov.mount_point, tmpDir.path());
+  auto link = publicationPath(iov, 3);
+  ASSERT_EQ(symlink("gdr://test-publication", link.c_str()), 0);
+  ASSERT_TRUE(isSymlink(link));
+
+  EXPECT_EQ(hf3fs_iovunlink_gpu_publication_internal(&iov, 3, false), 0);
+  EXPECT_TRUE(isSymlink(link));
+
+  EXPECT_EQ(hf3fs_iovunlink_gpu_publication_internal(&iov, 3, true), 0);
+  EXPECT_FALSE(isSymlink(link));
+  EXPECT_EQ(hf3fs_iovunlink_gpu_publication_internal(&iov, 3, true), -ENOENT);
+}
+
+TEST_F(TestUsrbIoGdrFixture, CudaIpcCapabilityAndSuballocationExportDoNotRequireIbRegistration) {
+  if (!hasGpu()) {
+    GTEST_SKIP() << "No CUDA IPC-capable GPU available";
+  }
+
+  int deviceId = -1;
+  ASSERT_EQ(cudaGetDevice(&deviceId), cudaSuccess);
+  void *allocation = nullptr;
+  ASSERT_EQ(cudaMalloc(&allocation, 4096), cudaSuccess);
+  SCOPE_EXIT { EXPECT_EQ(cudaFree(allocation), cudaSuccess); };
+
+  auto *view = static_cast<uint8_t *>(allocation) + 512;
+  auto exported = hf3fs::lib::exportCudaIpcMemory(view, 1024, deviceId);
+  ASSERT_OK(exported);
+  EXPECT_EQ(exported->allocationBase, allocation);
+  EXPECT_GE(exported->allocationSize, 1536u);
+  EXPECT_EQ(exported->offset, 512u);
+}
+
+TEST_F(TestUsrbIoGdrFixture, CreateOwnsAndRemovesPublication) {
+  if (!hasGpu()) {
+    GTEST_SKIP() << "No CUDA IPC-capable GPU available";
+  }
+
+  TmpDir tmpDir;
+  ASSERT_TRUE(tmpDir.valid());
+  std::filesystem::create_directories(std::string(tmpDir.path()) + "/3fs-virt/iovs");
+
+  int deviceId = -1;
+  ASSERT_EQ(cudaGetDevice(&deviceId), cudaSuccess);
+  struct hf3fs_iov iov{};
+  ASSERT_EQ(hf3fs_iovcreate_device(&iov, tmpDir.path(), 4096, 0, deviceId), 0);
+  SCOPE_EXIT {
+    if (iov.iovh) {
+      hf3fs_iovdestroy(&iov);
+    }
+  };
+
+  auto link = publicationPath(iov, deviceId);
+  EXPECT_TRUE(isSymlink(link));
+  EXPECT_EQ(hf3fs_iov_mem_type(&iov), HF3FS_MEM_DEVICE);
+
+  hf3fs_iovdestroy(&iov);
+  EXPECT_FALSE(isSymlink(link));
+}
+
+TEST_F(TestUsrbIoGdrFixture, ExplicitUnlinkPreventsDestroyFromRemovingReplacementPublication) {
+  if (!hasGpu()) {
+    GTEST_SKIP() << "No CUDA IPC-capable GPU available";
+  }
+
+  TmpDir tmpDir;
+  ASSERT_TRUE(tmpDir.valid());
+  std::filesystem::create_directories(std::string(tmpDir.path()) + "/3fs-virt/iovs");
+
+  int deviceId = -1;
+  ASSERT_EQ(cudaGetDevice(&deviceId), cudaSuccess);
+  struct hf3fs_iov iov{};
+  ASSERT_EQ(hf3fs_iovcreate_device(&iov, tmpDir.path(), 4096, 0, deviceId), 0);
+  SCOPE_EXIT {
+    if (iov.iovh) {
+      hf3fs_iovdestroy(&iov);
+    }
+  };
+
+  auto link = publicationPath(iov, deviceId);
+  hf3fs_iovunlink(&iov);
+  ASSERT_FALSE(isSymlink(link));
+  ASSERT_EQ(symlink("gdr://replacement-publication", link.c_str()), 0);
+
+  hf3fs_iovdestroy(&iov);
+  EXPECT_EQ(iov.iovh, nullptr);
+  EXPECT_TRUE(isSymlink(link));
+  EXPECT_EQ(unlink(link.c_str()), 0);
+}
+
+TEST_F(TestUsrbIoGdrFixture, DestroyRetainsGpuHandleWhenPublicationUnlinkFails) {
+  if (!hasGpu()) {
+    GTEST_SKIP() << "No CUDA IPC-capable GPU available";
+  }
+
+  TmpDir tmpDir;
+  ASSERT_TRUE(tmpDir.valid());
+  std::filesystem::create_directories(std::string(tmpDir.path()) + "/3fs-virt/iovs");
+
+  int deviceId = -1;
+  ASSERT_EQ(cudaGetDevice(&deviceId), cudaSuccess);
+  struct hf3fs_iov iov{};
+  ASSERT_EQ(hf3fs_iovcreate_device(&iov, tmpDir.path(), 4096, 0, deviceId), 0);
+  SCOPE_EXIT {
+    if (iov.iovh) {
+      hf3fs_iovdestroy(&iov);
+    }
+  };
+
+  auto link = publicationPath(iov, deviceId);
+  ASSERT_EQ(unlink(link.c_str()), 0);
+  ASSERT_TRUE(std::filesystem::create_directory(link));
+
+  auto *handle = iov.iovh;
+  hf3fs_iovdestroy(&iov);
+  EXPECT_EQ(iov.iovh, handle);
+  EXPECT_EQ(hf3fs_iov_mem_type(&iov), HF3FS_MEM_DEVICE);
+
+  ASSERT_TRUE(std::filesystem::remove(link));
+  hf3fs_iovdestroy(&iov);
+  EXPECT_EQ(iov.iovh, nullptr);
+}
+
+TEST_F(TestUsrbIoGdrFixture, ImporterProcessKeepsPublisherPublication) {
+  const char *mount = std::getenv("HF3FS_GDR_IMPORT_MOUNT");
+  if (!mount) {
+    GTEST_SKIP() << "Subprocess-only importer check";
+  }
+
+  const char *idText = std::getenv("HF3FS_GDR_IMPORT_ID");
+  const char *sizeText = std::getenv("HF3FS_GDR_IMPORT_SIZE");
+  const char *deviceText = std::getenv("HF3FS_GDR_IMPORT_DEVICE");
+  const char *expectedText = std::getenv("HF3FS_GDR_IMPORT_EXPECTED_BYTE");
+  ASSERT_NE(idText, nullptr);
+  ASSERT_NE(sizeText, nullptr);
+  ASSERT_NE(deviceText, nullptr);
+  ASSERT_NE(expectedText, nullptr);
+
+  auto parsedId = hf3fs::Uuid::fromHexString(idText);
+  ASSERT_OK(parsedId);
+  std::array<uint8_t, 16> id{};
+  std::memcpy(id.data(), parsedId->data, id.size());
+  auto size = static_cast<size_t>(std::strtoull(sizeText, nullptr, 10));
+  auto deviceId = std::atoi(deviceText);
+  auto expectedByte = static_cast<uint8_t>(std::atoi(expectedText));
+
+  struct hf3fs_iov importer{};
+  ASSERT_EQ(hf3fs_iovopen_device(&importer, id.data(), mount, size, 0, deviceId), 0);
+  SCOPE_EXIT {
+    if (importer.iovh) {
+      hf3fs_iovdestroy(&importer);
+    }
+  };
+
+  auto link = publicationPath(importer, deviceId);
+  ASSERT_TRUE(isSymlink(link));
+  EXPECT_EQ(hf3fs_iovsync(&importer, 0), 0);
+  uint8_t actual = 0;
+  ASSERT_EQ(cudaMemcpy(&actual, importer.base, 1, cudaMemcpyDeviceToHost), cudaSuccess);
+  EXPECT_EQ(actual, expectedByte);
+
+  hf3fs_iovdestroy(&importer);
+  EXPECT_TRUE(isSymlink(link));
+}
+
+TEST_F(TestUsrbIoGdrFixture, WrapPublishesBaseOffsetAndSupportsMultipleNonOwningImporters) {
+  if (!hasGpu()) {
+    GTEST_SKIP() << "No CUDA IPC-capable GPU available";
+  }
+  if (currentExecutable().empty()) {
+    GTEST_SKIP() << "Subprocess execution through /proc/self/exe is unavailable";
+  }
+
+  TmpDir tmpDir;
+  ASSERT_TRUE(tmpDir.valid());
+  std::filesystem::create_directories(std::string(tmpDir.path()) + "/3fs-virt/iovs");
+
+  int deviceId = -1;
+  ASSERT_EQ(cudaGetDevice(&deviceId), cudaSuccess);
+  void *allocation = nullptr;
+  ASSERT_EQ(cudaMalloc(&allocation, 4096), cudaSuccess);
+  SCOPE_EXIT {
+    if (allocation) {
+      EXPECT_EQ(cudaFree(allocation), cudaSuccess);
+    }
+  };
+  ASSERT_EQ(cudaMemset(allocation, 0x11, 4096), cudaSuccess);
+  auto *view = static_cast<uint8_t *>(allocation) + 512;
+  ASSERT_EQ(cudaMemset(view, 0x7A, 1024), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  struct hf3fs_iov publisher{};
+  auto id = hf3fs::Uuid::random();
+  ASSERT_EQ(hf3fs_iovwrap_device(&publisher,
+                                 view,
+                                 reinterpret_cast<const uint8_t *>(id.data),
+                                 tmpDir.path(),
+                                 1024,
+                                 0,
+                                 deviceId),
+            0);
+  SCOPE_EXIT {
+    if (publisher.iovh) {
+      hf3fs_iovdestroy(&publisher);
+    }
+  };
+
+  auto link = publicationPath(publisher, deviceId);
+  ASSERT_TRUE(isSymlink(link));
+  auto target = std::filesystem::read_symlink(link).string();
+  auto parsed = hf3fs::lib::parseGdrUri(target);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->deviceId, deviceId);
+  EXPECT_EQ(parsed->offset, 512u);
+  EXPECT_EQ(parsed->size, 1024u);
+  EXPECT_GE(parsed->allocationSize, parsed->offset + parsed->size);
+
+  EXPECT_TRUE(runImporterProcess(publisher, deviceId, 0x7A));
+  EXPECT_TRUE(isSymlink(link));
+  EXPECT_TRUE(runImporterProcess(publisher, deviceId, 0x7A));
+  EXPECT_TRUE(isSymlink(link));
+
+  hf3fs_iovdestroy(&publisher);
+  EXPECT_FALSE(isSymlink(link));
+
+  uint8_t actual = 0;
+  ASSERT_EQ(cudaMemcpy(&actual, view, 1, cudaMemcpyDeviceToHost), cudaSuccess);
+  EXPECT_EQ(actual, 0x7A);
+  ASSERT_EQ(cudaFree(allocation), cudaSuccess);
+  allocation = nullptr;
 }
 
 // ==========================================================================
@@ -127,6 +451,32 @@ TEST_F(TestUsrbIoGdrFixture, SCN_L4_002_00b_IovWrapNegativeNumaHostPath) {
   EXPECT_EQ(rc, 0);
   // Verify it's host memory, not GPU
   EXPECT_EQ(hf3fs_iov_mem_type(&iov), HF3FS_MEM_HOST);
+}
+
+TEST_F(TestUsrbIoGdrFixture, PrepIoUsesOverflowSafeOpaquePointerRanges) {
+  struct hf3fs_ior ior{};
+  ior.iorh = reinterpret_cast<void *>(uintptr_t{1});
+  ior.for_read = true;
+  struct hf3fs_iov iov{};
+
+  iov.base = reinterpret_cast<uint8_t *>(uintptr_t{0x1000});
+  iov.size = 0x100;
+  EXPECT_EQ(hf3fs_prep_io(&ior, &iov, true, nullptr, 0, 0, 1, nullptr), -EINVAL);
+  EXPECT_EQ(hf3fs_prep_io(&ior, &iov, true, iov.base, 0, 0, 0, nullptr), -EINVAL);
+  EXPECT_EQ(hf3fs_prep_io(&ior, &iov, true, reinterpret_cast<void *>(uintptr_t{0x0fff}), 0, 0, 1, nullptr), -EINVAL);
+  EXPECT_EQ(hf3fs_prep_io(&ior, &iov, true, reinterpret_cast<void *>(uintptr_t{0x1100}), 0, 0, 1, nullptr), -EINVAL);
+  EXPECT_EQ(hf3fs_prep_io(&ior, &iov, true, reinterpret_cast<void *>(uintptr_t{0x10ff}), 0, 0, 2, nullptr), -EINVAL);
+  EXPECT_EQ(hf3fs_prep_io(&ior, &iov, true, reinterpret_cast<void *>(uintptr_t{0x10ff}), 0, 0, 1, nullptr), -EBADF);
+
+  auto maxAddress = std::numeric_limits<uintptr_t>::max();
+  iov.base = reinterpret_cast<uint8_t *>(maxAddress - 0xff);
+  iov.size = 0xff;
+  EXPECT_EQ(hf3fs_prep_io(&ior, &iov, true, reinterpret_cast<void *>(maxAddress - 8), 0, 0, 8, nullptr), -EBADF);
+  EXPECT_EQ(hf3fs_prep_io(&ior, &iov, true, reinterpret_cast<void *>(maxAddress - 8), 0, 0, 9, nullptr), -EINVAL);
+
+  iov.base = reinterpret_cast<uint8_t *>(maxAddress - 7);
+  iov.size = 8;
+  EXPECT_EQ(hf3fs_prep_io(&ior, &iov, true, iov.base, 0, 0, 1, nullptr), -EINVAL);
 }
 
 // @tests SCN-L4-002-01
@@ -272,11 +622,13 @@ TEST_F(TestUsrbIoGdrFixture, SCN_L3_005_01_ValidUriFormatThroughIovopen) {
   uint8_t ipcHandle[64];
   for (int i = 0; i < 64; i++) ipcHandle[i] = static_cast<uint8_t>(i * 3 + 7);
 
-  std::string uri = buildGdrUri(0, 1073741824, ipcHandle);
+  std::string uri = buildGdrUri(0, 1073741824, 0, 1073741824, ipcHandle);
 
   // Verify URI has correct format
-  EXPECT_EQ(uri.substr(0, 14), "gdr://v1/devic");
+  EXPECT_EQ(uri.substr(0, 14), "gdr://v2/devic");
   EXPECT_NE(uri.find("/device/0/"), std::string::npos);
+  EXPECT_NE(uri.find("/allocation/1073741824/"), std::string::npos);
+  EXPECT_NE(uri.find("/offset/0/"), std::string::npos);
   EXPECT_NE(uri.find("/size/1073741824/"), std::string::npos);
   EXPECT_NE(uri.find("/ipc/"), std::string::npos);
   // IPC hex should be 128 chars
@@ -330,15 +682,15 @@ TEST_F(TestUsrbIoGdrFixture, SCN_L3_003_01_WrapExternalGpuPtr) {
 }
 
 // ==========================================================================
-// INV-GDR-001: iov->iovh Polymorphism Discriminant
+// INV-GDR-001: internal handle registry is the polymorphism discriminant
 // ==========================================================================
 
 // @tests INV-GDR-001
 TEST_F(TestUsrbIoGdrFixture, INV_GDR_001_PolymorphismSafety) {
-  // GIVEN: An iov that looks GPU-like but has no real handle
+  // GIVEN: An iov with the former magic NUMA value but no registered handle
   struct hf3fs_iov iov;
   memset(&iov, 0, sizeof(iov));
-  iov.numa = -0x6472;  // kGpuIovMagicNuma
+  iov.numa = -0x6472;
   iov.iovh = nullptr;
 
   // WHEN: Query operations are called
@@ -349,26 +701,20 @@ TEST_F(TestUsrbIoGdrFixture, INV_GDR_001_PolymorphismSafety) {
   int devId = hf3fs_iov_device_id(&iov);
   EXPECT_EQ(devId, -1);
 
-  // Sync should be no-op on unregistered GPU-magic iov
+  // Sync remains a host no-op because NUMA does not classify the iov.
   int rc = hf3fs_iovsync(&iov, 0);
   EXPECT_EQ(rc, 0);
 }
 
 // @tests INV-GDR-002
-TEST_F(TestUsrbIoGdrFixture, INV_GDR_002_MagicNumaValue) {
-  // Verify the magic numa value is stable
+TEST_F(TestUsrbIoGdrFixture, INV_GDR_002_NumaDoesNotClassifyGpuIov) {
   struct hf3fs_iov iov;
   memset(&iov, 0, sizeof(iov));
 
-  // Host iov: numa >= 0
   iov.numa = 0;
   EXPECT_EQ(hf3fs_iov_mem_type(&iov), HF3FS_MEM_HOST);
 
-  // GPU iov requires numa == -0x6472 AND registered handle
   iov.numa = -0x6472;
-  // Without registered handle, still reports HOST
   EXPECT_EQ(hf3fs_iov_mem_type(&iov), HF3FS_MEM_HOST);
-
-  // Verify the actual numeric value
-  EXPECT_EQ(-0x6472, -25714);
+  EXPECT_EQ(hf3fs_iov_device_id(&iov), -1);
 }

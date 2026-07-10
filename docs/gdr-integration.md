@@ -2,70 +2,99 @@
 
 ## Overview
 
-GPU Direct RDMA (GDR) enables 3FS to transfer data between storage and GPU VRAM
-without staging through host memory. In a conventional I/O path, data moves from
-the storage target over RDMA into a host-memory buffer, then a second copy moves
-it from host memory into GPU VRAM via PCIe. GDR eliminates the host bounce
-buffer: the RDMA NIC writes directly into (or reads directly from) GPU VRAM in a
-single DMA transaction. The result is lower latency, reduced CPU utilization, and
-higher effective bandwidth for GPU-accelerated workloads such as model serving,
-training checkpoint reload, and large-scale data ingest.
+GPU Direct RDMA (GDR) lets the 3FS FUSE data path transfer data directly
+between RDMA and CUDA device memory. The application process does not register
+GPU memory with InfiniBand. It allocates or wraps CUDA memory, exports a CUDA
+IPC capability, and publishes that capability through the 3FS virtual IOV
+namespace. The FUSE process imports the CUDA allocation and owns the
+`ibv_mr` objects for the published view.
+
+This split creates two distinct capabilities:
+
+1. **Application-side CUDA IPC capability.** `hf3fs_gdr_available()` reports
+   whether the local process can use CUDA IPC on at least one visible device.
+   It does not inspect FUSE, `nvidia_peermem`, the selected NIC, or
+   `ibv_reg_mr`.
+2. **FUSE-side GDR capability.** FUSE starts its `GDRManager` only after
+   `IBManager` has started. When FUSE resolves a GDR IOV publication, it imports
+   the CUDA IPC allocation and registers the requested view with the available
+   IB devices.
+
+A successful application capability query is therefore only a prerequisite.
+The return value from the publication operation (`hf3fs_iovcreate_device()` or
+`hf3fs_iovwrap_device()`) is the final per-buffer result: success means FUSE
+accepted the symlink, imported the CUDA allocation, and registered the
+published view with at least one IB device. `ibv_reg_mr` can still fail after
+`hf3fs_gdr_available()` returned `true`.
 
 ## Prerequisites
 
 ### Hardware
 
-- NVIDIA GPU with CUDA compute capability (Volta or newer recommended).
-- RDMA-capable network interface card (InfiniBand or RoCE) with PCIe peer access
-  to the GPU. Best performance when the GPU and NIC share the same PCIe switch.
+- A CUDA device that supports unified addressing and is not in prohibited
+  compute mode.
+- An InfiniBand or RoCE device that can register the CUDA allocation.
+- A GPU/NIC/driver combination that supports peer-memory registration.
+
+PCIe locality affects performance. It does not replace the final registration
+check.
 
 ### Software
 
-- CUDA toolkit installed and functional (`nvidia-smi` reports devices).
-- The `nvidia_peermem` kernel module must be loaded:
+- A working CUDA runtime and driver.
+- RDMA userspace and kernel drivers.
+- NVIDIA peer-memory support, normally provided by `nvidia_peermem`:
 
   ```bash
   sudo modprobe nvidia_peermem
-  # Verify:
   lsmod | grep nvidia_peermem
   ```
 
 ### Build
 
-3FS must be compiled with GDR support enabled:
+Build 3FS with GDR support:
 
 ```bash
 cmake -DHF3FS_ENABLE_GDR=ON ...
 ```
 
-| Layer | Name | Meaning |
-| --- | --- | --- |
-| CMake option | `HF3FS_ENABLE_GDR` | Requests CUDA/GDR support at configure time. Configure fails if CUDA is unavailable. |
-| C++ macro | `HF3FS_GDR_ENABLED` | Target-scoped compile definition added by `target_add_gdr_support(...)`. |
-| Runtime env | `HF3FS_GDR_ENABLED=0` | Disables runtime GDR initialization in a GDR-capable build. |
+- `HF3FS_ENABLE_GDR` requests CUDA/GDR support at CMake configure time.
+- `HF3FS_GDR_ENABLED` is the target-scoped C++ compile definition added to
+  GDR-enabled targets.
+- `HF3FS_GDR_ENABLED=0` in the environment prevents FUSE's `GDRManager` from
+  becoming available. It does not change the application-side implementation
+  of `hf3fs_gdr_available()`.
 
-Functions behind the `#ifdef HF3FS_GDR_ENABLED` guard (`hf3fs_iovopen_device`,
-`hf3fs_iovwrap_device`) are only available in targets compiled with GDR support.
+`hf3fs_iovopen_device()` and `hf3fs_iovwrap_device()` are declared only when
+the consuming target is compiled with `HF3FS_GDR_ENABLED`.
+`hf3fs_iovcreate_device()` remains declared in all builds for API
+compatibility, but returns `-ENOTSUP` when CUDA/GDR support is not compiled in.
 
 ### Runtime
 
-- The 3FS fuse daemon must be running on the same machine and serving the target
-  mount point.
-- The fuse daemon parses GDR iov symlinks (`.gdr.d{N}` suffix, `gdr://` URI
-  targets) to discover GPU buffers and register them for RDMA transfers.
+- Start `IBManager` before initializing the FUSE clients. FUSE rejects GDR
+  initialization if IB has not started.
+- Run the application on the same host as the FUSE process that serves the
+  mount.
+- The application and FUSE process must be allowed to share CUDA allocations
+  through CUDA IPC.
+- The FUSE virtual IOV namespace must accept the `.gdr.d{device_id}`
+  publication. Publication failure is returned to the application as
+  `-errno`.
 
-### CPU-Only Fallback
+### No Host Fallback
 
-On machines without a GPU (or without `nvidia_peermem`),
-`hf3fs_iovcreate_device()` transparently falls back to host memory allocation on
-NUMA node 0. Application code that uses only `iovcreate_device` does not need
-`#ifdef` guards and works on both GPU and CPU-only hosts.
+The device APIs never return a host IOV. A build without CUDA/GDR support, no
+locally usable CUDA IPC device, an invalid device pointer, CUDA IPC failure,
+FUSE import failure, or RDMA registration failure is returned as an error.
+A CUDA device pointer is never passed to the host-memory registration path.
+Applications that want host memory must call `hf3fs_iovcreate()` explicitly.
 
 ## API Reference
 
-All functions return `0` on success and `-errno` on failure unless stated
-otherwise. The caller allocates the `struct hf3fs_iov` (stack or heap); the
-library fills it in.
+All functions return `0` on success and a negative errno value on failure
+unless stated otherwise. The caller owns the `struct hf3fs_iov` object itself;
+the library fills its fields.
 
 Include:
 
@@ -77,9 +106,8 @@ Include:
 
 #### `hf3fs_iovcreate_device`
 
-Allocate a new GPU memory region and register it with the fuse daemon for RDMA.
-Always available (no `#ifdef` required). Falls back to host memory when GDR
-runtime is not present.
+Allocate CUDA memory, export the whole allocation through CUDA IPC, and
+publish a view covering the allocation:
 
 ```c
 int hf3fs_iovcreate_device(struct hf3fs_iov *iov,
@@ -89,20 +117,30 @@ int hf3fs_iovcreate_device(struct hf3fs_iov *iov,
                            int device_id);
 ```
 
-GPU-backed iovs do not support block partitioning yet; pass `block_size = 0`.
+Constraints:
 
-**Returns:** `0` on success, `-EINVAL`, `-ENODEV`, `-ENOMEM`. On GDR fallback,
-returns the result of host memory allocation.
+- `iov` and `hf3fs_mount_point` must be non-null.
+- `size` must be non-zero.
+- `block_size` must be `0`; GDR IOV block partitioning is unsupported.
+- `device_id` must name a locally usable CUDA IPC device.
+
+On the CUDA path, the application owns the allocation and the publication.
+The application does **not** create or own an RDMA MR. Publication success is
+the final FUSE-side import/registration result. On destroy, the publisher
+unlinks the publication and frees its CUDA allocation.
+
+Representative errors include `-EINVAL` for invalid arguments,
+`-ENOTSUP` when CUDA/GDR support or local CUDA IPC capability is unavailable,
+`-ENODEV` for an unavailable selected device, `-ENOMEM` for allocation
+failure, `-EIO` for CUDA IPC or FUSE registration failures, and the exact
+negative errno returned by publication (for example, `-EEXIST` for a
+conflicting key). No failure is converted into a host allocation.
 
 ---
 
 #### `hf3fs_iovopen_device`
 
-Reopen an existing GPU iov in a different process by its UUID. The original iov
-must have been created with `hf3fs_iovcreate_device` and must still be alive.
-Uses CUDA IPC to import the GPU memory handle.
-
-**Requires `HF3FS_GDR_ENABLED` at compile time.**
+Open an existing device IOV by UUID:
 
 ```c
 int hf3fs_iovopen_device(struct hf3fs_iov *iov,
@@ -113,21 +151,34 @@ int hf3fs_iovopen_device(struct hf3fs_iov *iov,
                          int device_id);
 ```
 
-`id` is the 16-byte UUID from the original `iov->id`; `size` and `device_id`
-must match the original allocation. GPU-backed iovs do not support block
-partitioning yet; pass `block_size = 0`.
+This API reads the existing GDR v2 publication, imports its CUDA allocation,
+and exposes the published view in the importing application. It does not
+create a second publication and does not register an application-side MR.
 
-**Returns:** `0` on success, `-ENOTSUP`, `-ENOENT`, `-ENODEV`, `-EINVAL`.
+Constraints:
+
+- The original publisher and its CUDA allocation must still be alive.
+- `size` and `device_id` must match the publication.
+- `block_size` must be `0`.
+- The imported handle must resolve to an allocation base, and its actual
+  allocation size must match the v2 `allocation` field.
+
+The importer borrows the publication. Its `hf3fs_iovunlink()` is a no-op for
+that GPU IOV, and its `hf3fs_iovdestroy()` closes only its CUDA IPC mapping and
+local metadata.
+
+Representative errors include `-ENOTSUP` when local CUDA IPC capability is
+unavailable, `-ENOENT` when the publication does not exist, `-ENODEV` for an
+unavailable device, `-EINVAL` for malformed or mismatched metadata, and
+`-EIO` for CUDA import failures.
+
+**Availability:** declared only with `HF3FS_GDR_ENABLED`.
 
 ---
 
 #### `hf3fs_iovwrap_device`
 
-Wrap an existing GPU allocation (e.g., a PyTorch tensor's data pointer) as a 3FS
-iov. The caller retains ownership of the GPU memory; `hf3fs_iovdestroy` releases
-only the 3FS metadata and RDMA registration, not the underlying allocation.
-
-**Requires `HF3FS_GDR_ENABLED` at compile time.**
+Publish a view of an existing CUDA allocation:
 
 ```c
 int hf3fs_iovwrap_device(struct hf3fs_iov *iov,
@@ -139,813 +190,409 @@ int hf3fs_iovwrap_device(struct hf3fs_iov *iov,
                          int device_id);
 ```
 
-`device_ptr` must point to existing GPU memory and remain valid for the iov's
-lifetime. `id` is a caller-provided 16-byte UUID, unique within the mount
-namespace.
+`device_ptr` may be the allocation base or a pointer to a view/suballocation,
+including a PyTorch tensor view. The implementation uses
+`cuMemGetAddressRange()` to discover the underlying allocation base, full
+allocation size, and view offset. It verifies that
+`[device_ptr, device_ptr + size)` is within that allocation and exports the
+allocation base through CUDA IPC.
 
-GPU-backed iovs do not support block partitioning yet; pass `block_size = 0`.
+The caller retains ownership of the CUDA allocation and must keep the entire
+underlying allocation alive until the publication and all importers are gone.
+The wrapped IOV owns the publication but not the allocation.
+`hf3fs_iovdestroy()` unlinks the publication and releases 3FS metadata; it does
+not call `cudaFree()` on the wrapped allocation.
 
-**Returns:** `0` on success, `-ENOTSUP`, `-ENODEV`, `-ENOMEM`.
+Constraints:
 
----
+- `device_ptr`, `id`, and `hf3fs_mount_point` must be non-null.
+- `size` must be non-zero and fit within the discovered allocation.
+- `device_id` must match the CUDA pointer's device.
+- `id` must be unique in the mount's IOV namespace.
+- `block_size` must be `0`.
+
+Representative errors include `-ENOTSUP`, `-ENODEV`, `-EINVAL`, `-ENOMEM`,
+`-EIO`, and publication errors returned as negative errno values. The wrapped
+allocation remains caller-owned on every failure path.
+
+**Availability:** declared only with `HF3FS_GDR_ENABLED`.
 
 ### IOV Lifecycle
 
 #### `hf3fs_iovdestroy`
 
-Destroy an iov and release all associated resources. Works for both host and GPU
-iovs. For GPU iovs created via `iovcreate_device`, this frees the GPU memory.
-For GPU iovs created via `iovwrap_device`, this releases only the 3FS metadata
-and RDMA registration; the underlying GPU memory is NOT freed.
-
 ```c
 void hf3fs_iovdestroy(struct hf3fs_iov *iov);
 ```
 
-#### `hf3fs_iovunlink`
+The effect depends on how the IOV was obtained:
 
-Remove the iov's registration symlink from the fuse namespace without
-destroying the buffer. Works for both host and GPU iovs. After unlinking, the
-fuse daemon will no longer accept I/O against this iov.
+- `hf3fs_iovcreate_device()`: unlink the owned publication, then free the CUDA
+  allocation.
+- `hf3fs_iovwrap_device()`: unlink the owned publication, but leave the
+  caller-owned CUDA allocation untouched.
+- `hf3fs_iovopen_device()`: close the imported CUDA mapping without unlinking
+  the borrowed publication.
+
+For cross-process sharing, importers destroy first and the exporter destroys
+last. There is no distributed reference count.
+
+#### `hf3fs_iovunlink`
 
 ```c
 void hf3fs_iovunlink(struct hf3fs_iov *iov);
 ```
 
----
+For a create/wrap publisher, remove the GDR publication while leaving the
+local IOV object alive. For an open importer, this is intentionally a no-op:
+an importer is not allowed to remove the exporter's publication.
+
+The publisher must not unlink while FUSE or another process can still start
+new work against the IOV.
 
 ### Synchronization
 
 #### `hf3fs_iovsync`
 
-Ensure coherency between GPU and NIC for a GPU iov. Internally calls
-`cudaDeviceSynchronize()` on the device that owns the iov.
-
 ```c
 int hf3fs_iovsync(const struct hf3fs_iov *iov, int direction);
 ```
 
-`direction = 0`: GPU writes visible to NIC (call before write-submit).
-`direction = 1`: NIC writes visible to GPU (call after read-complete).
-No-op for host iovs. Currently maps to `cudaDeviceSynchronize()` regardless of
-direction (future: stream-aware fencing).
+For a GPU IOV, this selects its CUDA device and calls
+`cudaDeviceSynchronize()`. The current implementation accepts the direction
+convention but uses the same device-wide synchronization for both values:
 
-**Returns:** `0` on success, `-EINVAL`, `-ENODEV`, `-EIO`.
+- `direction = 0`: application GPU writes must be visible before submitting a
+  storage write.
+- `direction = 1`: RDMA writes must be visible before the application consumes
+  data on the GPU.
 
----
+The function is a no-op for host IOVs. It returns `-EINVAL` for an invalid GPU
+IOV, `-ENODEV` if its device cannot be selected, and `-EIO` if synchronization
+fails.
 
 ### Capability Queries
 
 #### `hf3fs_gdr_available`
 
-Runtime check for GDR capability. Returns `true` only if the build includes GDR
-support, the GDR manager initialized successfully, and a valid RDMA region cache
-exists.
-
 ```c
 bool hf3fs_gdr_available(void);
 ```
 
-#### `hf3fs_gdr_device_count`
+Returns `true` when at least one locally visible CUDA device supports the
+application's CUDA IPC requirements (unified addressing and a usable compute
+mode). It does not initialize or query FUSE's `GDRManager`, and it does not
+prove that an MR can be created.
 
-Returns the number of GPU devices visible to the GDR subsystem. Returns `0` if
-GDR is not initialized.
+Use the return value of create/wrap publication, which includes FUSE-side
+import and registration, as the final per-buffer decision.
+
+#### `hf3fs_gdr_device_count`
 
 ```c
 int hf3fs_gdr_device_count(void);
 ```
 
----
+Returns the local CUDA device count, or `0` when CUDA enumeration is
+unavailable. It does not query FUSE or probe RDMA registration.
 
 ### Additional Utilities
 
 #### `hf3fs_iov_mem_type`
 
-Query the memory type of an iov.
-
 ```c
 enum hf3fs_mem_type hf3fs_iov_mem_type(const struct hf3fs_iov *iov);
 ```
 
-Returns `HF3FS_MEM_HOST` (0), `HF3FS_MEM_DEVICE` (1), or `HF3FS_MEM_MANAGED`
-(2).
+Returns `HF3FS_MEM_DEVICE` for a tracked GPU IOV and `HF3FS_MEM_HOST`
+otherwise. The enum also reserves `HF3FS_MEM_MANAGED`, but these device APIs
+do not report that value.
 
 #### `hf3fs_iov_device_id`
-
-Return the CUDA device index for a GPU iov, or `-1` for host iovs.
 
 ```c
 int hf3fs_iov_device_id(const struct hf3fs_iov *iov);
 ```
 
----
+Returns the CUDA device index for a tracked GPU IOV, or `-1` for a host or
+invalid IOV.
 
 ### I/O Submission
 
-The standard I/O submission functions work identically for GPU iovs:
+The normal user I/O APIs accept a GPU IOV:
 
-- `hf3fs_prep_io()` -- prepare an I/O operation against a GPU iov. The `ptr`
-  parameter is an offset into `iov->base` (a device pointer for GPU iovs).
-- `hf3fs_submit_ios()` -- submit prepared I/Os.
-- `hf3fs_wait_for_ios()` -- wait for completions.
+- `hf3fs_prep_io()` uses `ptr` as an address within the IOV view.
+- `hf3fs_submit_ios()` submits prepared operations.
+- `hf3fs_wait_for_ios()` returns completion entries.
 
-No API changes are required in the I/O path. The fuse daemon detects GPU iovs
-via their symlink metadata and routes the RDMA transfer through the GPU memory
-region.
+For a GPU IOV, `iov->base` and pointers derived from it are CUDA device
+pointers. The application passes them as opaque addresses; it must not
+dereference them on the CPU.
 
 ## Usage Examples
 
-### Example A: KV Cache Reload (Inference Serving)
+### Example A: Require a GDR Allocation
 
-This example shows a complete lifecycle for loading model KV cache data from 3FS
-storage directly into GPU VRAM. A 128 MB staging buffer on GPU 0 receives file
-data via GDR, then the application copies it into the inference engine's working
-memory with a device-to-device transfer.
+`hf3fs_gdr_available()` is useful for an early local check, but the create
+result is authoritative:
 
 ```c
-#include <errno.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
+struct hf3fs_iov iov = {0};
 
-#include <cuda_runtime.h>
-#include <hf3fs_usrbio.h>
+if (!hf3fs_gdr_available()) {
+    /* No local CUDA IPC capability; do not request mandatory GDR. */
+    return -ENOTSUP;
+}
 
-#define MOUNT_POINT   "/mnt/3fs"
-#define STAGING_SIZE  (128UL * 1024 * 1024)  /* 128 MB */
-#define BLOCK_SIZE    0                       /* default */
-#define DEVICE_ID     0
-#define IO_ENTRIES    64
-#define IO_TIMEOUT    30                      /* seconds */
-
-/*
- * Helper: check 3FS API return and print message on failure.
- */
-static int check_3fs(int rc, const char *context) {
-    if (rc != 0) {
-        fprintf(stderr, "[ERROR] %s: %s (rc=%d)\n",
-                context, strerror(-rc), rc);
-    }
+int rc = hf3fs_iovcreate_device(&iov, "/mnt/3fs",
+                                128UL * 1024 * 1024,
+                                /*block_size=*/0,
+                                /*device_id=*/0);
+if (rc != 0) {
+    /* Includes FUSE CUDA import or final MR registration failure. */
     return rc;
 }
 
-/*
- * Reload a single KV cache shard from 3FS into GPU VRAM.
- *
- * 1. Read file data directly into the GPU staging buffer via GDR.
- * 2. D2D copy from staging buffer into the engine's working tensor.
- *
- * Returns 0 on success.
- */
-static int reload_kv_shard(const struct hf3fs_ior *ior,
-                           const struct hf3fs_iov *staging,
-                           const char *filepath,
-                           void *engine_dst,
-                           size_t shard_size) {
-    /* --- Open the source file and register it with the I/O ring --- */
-    int fd = open(filepath, O_RDONLY);
-    if (fd < 0) {
-        perror("open");
-        return -errno;
-    }
+/* Prepare and complete I/O using addresses within iov.base. */
 
-    int rc = hf3fs_reg_fd(fd, 0);
-    if (rc != 0) {
-        fprintf(stderr, "hf3fs_reg_fd failed: %d\n", rc);
-        close(fd);
-        return rc;
-    }
-
-    /* --- Prepare a read I/O: storage -> GPU staging buffer --- */
-    /*
-     * ptr is iov->base (the GPU device pointer). The fuse daemon knows
-     * this is GPU memory from the .gdr symlink and will RDMA directly
-     * into VRAM.
-     */
-    int idx = hf3fs_prep_io(ior, staging,
-                            /*read=*/1,
-                            staging->base,    /* destination: GPU VRAM */
-                            fd,
-                            /*file_offset=*/0,
-                            shard_size,
-                            /*userdata=*/NULL);
-    if (idx < 0) {
-        fprintf(stderr, "hf3fs_prep_io failed: %d\n", idx);
-        hf3fs_dereg_fd(fd);
-        close(fd);
-        return idx;
-    }
-
-    /* --- Submit and wait for completion --- */
-    rc = hf3fs_submit_ios(ior);
-    if (check_3fs(rc, "hf3fs_submit_ios") != 0) {
-        hf3fs_dereg_fd(fd);
-        close(fd);
-        return rc;
-    }
-
-    struct hf3fs_cqe cqe;
-    struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += IO_TIMEOUT;
-
-    int completed = hf3fs_wait_for_ios(ior, &cqe, 1, 1, &deadline);
-    if (completed < 0) {
-        fprintf(stderr, "hf3fs_wait_for_ios failed: %d\n", completed);
-        hf3fs_dereg_fd(fd);
-        close(fd);
-        return completed;
-    }
-    if (cqe.result < 0) {
-        fprintf(stderr, "I/O error: %lld\n", (long long)cqe.result);
-        hf3fs_dereg_fd(fd);
-        close(fd);
-        return (int)cqe.result;
-    }
-
-    /*
-     * Sync: NIC just wrote into GPU memory. Ensure the data is visible
-     * to subsequent GPU operations (direction=1: NIC -> GPU).
-     */
-    rc = hf3fs_iovsync(staging, /*direction=*/1);
-    if (check_3fs(rc, "hf3fs_iovsync") != 0) {
-        hf3fs_dereg_fd(fd);
-        close(fd);
-        return rc;
-    }
-
-    /*
-     * Device-to-device copy from staging buffer into the engine's
-     * working memory. Both pointers are GPU VRAM on the same device.
-     */
-    cudaError_t cerr = cudaMemcpy(engine_dst, staging->base,
-                                  shard_size, cudaMemcpyDeviceToDevice);
-    if (cerr != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy D2D failed: %s\n",
-                cudaGetErrorString(cerr));
-        hf3fs_dereg_fd(fd);
-        close(fd);
-        return -EIO;
-    }
-
-    hf3fs_dereg_fd(fd);
-    close(fd);
-    return 0;
-}
-
-int main(void) {
-    int rc;
-
-    /* ========== Setup: create GPU staging buffer ========== */
-    struct hf3fs_iov staging;
-    rc = hf3fs_iovcreate_device(&staging, MOUNT_POINT,
-                                STAGING_SIZE, BLOCK_SIZE, DEVICE_ID);
-    if (check_3fs(rc, "hf3fs_iovcreate_device") != 0) {
-        return 1;
-    }
-
-    /* Report what we got -- may be GPU or host fallback */
-    if (hf3fs_iov_mem_type(&staging) == HF3FS_MEM_DEVICE) {
-        printf("Staging buffer: GPU device %d, %zu bytes\n",
-               hf3fs_iov_device_id(&staging), staging.size);
-    } else {
-        printf("Staging buffer: host memory fallback, %zu bytes\n",
-               staging.size);
-    }
-
-    /* ========== Setup: create I/O ring ========== */
-    struct hf3fs_ior ior;
-    rc = hf3fs_iorcreate4(&ior, MOUNT_POINT, IO_ENTRIES,
-                          /*for_read=*/1, /*io_depth=*/0,
-                          IO_TIMEOUT, /*numa=*/-1, /*flags=*/0);
-    if (check_3fs(rc, "hf3fs_iorcreate4") != 0) {
-        hf3fs_iovdestroy(&staging);
-        return 1;
-    }
-
-    /* ========== Per-request: reload a KV cache shard ========== */
-    /*
-     * In production, engine_mem would come from the inference framework.
-     * Here we allocate a scratch buffer to demonstrate the D2D copy.
-     */
-    size_t shard_size = 64UL * 1024 * 1024;  /* 64 MB shard */
-    void *engine_mem = NULL;
-    cudaError_t cerr = cudaMalloc(&engine_mem, shard_size);
-    if (cerr != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc engine_mem failed: %s\n",
-                cudaGetErrorString(cerr));
-        hf3fs_iordestroy(&ior);
-        hf3fs_iovdestroy(&staging);
-        return 1;
-    }
-
-    rc = reload_kv_shard(&ior, &staging,
-                         "/mnt/3fs/models/llama/kv_shard_0.bin",
-                         engine_mem, shard_size);
-    if (rc != 0) {
-        fprintf(stderr, "Shard reload failed: %d\n", rc);
-    } else {
-        printf("Shard reload complete.\n");
-    }
-
-    /* ========== Shutdown ========== */
-    cudaFree(engine_mem);
-    hf3fs_iordestroy(&ior);
-    hf3fs_iovdestroy(&staging);  /* Frees GPU staging memory */
-
-    return rc != 0 ? 1 : 0;
-}
+rc = hf3fs_iovsync(&iov, /*direction=*/1);
+hf3fs_iovdestroy(&iov);
+return rc;
 ```
 
----
+No application-side `ibv_reg_mr()` call is required or owned by this code.
 
-### Example B: PyTorch Tensor Wrap
+### Example B: Publish a PyTorch View
 
-This example wraps a PyTorch-allocated GPU tensor so that 3FS can read file data
-directly into it. The application retains ownership of the tensor;
-`hf3fs_iovdestroy` releases only the 3FS metadata and RDMA registration.
+The wrapped pointer may be inside a larger allocator-owned CUDA allocation:
 
 ```c
-#include <errno.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-
-#include <cuda_runtime.h>
-#include <hf3fs_usrbio.h>
-
-/*
- * In a real application, this pointer and size come from PyTorch:
- *   void *tensor_ptr = tensor.data_ptr();
- *   size_t tensor_bytes = tensor.nbytes();
- *
- * For this example, we simulate with cudaMalloc.
+/* tensor_ptr and tensor_bytes come from a live CUDA PyTorch tensor/view.
+ * uuid is a unique 16-byte identifier supplied by the application.
  */
-
-#define MOUNT_POINT  "/mnt/3fs"
-#define DEVICE_ID    0
-#define IO_TIMEOUT   30
-
-/*
- * Generate a caller-defined UUID for the wrapped iov.
- * In production, use a real UUID library. This is a placeholder.
- */
-static void generate_uuid(uint8_t out[16]) {
-    FILE *f = fopen("/dev/urandom", "r");
-    if (f) {
-        fread(out, 1, 16, f);
-        fclose(f);
-    }
-    /* Set version 4 and variant bits */
-    out[6] = (out[6] & 0x0F) | 0x40;
-    out[8] = (out[8] & 0x3F) | 0x80;
+struct hf3fs_iov iov = {0};
+int rc = hf3fs_iovwrap_device(&iov,
+                              tensor_ptr,
+                              uuid,
+                              "/mnt/3fs",
+                              tensor_bytes,
+                              /*block_size=*/0,
+                              tensor_device);
+if (rc != 0) {
+    /* The tensor remains caller-owned on every failure path. */
+    return rc;
 }
 
-int main(void) {
-    int rc;
+/* Use iov.base only as a CUDA/RDMA address. */
 
-    /* --- Simulate a PyTorch tensor allocation --- */
-    size_t tensor_bytes = 32UL * 1024 * 1024;  /* 32 MB */
-    void *tensor_ptr = NULL;
-    cudaError_t cerr = cudaSetDevice(DEVICE_ID);
-    if (cerr != cudaSuccess) {
-        fprintf(stderr, "cudaSetDevice failed: %s\n",
-                cudaGetErrorString(cerr));
-        return 1;
-    }
-    cerr = cudaMalloc(&tensor_ptr, tensor_bytes);
-    if (cerr != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed: %s\n",
-                cudaGetErrorString(cerr));
-        return 1;
-    }
-
-    /* --- Wrap the tensor as a 3FS iov --- */
-    /*
-     * iovwrap_device registers the existing GPU allocation with the
-     * RDMA subsystem and creates a symlink so the fuse daemon can
-     * route I/O into this memory. The caller provides a unique UUID.
-     */
-    uint8_t uuid[16];
-    generate_uuid(uuid);
-
-    struct hf3fs_iov iov;
-    rc = hf3fs_iovwrap_device(&iov, tensor_ptr, uuid,
-                              MOUNT_POINT, tensor_bytes,
-                              /*block_size=*/0, DEVICE_ID);
-    if (rc != 0) {
-        fprintf(stderr, "hf3fs_iovwrap_device failed: %s (rc=%d)\n",
-                strerror(-rc), rc);
-        cudaFree(tensor_ptr);
-        return 1;
-    }
-
-    /* --- Create an I/O ring for reads --- */
-    struct hf3fs_ior ior;
-    rc = hf3fs_iorcreate4(&ior, MOUNT_POINT, /*entries=*/16,
-                          /*for_read=*/1, /*io_depth=*/0,
-                          IO_TIMEOUT, /*numa=*/-1, /*flags=*/0);
-    if (rc != 0) {
-        fprintf(stderr, "hf3fs_iorcreate4 failed: %d\n", rc);
-        hf3fs_iovdestroy(&iov);
-        cudaFree(tensor_ptr);
-        return 1;
-    }
-
-    /* --- Read file data directly into the tensor --- */
-    int fd = open("/mnt/3fs/datasets/embeddings.bin", O_RDONLY);
-    if (fd < 0) {
-        perror("open");
-        hf3fs_iordestroy(&ior);
-        hf3fs_iovdestroy(&iov);
-        cudaFree(tensor_ptr);
-        return 1;
-    }
-
-    rc = hf3fs_reg_fd(fd, 0);
-    if (rc != 0) {
-        fprintf(stderr, "hf3fs_reg_fd failed: %d\n", rc);
-        close(fd);
-        hf3fs_iordestroy(&ior);
-        hf3fs_iovdestroy(&iov);
-        cudaFree(tensor_ptr);
-        return 1;
-    }
-
-    int idx = hf3fs_prep_io(&ior, &iov,
-                            /*read=*/1,
-                            iov.base,          /* GPU device pointer */
-                            fd,
-                            /*file_offset=*/0,
-                            tensor_bytes,
-                            /*userdata=*/NULL);
-    if (idx < 0) {
-        fprintf(stderr, "hf3fs_prep_io failed: %d\n", idx);
-        hf3fs_dereg_fd(fd);
-        close(fd);
-        hf3fs_iordestroy(&ior);
-        hf3fs_iovdestroy(&iov);
-        cudaFree(tensor_ptr);
-        return 1;
-    }
-
-    rc = hf3fs_submit_ios(&ior);
-    if (rc != 0) {
-        fprintf(stderr, "hf3fs_submit_ios failed: %d\n", rc);
-        hf3fs_dereg_fd(fd);
-        close(fd);
-        hf3fs_iordestroy(&ior);
-        hf3fs_iovdestroy(&iov);
-        cudaFree(tensor_ptr);
-        return 1;
-    }
-
-    struct hf3fs_cqe cqe;
-    struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += IO_TIMEOUT;
-
-    int completed = hf3fs_wait_for_ios(&ior, &cqe, 1, 1, &deadline);
-    if (completed < 0 || cqe.result < 0) {
-        fprintf(stderr, "I/O failed: completed=%d, result=%lld\n",
-                completed, (long long)cqe.result);
-        hf3fs_dereg_fd(fd);
-        close(fd);
-        hf3fs_iordestroy(&ior);
-        hf3fs_iovdestroy(&iov);
-        cudaFree(tensor_ptr);
-        return 1;
-    }
-
-    /*
-     * Sync: ensure NIC writes to GPU VRAM are visible to the GPU
-     * before the tensor is used in a forward pass.
-     * direction=1: NIC wrote -> GPU needs to see it.
-     */
-    rc = hf3fs_iovsync(&iov, /*direction=*/1);
-    if (rc != 0) {
-        fprintf(stderr, "hf3fs_iovsync failed: %d\n", rc);
-    }
-
-    printf("Read %lld bytes directly into GPU tensor.\n",
-           (long long)cqe.result);
-
-    /* --- Cleanup --- */
-    hf3fs_dereg_fd(fd);
-    close(fd);
-    hf3fs_iordestroy(&ior);
-
-    /*
-     * iovdestroy releases 3FS metadata and RDMA registration ONLY.
-     * It does NOT free the underlying GPU memory, because this iov
-     * was created with iovwrap_device (externally-owned memory).
-     * The tensor remains valid for use by PyTorch.
-     */
-    hf3fs_iovdestroy(&iov);
-
-    /*
-     * At this point, tensor_ptr is still valid GPU memory.
-     * PyTorch would continue using it (e.g., model.forward(tensor)).
-     * We free it here only because this is a standalone example.
-     */
-    cudaFree(tensor_ptr);
-
-    return 0;
-}
+hf3fs_iovdestroy(&iov);  /* Removes the publication; does not free tensor_ptr. */
 ```
 
----
+The whole underlying CUDA allocation remains the CUDA IPC sharing unit even
+when only a tensor view is published. The application must keep that
+allocation alive until all FUSE and application importers have released it.
 
-### Example C: Cross-Process GPU Sharing
+### Example C: Cross-Process Open
 
-Two processes share a GPU buffer for I/O. Process A allocates the buffer and
-passes its 16-byte UUID to Process B (via shared memory, socket, file, etc.).
-Process B reopens the GPU iov by UUID and can submit independent I/O operations
-against the same VRAM region.
-
-**Important:** Process A (the exporter) must destroy the iov **last**. The
-importer must call `hf3fs_iovdestroy` before the exporter does. There is no
-distributed reference count -- lifetime coordination is the caller's
-responsibility.
-
-#### Process A (Exporter)
+The exporter publishes and shares `iov.id` through an application-defined
+control channel. An importer borrows that publication:
 
 ```c
-#include <errno.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
-
-#include <hf3fs_usrbio.h>
-
-#define MOUNT_POINT  "/mnt/3fs"
-#define BUF_SIZE     (64UL * 1024 * 1024)  /* 64 MB */
-#define DEVICE_ID    0
-
-int main(void) {
-    int rc;
-
-    /* Allocate GPU buffer */
-    struct hf3fs_iov iov;
-    rc = hf3fs_iovcreate_device(&iov, MOUNT_POINT,
-                                BUF_SIZE, /*block_size=*/0, DEVICE_ID);
-    if (rc != 0) {
-        fprintf(stderr, "iovcreate_device failed: %s (rc=%d)\n",
-                strerror(-rc), rc);
-        return 1;
-    }
-
-    printf("Created GPU iov on device %d, size=%zu\n",
-           hf3fs_iov_device_id(&iov), iov.size);
-
-    /*
-     * Publish the 16-byte UUID so Process B can reopen this iov.
-     * In production, send over a socket, write to shared memory, etc.
-     * Here we write to a file for simplicity.
-     */
-    int uuid_fd = open("/tmp/gpu_iov_uuid.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (uuid_fd < 0) {
-        perror("open uuid file");
-        hf3fs_iovdestroy(&iov);
-        return 1;
-    }
-    write(uuid_fd, iov.id, 16);
-    close(uuid_fd);
-
-    printf("UUID written to /tmp/gpu_iov_uuid.bin\n");
-    printf("Waiting for Process B to finish. Press Enter to destroy iov...\n");
-
-    /*
-     * Keep the iov alive while Process B uses it.
-     * Process A must destroy AFTER Process B has called iovdestroy.
-     */
-    getchar();
-
-    hf3fs_iovdestroy(&iov);
-    printf("GPU iov destroyed.\n");
-
-    return 0;
+struct hf3fs_iov imported = {0};
+int rc = hf3fs_iovopen_device(&imported,
+                              exported_uuid,
+                              "/mnt/3fs",
+                              exported_view_size,
+                              /*block_size=*/0,
+                              exported_device);
+if (rc != 0) {
+    return rc;
 }
+
+/* Submit I/O against imported.base. */
+
+hf3fs_iovdestroy(&imported);  /* Closes this mapping; does not unlink. */
 ```
 
-#### Process B (Importer)
+Required shutdown order:
 
-```c
-#include <errno.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <string.h>
-#include <time.h>
-#include <unistd.h>
+1. Stop and reap I/O that uses the imported view.
+2. Destroy every application importer.
+3. Destroy the create/wrap exporter last.
 
-#include <hf3fs_usrbio.h>
-
-#define MOUNT_POINT  "/mnt/3fs"
-#define BUF_SIZE     (64UL * 1024 * 1024)  /* Must match Process A */
-#define DEVICE_ID    0
-#define IO_TIMEOUT   30
-
-int main(void) {
-    int rc;
-
-    /* Read the UUID published by Process A */
-    uint8_t uuid[16];
-    int uuid_fd = open("/tmp/gpu_iov_uuid.bin", O_RDONLY);
-    if (uuid_fd < 0) {
-        perror("open uuid file");
-        return 1;
-    }
-    if (read(uuid_fd, uuid, 16) != 16) {
-        fprintf(stderr, "Failed to read full UUID\n");
-        close(uuid_fd);
-        return 1;
-    }
-    close(uuid_fd);
-
-    /* Reopen the GPU iov by UUID -- imports via CUDA IPC */
-    struct hf3fs_iov iov;
-    rc = hf3fs_iovopen_device(&iov, uuid, MOUNT_POINT,
-                              BUF_SIZE, /*block_size=*/0, DEVICE_ID);
-    if (rc != 0) {
-        fprintf(stderr, "iovopen_device failed: %s (rc=%d)\n",
-                strerror(-rc), rc);
-        return 1;
-    }
-
-    printf("Reopened GPU iov: device=%d, size=%zu\n",
-           hf3fs_iov_device_id(&iov), iov.size);
-
-    /* Create I/O ring and submit reads against the shared GPU buffer */
-    struct hf3fs_ior ior;
-    rc = hf3fs_iorcreate4(&ior, MOUNT_POINT, /*entries=*/16,
-                          /*for_read=*/1, /*io_depth=*/0,
-                          IO_TIMEOUT, /*numa=*/-1, /*flags=*/0);
-    if (rc != 0) {
-        fprintf(stderr, "iorcreate4 failed: %d\n", rc);
-        hf3fs_iovdestroy(&iov);
-        return 1;
-    }
-
-    int fd = open("/mnt/3fs/data/chunk_0.bin", O_RDONLY);
-    if (fd < 0) {
-        perror("open data file");
-        hf3fs_iordestroy(&ior);
-        hf3fs_iovdestroy(&iov);
-        return 1;
-    }
-    hf3fs_reg_fd(fd, 0);
-
-    int idx = hf3fs_prep_io(&ior, &iov,
-                            /*read=*/1, iov.base,
-                            fd, /*offset=*/0,
-                            BUF_SIZE, /*userdata=*/NULL);
-    if (idx < 0) {
-        fprintf(stderr, "prep_io failed: %d\n", idx);
-        hf3fs_dereg_fd(fd);
-        close(fd);
-        hf3fs_iordestroy(&ior);
-        hf3fs_iovdestroy(&iov);
-        return 1;
-    }
-
-    hf3fs_submit_ios(&ior);
-
-    struct hf3fs_cqe cqe;
-    struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += IO_TIMEOUT;
-
-    int completed = hf3fs_wait_for_ios(&ior, &cqe, 1, 1, &deadline);
-    if (completed > 0 && cqe.result >= 0) {
-        /* Sync before GPU reads the data */
-        hf3fs_iovsync(&iov, /*direction=*/1);
-        printf("Read %lld bytes into shared GPU buffer.\n",
-               (long long)cqe.result);
-    } else {
-        fprintf(stderr, "I/O failed: completed=%d, result=%lld\n",
-                completed, completed > 0 ? (long long)cqe.result : 0LL);
-    }
-
-    /* Cleanup: importer must destroy before exporter */
-    hf3fs_dereg_fd(fd);
-    close(fd);
-    hf3fs_iordestroy(&ior);
-    hf3fs_iovdestroy(&iov);
-
-    printf("Importer done. Signal Process A to destroy.\n");
-
-    return 0;
-}
-```
+The publisher owns the publication. Importer-first cleanup cannot unlink it.
 
 ## Runtime Behavior
 
-### Two-Gate Model
+### Capability and Ownership Model
 
-GDR availability is determined by two independent gates:
+The application process owns CUDA allocation/IPC publication only:
 
-1. **Compile-time gate** (`HF3FS_ENABLE_GDR` -> `HF3FS_GDR_ENABLED`): controls whether
-   `hf3fs_iovopen_device` and `hf3fs_iovwrap_device` are declared in the header
-   and compiled into the library. `hf3fs_iovcreate_device` is always compiled
-   (it contains the fallback path).
+- create owns both the allocation and publication;
+- wrap owns the publication while the caller owns the allocation;
+- open owns an imported CUDA mapping and borrows the publication.
 
-2. **Runtime gate** (`hf3fs_gdr_available()`): returns `true` only when the GDR
-   manager has initialized successfully and an RDMA region cache exists. This
-   checks for working CUDA, `nvidia_peermem`, and IB device availability at
-   runtime.
+FUSE owns the data-plane import and registration:
 
-Both gates must be open for GPU I/O. If the runtime gate fails:
+- `GDRManager` is initialized after `IBManager`;
+- the v2 URI is parsed and the full CUDA allocation is imported;
+- only the published view is exposed to I/O and offered for RDMA registration;
+- the resulting `AcceleratorMemoryRegion` owns each successfully created
+  per-IB `ibv_mr`; publication requires at least one.
 
-- `hf3fs_iovcreate_device` silently falls back to host memory on NUMA node 0.
-  The caller can detect this via `hf3fs_iov_mem_type()`.
-- `hf3fs_iovopen_device` and `hf3fs_iovwrap_device` return `-ENOTSUP`.
-
-### GPU Buffer Pointer Rules
-
-`iov->base` for a GPU iov is a CUDA device pointer. It is **not
-CPU-dereferenceable**. Any attempt to read or write it from host code (memcpy,
-checksum, printf of contents) will segfault. The pointer is only valid as:
-
-- An argument to `hf3fs_prep_io()` (the fuse daemon handles it via RDMA).
-- A source or destination for `cudaMemcpy()` and GPU kernel launches.
-
-### I/O Ring Memory
-
-The I/O submission ring (`struct hf3fs_ior`) is always allocated in host shared
-memory, even when the data iov is on the GPU. The ring contains metadata (file
-offsets, lengths, completion status), not bulk data. Only the data buffer
-(`struct hf3fs_iov`) resides in GPU VRAM.
-
-Host io-rings may submit I/O against GPU iovs. GPU-backed io-ring metadata is
-not supported in this implementation.
-
-### GDR Symlink Contract
-
-The fuse daemon accepts only strict v1 GDR targets:
+Removing a FUSE GPU IOV first releases its `IOBuffer` and MRs, then closes the
+CUDA IPC mapping. FUSE shutdown clears GPU IOVs before shutting down
+`GDRManager`; the process-wide application shutdown stops `IBManager` after
+FUSE has stopped. The required resource order is:
 
 ```text
-{uuid}.gdr.d{device_id} -> gdr://v1/device/{device_id}/size/{bytes}/ipc/{128 hex chars}
+ibv_mr -> CUDA IPC mapping -> GDRManager -> IBManager
 ```
 
-The key device, URI device, requested API device, and requested size must match.
-GDR keys reject block-size suffixes (`.b...`) and io-ring suffixes (`.r...`,
-`.w...`, `.t...`, `.f...`, `.p...`).
+This order also applies to dead-process cleanup and explicit unlink paths.
 
-### Automatic Skip of CPU-Side Operations
+### GDR URI v2 Contract
 
-When the fuse daemon and client library detect a GPU iov:
+The GDR symlink key and target are:
 
-- **Client-side CPU checksum** is automatically skipped (the CPU cannot read GPU
-  memory to compute a checksum).
-- **Inline data transfer** (small-I/O optimization that embeds data in the
-  control message) is disabled; all transfers go through RDMA.
+```text
+{uuid}.gdr.d{device_id} ->
+gdr://v2/device/{device}/allocation/{allocation_bytes}/offset/{view_offset}/size/{view_bytes}/ipc/{128_hex_chars}
+```
 
-## Known Limitations and Future Work
+Fields:
 
-- **`nvidia_peermem` required.** The current implementation depends on
-  `nvidia_peermem` for RDMA memory registration of GPU buffers, not `dmabuf`.
-  `hf3fs_gdr_available()` is a coarse capability check; RDMA memory registration
-  (`ibv_reg_mr`) can still fail at buffer creation time if `nvidia_peermem` is
-  misconfigured or the GPU/NIC combination does not support peer access.
+- `device`: non-negative CUDA device index.
+- `allocation`: byte size of the complete CUDA allocation represented by the
+  IPC handle.
+- `offset`: byte offset of the published view from the allocation base.
+- `size`: byte size of the published view and IOV.
+- `ipc`: exactly 64 bytes of CUDA IPC handle encoded as 128 hexadecimal
+  characters.
 
-- **Device-wide synchronization.** `hf3fs_iovsync()` maps to
-  `cudaDeviceSynchronize()`, which synchronizes all streams on the device. This
-  is safe but overly broad for applications that use per-stream ordering.
+The parser is strict:
 
-- **Cross-process lifetime is caller-coordinated.** There is no distributed
-  reference count for shared GPU iovs. The exporting process (the one that
-  called `iovcreate_device` or owns the wrapped allocation) must keep the CUDA
-  allocation and iov alive until every importer has closed its iov and all RDMA
-  operations using the buffer have completed. Destroying the exporter's iov
-  early causes undefined behavior (stale CUDA IPC handle, potential RDMA
-  errors). Fuse dead-pid cleanup removes 3FS metadata and closes importer-side
-  resources; it does not make the exporting allocation safe to free.
+- the `gdr://v2` prefix, field names, separators, and field order are exact;
+- numeric fields contain ASCII decimal digits only;
+- `device` must fit in `int`;
+- `allocation`, `offset`, and `size` must fit in `size_t`;
+- `allocation` and `size` must be non-zero;
+- `offset <= allocation` and `size <= allocation - offset`;
+- `ipc` must contain exactly 128 valid hexadecimal characters (upper- or
+  lower-case is accepted; the formatter emits lower-case);
+- trailing or missing data is rejected.
 
-- **GPU-NIC affinity is sysfs-based.** The current implementation selects the
-  RDMA device based on sysfs PCI topology and treats the result as a best-effort
-  affinity score, not a guarantee that the GPU and NIC share the optimal switch.
-  A future improvement will use NVML topology queries for finer-grained PCIe
-  switch distance awareness, enabling better placement when multiple NICs and
-  GPUs share a complex PCIe fabric.
+FUSE also requires the device in the key to equal the URI device. GDR keys
+reject block-size and I/O-ring attributes. `hf3fs_iovopen_device()` additionally
+requires its requested device and view size to match, and CUDA import verifies
+that the imported pointer is the allocation base and that the actual allocation
+size matches the URI.
 
-- **Experimental/internal import abstractions.** `AcceleratorMemoryBridge` and
-  related bridge/import-manager code are not on the main GDR data path described
-  above. Treat them as internal experiments unless they are wired into a specific
-  caller and covered by tests.
+### CUDA IPC Trust Boundary
 
-- **Future: `dmabuf` support.** To support non-NVIDIA accelerators (AMD ROCm,
-  Intel Level Zero), a `dmabuf`-based memory registration path is planned as an
-  alternative to `nvidia_peermem`.
+CUDA IPC shares the complete underlying allocation, not an independently
+protected subrange. `offset` and `size` constrain the 3FS IOV and the RDMA MR,
+but the importing FUSE process maps the full allocation before deriving that
+view.
 
-- **Future: stream-aware fencing.** Replace the device-wide
-  `cudaDeviceSynchronize()` in `hf3fs_iovsync()` with CUDA event-based
-  synchronization that can target a specific stream.
+Treat FUSE and any application importer as trusted with respect to the full
+allocation. Do not co-locate unrelated secrets in the same CUDA allocation
+when that trust is unacceptable. A PyTorch view remains valid only while its
+underlying allocator-owned block is alive and has not been reused.
 
-- **Future: GPU-side block_size partitioning.** Allow the fuse daemon to split
-  large GPU iovs into block_size-aligned sub-regions for finer-grained RDMA
-  scatter/gather, reducing memory waste for non-aligned I/O sizes.
+### Tagged IOV Table and Ring Ordering
+
+FUSE stores host and GPU buffers as tagged alternatives in one `IovEntry`
+table. Namespace-key and UUID I/O lookup resolve the same entry, and its memory
+kind selects the host or GPU view. This keeps access checks, descriptor
+identity, and lifetime ownership in one table.
+
+An I/O-ring batch has one absolute logical order even when its storage wraps
+at the physical end of the ring. File lookup, buffer lookup, submission, and
+completion preserve that order across both physical spans.
+
+### Device Memory Semantics
+
+A CUDA device pointer is not CPU-dereferenceable. Do not use `memcpy`,
+`memset`, CPU checksum routines, string/formatting reads, or ordinary C/C++
+loads and stores on `iov->base`. Use CUDA APIs or kernels, or pass the pointer
+as an opaque I/O address.
+
+For GPU I/O:
+
+- inline reads are disabled for a batch containing a GPU buffer;
+- inline writes are disabled for GPU buffers;
+- client-side CPU checksum calculation/comparison is disabled because the CPU
+  cannot read the buffer;
+- failed GPU MR creation is an error; the host fallback path has been removed.
+
+Skipping the client CPU comparison does not provide independent end-to-end
+verification. Applications that require that property must validate the data
+with a GPU-capable mechanism.
+
+### Sparse Read Holes
+
+Sparse-read zero filling is memory-kind aware. Host ranges use `memset`; CUDA
+device ranges use `cudaMemset` on the owning device. Device zeroing is followed
+by `cudaDeviceSynchronize()` before the I/O result is finalized and before the
+CQE is published. A CUDA zeroing or synchronization error becomes the I/O
+error instead of exposing a completion for unfinished zero fill.
+
+`HF3FS_IOR_FORBID_READ_HOLES` continues to reject holes instead of filling
+them.
+
+### GPU Write Checksums
+
+`ChecksumType::NONE` means checksum verification is disabled. It is not an
+implicit request for storage-side checksum computation. This remains true when
+the per-request verification option is enabled: a configured target type of
+`NONE` sends a `NONE` checksum and does not set
+`FeatureFlags::SERVER_COMPUTE_CHECKSUM`.
+
+For a GPU write with checksum verification enabled:
+
+1. The client sends the configured non-`NONE` checksum type with a placeholder
+   value and sets `FeatureFlags::SERVER_COMPUTE_CHECKSUM`.
+2. Storage completes the RDMA read into its host staging buffer.
+3. Storage computes the requested checksum over that host staging data and
+   replaces the placeholder before dispatching the update to the backend.
+
+Storage rejects the flag for a non-WRITE update, a `NONE` target type, missing
+staged data, or an RDMA-bypass request that supplies neither RDMA nor inline
+data.
+
+There is no capability negotiation for this feature. During a rolling upgrade,
+upgrade every storage node before enabling GPU writes from new clients. A new
+client can send a placeholder checksum to an old storage node; the old node
+does not materialize it and can report a checksum mismatch. Do not enable this
+path while an old storage node can be the first node handling the write.
+
+Backend behavior remains backend-specific:
+
+- The default `ChunkReplica` path never clears the `ChunkMetadata` object merely
+  because verification is disabled. A server-computed non-`NONE` checksum
+  follows the existing verification and metadata-update path. With request
+  type `NONE`, only the checksum fields become the disabled state (`NONE`,
+  value `0`); version, state, size, identity, and other metadata continue
+  through the normal update path.
+- `ChunkEngine` uses its `without_checksum` request semantic when verification
+  is disabled, but continues to maintain and return its CRC32C chunk metadata
+  for non-remove chunks. Thus request `NONE` does not mean that ChunkEngine
+  lacks internal checksum metadata.
+
+## Known Limitations
+
+- **Per-buffer MR registration is authoritative.** Local CUDA IPC capability
+  and FUSE `GDRManager` initialization do not guarantee that a specific
+  GPU/view/NIC registration will succeed.
+- **`nvidia_peermem` is required by the implemented registration path.**
+  Device API failures are returned to the caller; no host IOV is substituted.
+- **CUDA IPC exposes the whole allocation.** View bounds restrict 3FS and RDMA,
+  not the CUDA IPC mapping's trust boundary.
+- **Device-wide synchronization.** `hf3fs_iovsync()` and sparse device zeroing
+  use `cudaDeviceSynchronize()`, not stream-scoped fencing.
+- **No GDR block partitioning.** Device IOV APIs require `block_size == 0`.
+- **Publisher-coordinated lifetime.** There is no distributed reference count;
+  the exporter must outlive FUSE use and every importer.
+- **Topology selection is best effort.** GPU-to-IB affinity does not guarantee
+  a particular PCIe path or successful peer-memory registration.

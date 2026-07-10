@@ -2,9 +2,8 @@
 
 #include <cstdint>
 #include <semaphore.h>
-#include <variant>
 
-#include "IovTable.h"
+#include "IovTypes.h"
 #include "UserConfig.h"
 #include "client/storage/StorageClient.h"
 #include "common/utils/AtomicSharedPtrTable.h"
@@ -12,21 +11,9 @@
 #include "common/utils/Uuid.h"
 #include "fbs/meta/Schema.h"
 #include "lib/common/Shm.h"
-#ifdef HF3FS_GDR_ENABLED
-#include "lib/common/GpuShm.h"
-#endif
 
 namespace hf3fs::fuse {
 
-#ifdef HF3FS_GDR_ENABLED
-using IoBufForIO = std::variant<lib::ShmBufForIO, lib::GpuShmBufForIO>;
-
-inline uint8_t *ioBufPtr(const IoBufForIO &buf) {
-  return std::visit([](const auto &b) -> uint8_t * { return b.ptr(); }, buf);
-}
-#else
-using IoBufForIO = lib::ShmBufForIO;
-#endif
 struct RcInode;
 struct IoArgs {
   uint8_t bufId[16];
@@ -134,6 +121,7 @@ class IoRing : public std::enable_shared_from_this<IoRing> {
   }
   std::vector<IoRingJob> jobsToProc(int maxJobs);
   int cqeCount() const { return (cqeHead.load() + entries - cqeTail.load()) % entries; }
+  const meta::UserInfo &userInfo() const { return userInfo_; }
   CoTask<void> process(
       int spt,
       int toProc,

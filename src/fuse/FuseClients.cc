@@ -1,5 +1,6 @@
 #include "FuseClients.h"
 
+#include <cstring>
 #include <folly/Random.h>
 #include <folly/ScopeGuard.h>
 #include <folly/executors/IOThreadPoolExecutor.h>
@@ -13,6 +14,9 @@
 
 #include "common/app/ApplicationBase.h"
 #include "common/monitor/Recorder.h"
+#ifdef HF3FS_GDR_ENABLED
+#include "common/net/ib/AcceleratorMemory.h"
+#endif
 #include "common/utils/BackgroundRunner.h"
 #include "common/utils/Coroutine.h"
 #include "common/utils/Duration.h"
@@ -45,6 +49,23 @@ Result<Void> establishClientSession(client::IMgmtdClientForClient &mgmtdClient) 
 }
 }  // namespace
 
+void detail::lookupIovBuffers(const IovTable &iovs,
+                              std::vector<Result<IoBufForIO>> &output,
+                              meta::Uid requester,
+                              const IoArgs *args,
+                              const IoSqe *sqes,
+                              int count) {
+  std::vector<IovLookupRequest> requests;
+  requests.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    const auto &arg = args[sqes[i].index];
+    Uuid id;
+    memcpy(id.data, arg.bufId, sizeof(id.data));
+    requests.push_back(IovLookupRequest{id, arg.bufOff, arg.ioLen});
+  }
+  iovs.lookupBufs(output, requests, requester);
+}
+
 FuseClients::~FuseClients() { stop(); }
 
 Result<Void> FuseClients::init(const flat::AppInfo &appInfo,
@@ -52,6 +73,24 @@ Result<Void> FuseClients::init(const flat::AppInfo &appInfo,
                                const String &tokenFile,
                                FuseConfig &fuseConfig) {
   config = &fuseConfig;
+
+#ifdef HF3FS_GDR_ENABLED
+  if (!net::IBManager::initialized()) {
+    return makeError(StatusCode::kInvalidArg, "IBManager must be started before FUSE GDR initialization");
+  }
+  net::GDRConfig gdrConfig;
+  gdrConfig.set_enabled(true);
+  auto gdrResult = net::GDRManager::instance().init(gdrConfig);
+  RETURN_ON_ERROR(gdrResult);
+  managesGdr = true;
+  bool initComplete = false;
+  SCOPE_EXIT {
+    if (!initComplete && managesGdr) {
+      net::GDRManager::instance().shutdown();
+      managesGdr = false;
+    }
+  };
+#endif
 
   fuseMount = appInfo.clusterId;
   XLOGF_IF(FATAL,
@@ -172,6 +211,9 @@ Result<Void> FuseClients::init(const flat::AppInfo &appInfo,
       std::make_unique<folly::IOThreadPoolExecutor>(fuseConfig.notify_inval_threads(),
                                                     std::make_shared<folly::NamedThreadFactory>("NotifyInvalThread"));
 
+#ifdef HF3FS_GDR_ENABLED
+  initComplete = true;
+#endif
   return Void{};
 }
 
@@ -213,6 +255,13 @@ void FuseClients::stop() {
     client->stopAndJoin();
     client.reset();
   }
+#ifdef HF3FS_GDR_ENABLED
+  if (managesGdr) {
+    iovs.clearGpuIovs();
+    net::GDRManager::instance().shutdown();
+    managesGdr = false;
+  }
+#endif
 }
 
 CoTask<void> FuseClients::ioRingWorker(int i, int ths) {
@@ -293,107 +342,12 @@ CoTask<void> FuseClients::ioRingWorker(int i, int ths) {
                 ins.push_back(it == inodes.end() ? (std::shared_ptr<RcInode>()) : it->second);
               }
             };
-        auto lookupBufs =
-            [this](std::vector<Result<IoBufForIO>> &bufs, const IoArgs *args, const IoSqe *sqe, int sqec) {
-              auto rangeFits = [](size_t size, auto off, auto len) {
-                auto offset = static_cast<size_t>(off);
-                auto length = static_cast<size_t>(len);
-                return offset <= size && length <= size - offset;
-              };
-              auto lastId = Uuid::zero();
-              std::shared_ptr<lib::ShmBuf> lastShm;
-#ifdef HF3FS_GDR_ENABLED
-              bool lastWasGpu = false;
-              // Indices that missed the host table and need GPU lookup.
-              // We collect them while holding shmLock, then look them up
-              // under gpuShmLock after releasing shmLock (never nested).
-              std::vector<int> gpuPending;
-#endif
-
-              // --- Phase 1: host lookup under shmLock (shared) ---
-              {
-                std::shared_lock lock(iovs.shmLock);
-                for (int i = 0; i < sqec; ++i) {
-                  auto &arg = args[sqe[i].index];
-                  Uuid id;
-                  memcpy(id.data, arg.bufId, sizeof(id.data));
-
-                  if (i && id == lastId) {
-#ifdef HF3FS_GDR_ENABLED
-                    if (lastWasGpu) {
-                      // Will be resolved in phase 2
-                      bufs.emplace_back(makeError(StatusCode::kInvalidArg, ""));  // placeholder
-                      gpuPending.push_back(i);
-                      continue;
-                    }
-#endif
-                    if (!rangeFits(lastShm->size, arg.bufOff, arg.ioLen)) {
-                      bufs.emplace_back(makeError(StatusCode::kInvalidArg, "invalid buf off and/or io len"));
-                      continue;
-                    }
-                    bufs.emplace_back(IoBufForIO{lib::ShmBufForIO(lastShm, arg.bufOff)});
-                    continue;
-                  }
-
-                  // Try host table first
-                  auto it = iovs.shmsById.find(id);
-                  if (it != iovs.shmsById.end()) {
-                    auto iovd = it->second;
-                    auto shm = iovs.iovs->table[iovd].load();
-                    if (!shm) {
-                      bufs.emplace_back(makeError(StatusCode::kInvalidArg, "buf id not found"));
-                      continue;
-                    } else if (!rangeFits(shm->size, arg.bufOff, arg.ioLen)) {
-                      bufs.emplace_back(makeError(StatusCode::kInvalidArg, "invalid buf off and/or io len"));
-                      continue;
-                    }
-
-                    lastId = id;
-                    lastShm = shm;
-#ifdef HF3FS_GDR_ENABLED
-                    lastWasGpu = false;
-#endif
-                    bufs.emplace_back(IoBufForIO{lib::ShmBufForIO(std::move(shm), arg.bufOff)});
-                    continue;
-                  }
-
-#ifdef HF3FS_GDR_ENABLED
-                  // Not found in host table — defer to GPU lookup (phase 2)
-                  bufs.emplace_back(makeError(StatusCode::kInvalidArg, ""));  // placeholder
-                  gpuPending.push_back(i);
-#else
-                  bufs.emplace_back(makeError(StatusCode::kInvalidArg, "buf id not found"));
-#endif
-                }
-              }  // shmLock released here
-
-#ifdef HF3FS_GDR_ENABLED
-              // --- Phase 2: GPU lookup under gpuShmLock (never nested with shmLock) ---
-              if (!gpuPending.empty()) {
-                std::lock_guard gpuLock(iovs.gpuShmLock);
-                for (int i : gpuPending) {
-                  auto &arg = args[sqe[i].index];
-                  Uuid id;
-                  memcpy(id.data, arg.bufId, sizeof(id.data));
-
-                  auto git = iovs.gpuShmsById.find(id);
-                  if (git != iovs.gpuShmsById.end()) {
-                    auto gpuShm = git->second;
-                    if (!rangeFits(gpuShm->size, arg.bufOff, arg.ioLen)) {
-                      bufs[i] = makeError(StatusCode::kInvalidArg, "invalid buf off and/or io len");
-                      continue;
-                    }
-                    lastId = id;
-                    lastWasGpu = true;
-                    bufs[i] = IoBufForIO{lib::GpuShmBufForIO(std::move(gpuShm), arg.bufOff)};
-                    continue;
-                  }
-
-                  bufs[i] = makeError(StatusCode::kInvalidArg, "buf id not found");
-                }
-              }
-#endif
-            };
+        auto lookupBufs = [this, requester = job.ior->userInfo().uid](std::vector<Result<IoBufForIO>> &bufs,
+                                                                      const IoArgs *args,
+                                                                      const IoSqe *sqe,
+                                                                      int sqec) {
+          detail::lookupIovBuffers(iovs, bufs, requester, args, sqe, sqec);
+        };
 
         co_await job.ior->process(job.sqeProcTail,
                                   job.toProc,

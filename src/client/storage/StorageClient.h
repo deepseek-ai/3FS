@@ -138,6 +138,14 @@ class IOBuffer : public folly::MoveOnly {
   /** Returns the CUDA device ID for GPU buffers, or -1 for host buffers. */
   int gpuDeviceId() const { return isGpuMemory() ? rdmabuf_.asGpu().deviceId() : -1; }
 
+  /**
+   * Zero a byte range relative to data().
+   *
+   * Host memory is zeroed synchronously with memset. Device memory is zeroed
+   * with CUDA and synchronized before this method returns.
+   */
+  Result<Void> zeroRange(size_t offset, size_t length) const;
+
  private:
   net::RDMABufUnified rdmabuf_;
 
@@ -146,6 +154,25 @@ class IOBuffer : public folly::MoveOnly {
   friend class StorageClientImpl;
   friend class StorageClientInMem;
 };
+
+struct PreparedWriteChecksum {
+  ChecksumInfo checksum;
+  bool computeOnServer = false;
+};
+
+Result<PreparedWriteChecksum> prepareWriteChecksum(ChecksumType targetType,
+                                                   bool verifyChecksum,
+                                                   bool deviceMemory,
+                                                   const uint8_t *data,
+                                                   size_t length);
+
+#ifdef HF3FS_GDR_ENABLED
+namespace detail {
+
+Result<Void> zeroCudaDeviceRange(void *devicePtr, size_t length, int deviceId);
+
+}  // namespace detail
+#endif
 
 class IOBase : public folly::MoveOnly {
  private:

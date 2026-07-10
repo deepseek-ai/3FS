@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <folly/logging/xlog.h>
 #include <memory>
 #include <optional>
+#include <variant>
 
 #include "common/net/ib/AcceleratorMemory.h"
 #include "common/net/ib/RDMABuf.h"
@@ -20,7 +22,6 @@ namespace hf3fs::net {
  * - Memory is allocated on GPU device (not host)
  * - Uses nvidia_peermem for memory registration
  * - May require synchronization between GPU and RDMA operations
- * - Supports IPC memory sharing for cross-process scenarios
  */
 class RDMABufAccelerator {
  public:
@@ -35,8 +36,6 @@ class RDMABufAccelerator {
 
   struct OwnerSnapshot {
     std::shared_ptr<AcceleratorMemoryRegion> region;
-    std::shared_ptr<void> ipcHandleOwner;
-    std::shared_ptr<void> poolGuard;
   };
 
   /**
@@ -59,16 +58,6 @@ class RDMABufAccelerator {
    * @return The created buffer, or invalid buffer on failure
    */
   static RDMABufAccelerator createFromDescriptor(const AcceleratorMemoryDescriptor &desc);
-
-  /**
-   * Create from IPC handle (cross-process GPU memory sharing)
-   *
-   * @param ipcHandle CUDA IPC memory handle
-   * @param size Expected size of the memory
-   * @param deviceId CUDA device ID to use for import
-   * @return The created buffer, or invalid buffer on failure
-   */
-  static RDMABufAccelerator createFromIpcHandle(const void *ipcHandle, size_t size, int deviceId);
 
   /**
    * Check if the buffer is valid and usable
@@ -220,19 +209,9 @@ class RDMABufAccelerator {
    */
   void sync(int direction) const;
 
-  /**
-   * Get IPC handle for sharing this buffer with other processes
-   *
-   * @param handle Output buffer for the IPC handle (64 bytes)
-   * @return true if successful
-   */
-  bool getIpcHandle(void *handle) const;
-
-  OwnerSnapshot ownerSnapshot() const { return OwnerSnapshot{region_, ipcHandleOwner_, poolGuard_}; }
+  OwnerSnapshot ownerSnapshot() const { return OwnerSnapshot{region_}; }
 
  private:
-  friend class RDMABufAcceleratorPool;
-
   RDMABufAccelerator(std::shared_ptr<AcceleratorMemoryRegion> region, uint8_t *begin, size_t length)
       : region_(std::move(region)),
         begin_(begin),
@@ -241,83 +220,8 @@ class RDMABufAccelerator {
   std::shared_ptr<AcceleratorMemoryRegion> region_;
   uint8_t *begin_ = nullptr;
   size_t length_ = 0;
-  std::shared_ptr<void> ipcHandleOwner_;
-  // When allocated from a pool, this guard returns the GPU pointer to the pool
-  // on destruction (via custom deleter). If the pool is already destroyed,
-  // the GPU memory is freed directly via cudaFree.
-  std::shared_ptr<void> poolGuard_;
 
   void release();
-};
-
-/**
- * Pool for GPU RDMA buffers
- *
- * Similar to RDMABufPool but for GPU memory.
- * Pre-allocates GPU buffers for efficient reuse.
- */
-class RDMABufAcceleratorPool : public std::enable_shared_from_this<RDMABufAcceleratorPool> {
- public:
-  /**
-   * Create a new GPU buffer pool
-   *
-   * @param deviceId CUDA device ID for buffer allocation
-   * @param bufSize Size of each buffer
-   * @param bufCnt Number of buffers in the pool
-   * @return Shared pointer to the pool
-   */
-  static std::shared_ptr<RDMABufAcceleratorPool> create(int deviceId, size_t bufSize, size_t bufCnt);
-
-  ~RDMABufAcceleratorPool();
-
-  /**
-   * Allocate a buffer from the pool
-   *
-   * @param timeout Optional timeout for waiting (nullptr = no timeout)
-   * @return Allocated buffer, or invalid buffer on timeout/failure
-   */
-  CoTask<RDMABufAccelerator> allocate(std::optional<folly::Duration> timeout = std::nullopt);
-
-  /**
-   * Return a buffer to the pool
-   *
-   * Normally called automatically via poolGuard_ custom deleter when
-   * an RDMABufAccelerator allocated from this pool is destroyed.
-   *
-   * @param ptr GPU device pointer to return
-   */
-  void deallocate(void *ptr);
-
-  /**
-   * Get buffer size for this pool
-   */
-  size_t bufSize() const { return bufSize_; }
-
-  /**
-   * Get number of free buffers
-   */
-  size_t freeCnt() const;
-
-  /**
-   * Get total number of buffers
-   */
-  size_t totalCnt() const { return bufCnt_; }
-
-  /**
-   * Get the CUDA device ID for this pool
-   */
-  int deviceId() const { return deviceId_; }
-
- private:
-  RDMABufAcceleratorPool(int deviceId, size_t bufSize, size_t bufCnt);
-
-  int deviceId_;
-  size_t bufSize_;
-  size_t bufCnt_;
-
-  // Internal implementation
-  class Impl;
-  std::unique_ptr<Impl> impl_;
 };
 
 /**
@@ -336,28 +240,39 @@ class RDMABufUnified {
     Gpu,
   };
 
-  RDMABufUnified()
-      : type_(Type::Empty) {}
+  RDMABufUnified() = default;
 
   explicit RDMABufUnified(RDMABuf hostBuf)
-      : type_(Type::Host),
-        hostBuf_(std::move(hostBuf)) {}
+      : buffer_(std::in_place_type<RDMABuf>, std::move(hostBuf)) {}
 
   explicit RDMABufUnified(RDMABufAccelerator gpuBuf)
-      : type_(Type::Gpu),
-        gpuBuf_(std::move(gpuBuf)) {}
+      : buffer_(std::in_place_type<RDMABufAccelerator>, std::move(gpuBuf)) {}
 
-  Type type() const { return type_; }
-  bool isHost() const { return type_ == Type::Host; }
-  bool isGpu() const { return type_ == Type::Gpu; }
+  RDMABufUnified(const RDMABufUnified &) = delete;
+  RDMABufUnified &operator=(const RDMABufUnified &) = delete;
+  RDMABufUnified(RDMABufUnified &&) noexcept = default;
+  RDMABufUnified &operator=(RDMABufUnified &&) noexcept = default;
+
+  Type type() const {
+    XLOGF_IF(FATAL, buffer_.valueless_by_exception(), "RDMABufUnified is valueless");
+    if (std::holds_alternative<RDMABuf>(buffer_)) {
+      return Type::Host;
+    }
+    if (std::holds_alternative<RDMABufAccelerator>(buffer_)) {
+      return Type::Gpu;
+    }
+    return Type::Empty;
+  }
+  bool isHost() const { return std::holds_alternative<RDMABuf>(buffer_); }
+  bool isGpu() const { return std::holds_alternative<RDMABufAccelerator>(buffer_); }
   /** Alias for isGpu() — matches design doc naming convention. */
   bool isDevice() const { return isGpu(); }
   bool valid() const {
-    switch (type_) {
+    switch (type()) {
       case Type::Host:
-        return hostBuf_.valid();
+        return asHost().valid();
       case Type::Gpu:
-        return gpuBuf_.valid();
+        return asGpu().valid();
       default:
         return false;
     }
@@ -366,80 +281,90 @@ class RDMABufUnified {
   explicit operator bool() const { return valid(); }
 
   // Access the underlying buffer (caller must check type first)
-  RDMABuf &asHost() { return hostBuf_; }
-  const RDMABuf &asHost() const { return hostBuf_; }
-  RDMABufAccelerator &asGpu() { return gpuBuf_; }
-  const RDMABufAccelerator &asGpu() const { return gpuBuf_; }
+  RDMABuf &asHost() {
+    XLOGF_IF(FATAL, !isHost(), "RDMABufUnified type {} is not Host", static_cast<int>(type()));
+    return std::get<RDMABuf>(buffer_);
+  }
+  const RDMABuf &asHost() const {
+    XLOGF_IF(FATAL, !isHost(), "RDMABufUnified type {} is not Host", static_cast<int>(type()));
+    return std::get<RDMABuf>(buffer_);
+  }
+  RDMABufAccelerator &asGpu() {
+    XLOGF_IF(FATAL, !isGpu(), "RDMABufUnified type {} is not Gpu", static_cast<int>(type()));
+    return std::get<RDMABufAccelerator>(buffer_);
+  }
+  const RDMABufAccelerator &asGpu() const {
+    XLOGF_IF(FATAL, !isGpu(), "RDMABufUnified type {} is not Gpu", static_cast<int>(type()));
+    return std::get<RDMABufAccelerator>(buffer_);
+  }
 
   uint8_t *ptr() {
-    switch (type_) {
+    switch (type()) {
       case Type::Host:
-        return hostBuf_.ptr();
+        return asHost().ptr();
       case Type::Gpu:
-        return gpuBuf_.ptr();
+        return asGpu().ptr();
       default:
         return nullptr;
     }
   }
   const uint8_t *ptr() const {
-    switch (type_) {
+    switch (type()) {
       case Type::Host:
-        return hostBuf_.ptr();
+        return asHost().ptr();
       case Type::Gpu:
-        return gpuBuf_.ptr();
+        return asGpu().ptr();
       default:
         return nullptr;
     }
   }
 
   size_t size() const {
-    switch (type_) {
+    switch (type()) {
       case Type::Host:
-        return hostBuf_.size();
+        return asHost().size();
       case Type::Gpu:
-        return gpuBuf_.size();
+        return asGpu().size();
       default:
         return 0;
     }
   }
 
   size_t capacity() const {
-    switch (type_) {
+    switch (type()) {
       case Type::Host:
-        return hostBuf_.capacity();
+        return asHost().capacity();
       case Type::Gpu:
-        return gpuBuf_.capacity();
+        return asGpu().capacity();
       default:
         return 0;
     }
   }
 
   ibv_mr *getMR(int devId) const {
-    switch (type_) {
+    switch (type()) {
       case Type::Host:
-        return hostBuf_.getMR(devId);
+        return asHost().getMR(devId);
       case Type::Gpu:
-        return gpuBuf_.getMR(devId);
+        return asGpu().getMR(devId);
       default:
         return nullptr;
     }
   }
 
   RDMARemoteBuf toRemoteBuf() const {
-    switch (type_) {
+    switch (type()) {
       case Type::Host:
-        return hostBuf_.toRemoteBuf();
+        return asHost().toRemoteBuf();
       case Type::Gpu:
-        return gpuBuf_.toRemoteBuf();
+        return asGpu().toRemoteBuf();
       default:
         return RDMARemoteBuf();
     }
   }
 
  private:
-  Type type_;
-  RDMABuf hostBuf_;
-  RDMABufAccelerator gpuBuf_;
+  std::variant<std::monostate, RDMABuf, RDMABufAccelerator> buffer_;
 };
 
 }  // namespace hf3fs::net

@@ -1,85 +1,119 @@
-/**
- * Scenario tests for Layer 5+6: IovTable + IoRing + GpuShm
- *
- * Tests GDR key parsing, import/removal, buffer lookup,
- * variant dispatch, GpuShmBuf lifecycle, GpuShmBufForIO.
- *
- * Covers: REQ-L5-001 through REQ-L5-004
- *         REQ-L6-001 through REQ-L6-004
- *
- * Key parsing (REQ-L5-001): parseKey() is static in IovTable.cc.
- * Tested through IovTable::lookupIov() which calls parseKey() internally.
- *
- * URI parsing (REQ-L5-002): tested through IovTable::addIov(), which calls
- * the shared lib::parseGdrUri() helper.
- */
-
+#include <array>
 #include <cstring>
+#include <fcntl.h>
+#include <functional>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <sys/mman.h>
+#include <type_traits>
+#include <unistd.h>
+#include <utility>
+#include <vector>
 
 #include "client/storage/StorageClient.h"
+#include "client/storage/StorageClientInMem.h"
+#include "common/net/ib/SetupIB.h"
+#include "fuse/FuseClients.h"
+#include "fuse/IoRing.h"
 #include "fuse/IovTable.h"
+#include "fuse/PioV.h"
+#include "tests/FakeMgmtdClient.h"
 #include "tests/GtestHelpers.h"
 
-#ifdef HF3FS_GDR_ENABLED
-#include "lib/common/GpuShm.h"
-#endif
-
 namespace hf3fs::fuse {
+
+class IovTableTestHelper {
+ public:
+  static Result<int> insert(IovTable &table, std::shared_ptr<IovEntry> entry) {
+    auto iovd = table.entries_->alloc();
+    if (!iovd) {
+      return makeError(ClientAgentCode::kTooManyOpenFiles, "too many test iovs");
+    }
+
+    auto published = table.publishEntry(*iovd, std::move(entry));
+    if (!published) {
+      table.entries_->dealloc(*iovd);
+      RETURN_ERROR(published);
+    }
+    return *iovd;
+  }
+
+  static bool removeExpected(IovTable &table, int iovd, const std::shared_ptr<IovEntry> &expected) {
+    std::unique_lock lock(table.mutex_);
+    return table.removeEntryLocked(iovd, expected);
+  }
+};
+
 namespace {
 
-meta::UserInfo rootUser() {
-  meta::UserInfo ui;
-  ui.uid = meta::Uid(0);
-  ui.gid = meta::Gid(0);
-  return ui;
-}
+meta::UserInfo user(uint32_t uid = 0, uint32_t gid = 0) { return meta::UserInfo{meta::Uid(uid), meta::Gid(gid)}; }
 
-auto addIovForParser(IovTable &table, const char *key, const Path &target) {
-  storage::client::StorageClient storageClient;
-  return table.addIov(key, target, 1234, rootUser(), folly::Executor::KeepAlive<>{}, storageClient);
-}
+class TestShm {
+ public:
+  explicit TestShm(size_t size)
+      : name_("/hf3fs-iov-table-" + Uuid::random().toHexString()),
+        path_(Path("/dev/shm") / name_.substr(1)) {
+    fd_ = shm_open(name_.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+    if (fd_ >= 0 && ftruncate(fd_, size) == 0) {
+      valid_ = true;
+    }
+  }
 
-void expectParserError(IovTable &table, const char *key, std::string_view message) {
-  auto result = addIovForParser(table, key, Path("/dev/shm/unused"));
-  ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(std::string(result.error().message()), testing::HasSubstr(std::string(message)));
-}
+  ~TestShm() {
+    if (fd_ >= 0) {
+      close(fd_);
+    }
+    shm_unlink(name_.c_str());
+  }
+
+  bool valid() const { return valid_; }
+  const Path &path() const { return path_; }
+
+ private:
+  std::string name_;
+  Path path_;
+  int fd_ = -1;
+  bool valid_ = false;
+};
+
+class TestIovTableGdr : public ::testing::Test {
+ protected:
+  TestIovTableGdr()
+      : mgmtd_(tests::FakeMgmtdClient::create()),
+        storageClient_(ClientId::random(), storageConfig_, *mgmtd_) {}
+
+  auto addIovForParser(IovTable &table, const char *key, const Path &target) {
+    return table.addIov(key, target, 1234, user(), folly::Executor::KeepAlive<>{}, storageClient_);
+  }
+
+  void expectParserError(IovTable &table, const char *key, std::string_view message) {
+    auto result = addIovForParser(table, key, Path("/dev/shm/unused"));
+    ASSERT_TRUE(result.hasError());
+    EXPECT_THAT(std::string(result.error().message()), testing::HasSubstr(std::string(message)));
+  }
+
+  storage::client::StorageClient::Config storageConfig_;
+  std::shared_ptr<tests::FakeMgmtdClient> mgmtd_;
+  storage::client::StorageClientInMem storageClient_;
+};
+
+class TestIovTableGdrWithIB : public TestIovTableGdr {
+ public:
+  static void SetUpTestSuite() { net::test::SetupIB::SetUpTestSuite(); }
+};
 
 }  // namespace
 
-// ==========================================================================
-// REQ-L5-001: GDR Key Parsing in IovTable
-// ==========================================================================
-
-class TestIovTableGdr : public ::testing::Test {
-};
-
-// @tests SCN-L5-001-01
-TEST_F(TestIovTableGdr, SCN_L5_001_01_ValidGdrKeyParsing) {
+TEST_F(TestIovTableGdr, ParsesAndValidatesGdrV2Keys) {
   IovTable table;
 
   auto result = addIovForParser(table, "abcdef1234567890abcdef1234567890.gdr.d0", Path("gdr://invalid"));
   ASSERT_TRUE(result.hasError());
   EXPECT_THAT(std::string(result.error().message()), testing::HasSubstr("failed to parse GDR target URI"));
-}
-
-// @tests SCN-L5-001-02
-TEST_F(TestIovTableGdr, SCN_L5_001_02_NonGdrKeyParsing) {
-  IovTable table;
-
-  auto result = addIovForParser(table, "abcdef1234567890abcdef1234567890.b4096", Path("/dev/shm/hf3fs-missing-iov"));
-  ASSERT_TRUE(result.hasError());
-  EXPECT_THAT(std::string(result.error().message()), testing::HasSubstr("failed to stat shm path"));
-}
-
-// @tests SCN-L5-001-01
-TEST_F(TestIovTableGdr, InvalidKeyFormatRejected) {
-  IovTable table;
 
   expectParserError(table, "", "invalid shm key");
   expectParserError(table, "abcdef1234567890abcdef1234567890..gdr.d0", "empty attr");
@@ -98,214 +132,497 @@ TEST_F(TestIovTableGdr, InvalidKeyFormatRejected) {
   expectParserError(table, "abcdef1234567890abcdef1234567890.r", "invalid io batch size");
 }
 
-// ==========================================================================
-// REQ-L5-002: GDR Import via addIov
-// ==========================================================================
+TEST_F(TestIovTableGdrWithIB, HostEntrySupportsMetadataLookupAndDeadPidRemoval) {
+  constexpr pid_t kPid = 4242;
+  constexpr int kIoRingIndex = 7;
+  const auto size = IoRing::bytesRequired(4);
+  TestShm testShm(size);
+  if (!testShm.valid()) {
+    GTEST_SKIP() << "POSIX shared memory is unavailable";
+  }
 
-// @tests SCN-L5-002-02
-TEST_F(TestIovTableGdr, SCN_L5_002_02_InvalidGdrUriThroughAddIov) {
-  // GIVEN: GDR key but invalid URI
-  // addIov requires heavy dependencies (executor, storage client)
-  // But we can verify the URI format expectation
-  std::string invalidUri = "gdr://invalid";
-
-  // THEN: URI does not match expected format "gdr://v1/device/{N}/size/{S}/ipc/{hex128}"
-  EXPECT_EQ(invalidUri.find("gdr://v1/"), std::string::npos);
-  // This URI would fail lib::parseGdrUri() inside addIov.
-}
-
-// @tests SCN-L5-002-04
-TEST_F(TestIovTableGdr, SCN_L5_002_04_GdrNotCompiledCheck) {
-#ifdef HF3FS_GDR_ENABLED
-  // GDR types available — gpuShmsById, gpuShmLock exist
-  IovTable table;
-  EXPECT_TRUE(table.gpuShmsById.empty());
-  EXPECT_TRUE(table.gpuIovMetaByIovd.empty());
-#else
-  // GDR types not available — compile-time check only
-  IovTable table;
-  EXPECT_TRUE(table.shmsById.empty());
-#endif
-}
-
-// ==========================================================================
-// REQ-L5-003: GDR IOV Removal via rmIov
-// ==========================================================================
-
-// @tests SCN-L5-003-01
-TEST_F(TestIovTableGdr, SCN_L5_003_01_IovTableDefaultState) {
-  // GIVEN: A default IovTable
-  IovTable table;
-
-#ifdef HF3FS_GDR_ENABLED
-  // THEN: GPU maps are empty
-  EXPECT_TRUE(table.gpuShmsById.empty());
-  EXPECT_TRUE(table.gpuIovMetaByIovd.empty());
-#endif
-
-  // Host maps are empty
-  EXPECT_TRUE(table.shmsById.empty());
-
-  // iovs not yet initialized
-  EXPECT_EQ(table.iovs, nullptr);
-}
-
-// @tests SCN-L5-003-01
-TEST_F(TestIovTableGdr, SCN_L5_003_01_RmIovOnEmptyTable) {
-  IovTable table;
-
-  meta::UserInfo ui;
-  ui.uid = meta::Uid(0);
-  ui.gid = meta::Gid(0);
-
-  // WHEN: rmIov on empty table with GDR key
-  auto result = table.rmIov("abcdef1234567890abcdef1234567890.gdr.d0", ui);
-
-  // THEN: Returns error (not found)
-  EXPECT_TRUE(result.hasError());
-}
-
-#ifdef HF3FS_GDR_ENABLED
-
-TEST_F(TestIovTableGdr, RemoveIovsByPidCleansGpuNullSlotMetadata) {
+  auto id = Uuid::random();
+  auto key = id.toHexString() + ".r1";
+  auto owner = user(17, 23);
   IovTable table;
   table.init(Path("/mnt/3fs"), 8);
 
-  auto iovd = table.iovs->alloc();
+  auto added = table.addIov(key.c_str(), testShm.path(), kPid, owner, folly::Executor::KeepAlive<>{}, storageClient_);
+  ASSERT_OK(added);
+  ASSERT_TRUE(added->second);
+  added->second->iorIndex = kIoRingIndex;
+
+  auto iovd = table.iovDesc(added->first.id);
   ASSERT_TRUE(iovd);
-  table.iovs->table[*iovd].store(nullptr);
+  auto entry = table.entryAt(*iovd);
+  ASSERT_TRUE(entry);
+  EXPECT_FALSE(entry->isGpu());
+  EXPECT_EQ(entry->key, key);
+  EXPECT_EQ(entry->id, id);
+  EXPECT_EQ(entry->target, testShm.path());
+  EXPECT_EQ(entry->user, owner.uid);
+  EXPECT_EQ(entry->gid, owner.gid);
+  EXPECT_EQ(entry->pid, kPid);
 
-  auto id = Uuid::fromHexString("abcdef1234567890abcdef1234567890");
-  ASSERT_TRUE(id);
-  table.gpuIovMetaByIovd[*iovd] = IovTable::GpuIovMeta{"abcdef1234567890abcdef1234567890.gdr.d0",
-                                                       Path("gdr://v1/device/0/size/4096/ipc/00"),
-                                                       meta::Uid(7),
-                                                       meta::Gid(7),
-                                                       4242};
-  table.gpuShmsById[*id] = std::shared_ptr<lib::GpuShmBuf>();
+  auto stat = table.statIov(*iovd, owner);
+  ASSERT_OK(stat);
+  EXPECT_EQ(stat->asSymlink().target, testShm.path());
+  EXPECT_EQ(stat->acl.uid, owner.uid);
+  EXPECT_EQ(stat->acl.gid, owner.gid);
+  EXPECT_EQ(stat->acl.perm, meta::Permission(0400));
+  ASSERT_ERROR(table.statIov(*iovd, user(18, 23)), MetaCode::kNoPermission);
 
-  auto ioRings = table.removeIovsByPid(4242);
+  auto [dirEntries, inodes] = table.listIovs(owner);
+  ASSERT_EQ(dirEntries->size(), 4);
+  ASSERT_EQ(inodes->size(), 4);
+  EXPECT_EQ(dirEntries->back().name, key);
+  ASSERT_TRUE(inodes->back());
+  EXPECT_EQ(inodes->back()->asSymlink().target, testShm.path());
 
-  EXPECT_TRUE(ioRings.empty());
-  EXPECT_TRUE(table.gpuIovMetaByIovd.empty());
-  EXPECT_TRUE(table.gpuShmsById.empty());
-  EXPECT_EQ(table.iovs->slots.nextAvail.load(), 0);
+  std::vector<Result<IoBufForIO>> bufs;
+  std::vector<IovLookupRequest> first{{id, 8, 16}, {id, 32, 8}};
+  table.lookupBufs(bufs, first, owner.uid);
+  ASSERT_EQ(bufs.size(), 2);
+  ASSERT_OK(bufs[0]);
+  ASSERT_OK(bufs[1]);
+  auto *firstPtr = ioBufPtr(bufs[0].value());
+  EXPECT_EQ(firstPtr, added->second->bufStart + 8);
+
+  std::vector<Result<IoBufForIO>> denied;
+  table.lookupBufs(denied, first, meta::Uid(18));
+  ASSERT_EQ(denied.size(), first.size());
+  ASSERT_ERROR(denied[0], MetaCode::kNoPermission);
+  ASSERT_ERROR(denied[1], MetaCode::kNoPermission);
+  ASSERT_ERROR(table.lookupBuf(IovLookupRequest{id, 0, 1}, meta::Uid(18)), MetaCode::kNoPermission);
+
+  Uuid missing = Uuid::random();
+  std::vector<IovLookupRequest> wrapped{{id, size - 4, 8}, {missing, 0, 1}};
+  table.lookupBufs(bufs, wrapped, owner.uid);
+  ASSERT_EQ(bufs.size(), 4);
+  ASSERT_OK(bufs[0]);
+  EXPECT_EQ(ioBufPtr(bufs[0].value()), firstPtr);
+  EXPECT_TRUE(bufs[2].hasError());
+  EXPECT_TRUE(bufs[3].hasError());
+
+  auto ioRingIndexes = table.removeIovsByPid(kPid);
+  ASSERT_EQ(ioRingIndexes, std::vector<int>({kIoRingIndex}));
+  EXPECT_FALSE(table.entryAt(*iovd));
+  EXPECT_TRUE(table.lookupIov(key.c_str(), owner).hasError());
+  EXPECT_TRUE(table.lookupBuf(IovLookupRequest{id, 0, 1}, owner.uid).hasError());
 }
 
-#endif  // HF3FS_GDR_ENABLED
-
-// ==========================================================================
-// REQ-L5-004: lookupBufs Lambda -- Host-then-GPU Lookup
-// ==========================================================================
-
-// @tests SCN-L5-004-03
-TEST_F(TestIovTableGdr, SCN_L5_004_03_UUIDNotFound) {
-  IovTable table;
-
-  // GIVEN: A UUID not in any map
-  Uuid testUuid;
-  memset(&testUuid, 0xAB, sizeof(testUuid));
-
-  // THEN: Not found in shmsById
-  EXPECT_EQ(table.shmsById.find(testUuid), table.shmsById.end());
-
-#ifdef HF3FS_GDR_ENABLED
-  // Not found in gpuShmsById either
-  EXPECT_EQ(table.gpuShmsById.find(testUuid), table.gpuShmsById.end());
-#endif
-}
-
-// ==========================================================================
-// REQ-L6-001: IoBufForIO Variant Dispatch
-// ==========================================================================
-
-#ifdef HF3FS_GDR_ENABLED
-
-// @tests SCN-L6-001-01, SCN-L6-001-02, SCN-L6-002-02
-TEST_F(TestIovTableGdr, SCN_L6_001_VariantTypeCheck) {
-  using namespace hf3fs::lib;
-
-  // When HF3FS_GDR_ENABLED, GpuShmBufForIO exists with expected interface
-  // Verify the type is constructible from the expected arguments
-  static_assert(std::is_constructible_v<GpuShmBufForIO, std::shared_ptr<GpuShmBuf>, size_t>,
-                "GpuShmBufForIO must be constructible from shared_ptr<GpuShmBuf> and offset");
-
-  // Verify it has ptr() and offset() methods
-  // (static_assert on method existence through decltype)
-  static_assert(std::is_same_v<decltype(std::declval<GpuShmBufForIO>().ptr()), uint8_t *>,
-                "GpuShmBufForIO::ptr() must return uint8_t*");
-  static_assert(std::is_same_v<decltype(std::declval<GpuShmBufForIO>().offset()), size_t>,
-                "GpuShmBufForIO::offset() must return size_t");
-}
-
-#endif  // HF3FS_GDR_ENABLED
-
-// ==========================================================================
-// REQ-L6-002: GpuShmBuf IPC Import
-// ==========================================================================
-
-#ifdef HF3FS_GDR_ENABLED
-
-// @tests SCN-L6-002-01, SCN-L6-002-02
-TEST_F(TestIovTableGdr, SCN_L6_002_GpuIpcHandleDefaults) {
-  using namespace hf3fs::lib;
-
-  // Default GpuIpcHandle should be invalid
-  GpuIpcHandle handle;
-  EXPECT_FALSE(handle.valid);
-}
-
-// @tests SCN-L6-002-03
-TEST_F(TestIovTableGdr, SCN_L6_002_03_IpcHandleSerialization) {
-  using namespace hf3fs::lib;
-
-  // GIVEN: A GpuIpcHandle with known data
-  GpuIpcHandle handle;
-  for (int i = 0; i < 64; i++) {
-    handle.data[i] = static_cast<uint8_t>(i);
+TEST_F(TestIovTableGdrWithIB, HostRmIovReturnsIoRingBuffer) {
+  TestShm testShm(IoRing::bytesRequired(2));
+  if (!testShm.valid()) {
+    GTEST_SKIP() << "POSIX shared memory is unavailable";
   }
-  handle.valid = true;
 
-  // WHEN: serialize and deserialize
-  std::string serialized = handle.serialize();
-  EXPECT_FALSE(serialized.empty());
+  auto id = Uuid::random();
+  auto key = id.toHexString() + ".r1";
+  IovTable table;
+  table.init(Path("/mnt/3fs"), 2);
+  auto added = table.addIov(key.c_str(), testShm.path(), 123, user(), folly::Executor::KeepAlive<>{}, storageClient_);
+  ASSERT_OK(added);
 
-  auto deserialized = GpuIpcHandle::deserialize(serialized);
-  ASSERT_TRUE(deserialized.has_value());
-
-  // THEN: Round-trip matches
-  EXPECT_TRUE(deserialized->valid);
-  EXPECT_EQ(memcmp(handle.data, deserialized->data, 64), 0);
+  auto removed = table.rmIov(key.c_str(), user());
+  ASSERT_OK(removed);
+  EXPECT_EQ(*removed, added->second);
 }
 
-#endif  // HF3FS_GDR_ENABLED
+TEST_F(TestIovTableGdrWithIB, HostAddRejectsDuplicateKeyAndUuidWithoutCorruptingReverseMaps) {
+  TestShm testShm(IoRing::bytesRequired(2));
+  if (!testShm.valid()) {
+    GTEST_SKIP() << "POSIX shared memory is unavailable";
+  }
 
-// ==========================================================================
-// REQ-L6-004: GpuShmBufForIO Offset View
-// ==========================================================================
+  auto id = Uuid::random();
+  auto readKey = id.toHexString() + ".r1";
+  auto writeKey = id.toHexString() + ".w1";
+  auto owner = user(31, 32);
+  IovTable table;
+  table.init(Path("/mnt/3fs"), 1);
+
+  auto first =
+      table.addIov(readKey.c_str(), testShm.path(), 1001, owner, folly::Executor::KeepAlive<>{}, storageClient_);
+  ASSERT_OK(first);
+  ASSERT_TRUE(first->second);
+  ASSERT_ERROR(
+      table.addIov(readKey.c_str(), testShm.path(), 1002, owner, folly::Executor::KeepAlive<>{}, storageClient_),
+      MetaCode::kExists);
+  ASSERT_ERROR(
+      table.addIov(writeKey.c_str(), testShm.path(), 1003, owner, folly::Executor::KeepAlive<>{}, storageClient_),
+      MetaCode::kExists);
+
+  ASSERT_OK(table.lookupBuf(IovLookupRequest{id, 0, 1}, owner.uid));
+  ASSERT_OK(table.rmIov(readKey.c_str(), owner));
+
+  auto replacement =
+      table.addIov(writeKey.c_str(), testShm.path(), 1004, owner, folly::Executor::KeepAlive<>{}, storageClient_);
+  ASSERT_OK(replacement);
+  ASSERT_ERROR(table.rmIov(writeKey.c_str(), owner, first->second), MetaCode::kNotFound);
+  ASSERT_OK(table.lookupIov(writeKey.c_str(), owner));
+  ASSERT_OK(table.lookupBuf(IovLookupRequest{id, 0, 1}, owner.uid));
+
+  ASSERT_OK(table.rmIov(writeKey.c_str(), owner));
+  EXPECT_TRUE(table.lookupBuf(IovLookupRequest{id, 0, 1}, owner.uid).hasError());
+}
+
+TEST_F(TestIovTableGdr, StalePidSnapshotCannotRemoveReusedDescriptor) {
+  IovTable table;
+  table.init(Path("/mnt/3fs"), 1);
+  auto owner = user(41, 42);
+
+  auto oldId = Uuid::random();
+  auto oldEntry = std::make_shared<IovEntry>(
+      IovEntry{oldId.toHexString(), oldId, Path("/old"), owner.uid, owner.gid, 2001, IovBuffer{}});
+  auto oldIovd = IovTableTestHelper::insert(table, oldEntry);
+  ASSERT_OK(oldIovd);
+  ASSERT_OK(table.rmIov(oldEntry->key.c_str(), owner));
+
+  auto newId = Uuid::random();
+  auto newEntry = std::make_shared<IovEntry>(
+      IovEntry{newId.toHexString(), newId, Path("/new"), owner.uid, owner.gid, 2002, IovBuffer{}});
+  auto newIovd = IovTableTestHelper::insert(table, newEntry);
+  ASSERT_OK(newIovd);
+  ASSERT_EQ(*newIovd, *oldIovd);
+
+  EXPECT_FALSE(IovTableTestHelper::removeExpected(table, *oldIovd, oldEntry));
+  EXPECT_EQ(table.entryAt(*newIovd), newEntry);
+  EXPECT_TRUE(table.removeIovsByPid(2001).empty());
+  EXPECT_EQ(table.entryAt(*newIovd), newEntry);
+}
+
+TEST_F(TestIovTableGdr, ClosedReadHoleZerosOnlyMissingRanges) {
+  std::array<uint8_t, 12> data{};
+  std::vector<storage::client::ReadIO> reads;
+  auto addRead = [&](uint32_t chunk, size_t dataOffset, Result<uint32_t> result) {
+    auto chunkId = storage::ChunkId(meta::ChunkId(meta::InodeId{77}, 0, chunk).pack());
+    auto read =
+        storageClient_
+            .createReadIO({}, chunkId, 0, 4, data.data() + dataOffset, nullptr, reinterpret_cast<void *>(size_t{0}));
+    read.result.lengthInfo = std::move(result);
+    reads.push_back(std::move(read));
+  };
+  addRead(0, 0, 2);
+  addRead(1, 4, makeError(StorageClientCode::kChunkNotFound));
+  addRead(2, 8, 4);
+
+  std::vector<ssize_t> result{0};
+  std::vector<std::pair<size_t, size_t>> zeroed;
+  lib::agent::detail::finishReadResults(
+      result,
+      reads,
+      true,
+      [&](const storage::client::ReadIO &, size_t offset, size_t length) -> Result<Void> {
+        zeroed.emplace_back(offset, length);
+        return Void{};
+      });
+
+  EXPECT_EQ(result, std::vector<ssize_t>({12}));
+  EXPECT_EQ(zeroed, (std::vector<std::pair<size_t, size_t>>{{2, 2}, {0, 4}}));
+}
+
+TEST_F(TestIovTableGdr, ReadHoleDoesNotLeakWhenNextIovStartsWithMissingChunk) {
+  std::array<uint8_t, 4> firstBuffer;
+  std::array<uint8_t, 8> secondBuffer;
+  firstBuffer.fill(0xAA);
+  secondBuffer.fill(0xBB);
+  std::vector<storage::client::ReadIO> reads;
+  auto addRead = [&](uint32_t chunk, size_t iovIdx, uint8_t *data, Result<uint32_t> result) {
+    auto chunkId = storage::ChunkId(meta::ChunkId(meta::InodeId{80}, 0, chunk).pack());
+    auto read = storageClient_.createReadIO({}, chunkId, 0, 4, data, nullptr, reinterpret_cast<void *>(iovIdx));
+    read.result.lengthInfo = std::move(result);
+    reads.push_back(std::move(read));
+  };
+  addRead(0, 0, firstBuffer.data(), 2);
+  addRead(1, 1, secondBuffer.data(), makeError(StorageClientCode::kChunkNotFound));
+  addRead(2, 1, secondBuffer.data() + 4, 4);
+
+  std::vector<ssize_t> result{0, 0};
+  lib::agent::detail::finishReadResults(
+      result,
+      reads,
+      true,
+      [](const storage::client::ReadIO &io, size_t offset, size_t length) -> Result<Void> {
+        std::memset(io.data + offset, 0, length);
+        return Void{};
+      });
+
+  EXPECT_EQ(result, (std::vector<ssize_t>{2, 8}));
+  EXPECT_EQ(firstBuffer, (std::array<uint8_t, 4>{0xAA, 0xAA, 0xAA, 0xAA}));
+  EXPECT_EQ(secondBuffer, (std::array<uint8_t, 8>{0, 0, 0, 0, 0xBB, 0xBB, 0xBB, 0xBB}));
+}
+
+TEST_F(TestIovTableGdr, ReadHoleDoesNotLeakWhenNextIovStartsWithShortRead) {
+  std::array<uint8_t, 4> firstBuffer;
+  std::array<uint8_t, 8> secondBuffer;
+  firstBuffer.fill(0xAA);
+  secondBuffer.fill(0xBB);
+  std::vector<storage::client::ReadIO> reads;
+  auto addRead = [&](uint32_t chunk, size_t iovIdx, uint8_t *data, uint32_t result) {
+    auto chunkId = storage::ChunkId(meta::ChunkId(meta::InodeId{81}, 0, chunk).pack());
+    auto read = storageClient_.createReadIO({}, chunkId, 0, 4, data, nullptr, reinterpret_cast<void *>(iovIdx));
+    read.result.lengthInfo = result;
+    reads.push_back(std::move(read));
+  };
+  addRead(0, 0, firstBuffer.data(), 2);
+  addRead(1, 1, secondBuffer.data(), 2);
+  addRead(2, 1, secondBuffer.data() + 4, 4);
+
+  std::vector<ssize_t> result{0, 0};
+  lib::agent::detail::finishReadResults(
+      result,
+      reads,
+      true,
+      [](const storage::client::ReadIO &io, size_t offset, size_t length) -> Result<Void> {
+        std::memset(io.data + offset, 0, length);
+        return Void{};
+      });
+
+  EXPECT_EQ(result, (std::vector<ssize_t>{2, 8}));
+  EXPECT_EQ(firstBuffer, (std::array<uint8_t, 4>{0xAA, 0xAA, 0xAA, 0xAA}));
+  EXPECT_EQ(secondBuffer, (std::array<uint8_t, 8>{0xBB, 0xBB, 0, 0, 0xBB, 0xBB, 0xBB, 0xBB}));
+}
+
+TEST_F(TestIovTableGdr, ReadHolePropagatesZeroFailureAndHonorsForbidMode) {
+  std::array<uint8_t, 8> data{};
+  std::vector<storage::client::ReadIO> reads;
+  for (uint32_t chunk = 0; chunk < 2; ++chunk) {
+    auto chunkId = storage::ChunkId(meta::ChunkId(meta::InodeId{78}, 0, chunk).pack());
+    auto read =
+        storageClient_
+            .createReadIO({}, chunkId, 0, 4, data.data() + chunk * 4, nullptr, reinterpret_cast<void *>(size_t{0}));
+    read.result.lengthInfo = chunk == 0 ? 2 : 4;
+    reads.push_back(std::move(read));
+  }
+
+  std::vector<ssize_t> result{0};
+  size_t zeroCalls = 0;
+  lib::agent::detail::finishReadResults(result,
+                                        reads,
+                                        true,
+                                        [&](const storage::client::ReadIO &, size_t, size_t) -> Result<Void> {
+                                          ++zeroCalls;
+                                          return makeError(StorageClientCode::kRemoteIOError,
+                                                           "injected GPU memset failure");
+                                        });
+  EXPECT_EQ(zeroCalls, 1u);
+  EXPECT_EQ(result[0], -static_cast<ssize_t>(StorageClientCode::kRemoteIOError));
+
+  result = {0};
+  zeroCalls = 0;
+  lib::agent::detail::finishReadResults(result,
+                                        reads,
+                                        false,
+                                        [&](const storage::client::ReadIO &, size_t, size_t) -> Result<Void> {
+                                          ++zeroCalls;
+                                          return Void{};
+                                        });
+  EXPECT_EQ(zeroCalls, 0u);
+  EXPECT_EQ(result[0], -static_cast<ssize_t>(ClientAgentCode::kHoleInIoOutcome));
+}
+
+TEST_F(TestIovTableGdr, FullReadHoleRemainsEofAndIsNotZeroFilled) {
+  std::array<uint8_t, 8> data{};
+  std::vector<storage::client::ReadIO> reads;
+  for (uint32_t chunk = 0; chunk < 2; ++chunk) {
+    auto chunkId = storage::ChunkId(meta::ChunkId(meta::InodeId{79}, 0, chunk).pack());
+    auto read =
+        storageClient_
+            .createReadIO({}, chunkId, 0, 4, data.data() + chunk * 4, nullptr, reinterpret_cast<void *>(size_t{0}));
+    if (chunk == 0) {
+      read.result.lengthInfo = 0;
+    } else {
+      read.result.lengthInfo = makeError(StorageClientCode::kChunkNotFound);
+    }
+    reads.push_back(std::move(read));
+  }
+
+  std::vector<ssize_t> result{0};
+  size_t zeroCalls = 0;
+  lib::agent::detail::finishReadResults(result,
+                                        reads,
+                                        true,
+                                        [&](const storage::client::ReadIO &, size_t, size_t) -> Result<Void> {
+                                          ++zeroCalls;
+                                          return Void{};
+                                        });
+
+  EXPECT_EQ(result[0], 0);
+  EXPECT_EQ(zeroCalls, 0u);
+}
 
 #ifdef HF3FS_GDR_ENABLED
 
-// @tests SCN-L6-004-01
-TEST_F(TestIovTableGdr, SCN_L6_004_01_OffsetPtrArithmetic) {
-  using namespace hf3fs::lib;
+namespace {
 
-  // GIVEN: A GpuShmBuf with a known devicePtr. The owner-side constructor keeps
-  // the pointer even if CUDA IPC export is unavailable in the local runtime.
-  void *knownPtr = reinterpret_cast<void *>(0x10000);
-  auto gpuShm = std::make_shared<GpuShmBuf>(knownPtr, 0x10000, 0, meta::Uid(0), 1234, 1);
-  ASSERT_EQ(gpuShm->devicePtr, knownPtr);
-
-  GpuShmBufForIO forIO(gpuShm, 4096);
-  EXPECT_EQ(forIO.ptr(), static_cast<uint8_t *>(knownPtr) + 4096);
-  EXPECT_EQ(forIO.offset(), 4096u);
-  EXPECT_EQ(forIO.buffer(), gpuShm);
-
-  GpuShmBufForIO forIO0(gpuShm, 0);
-  EXPECT_EQ(forIO0.ptr(), static_cast<uint8_t *>(knownPtr));
-  EXPECT_EQ(forIO0.offset(), 0u);
+std::shared_ptr<lib::GpuShmBuf> makeFakeGpuBuffer(const Uuid &id, size_t size) {
+  lib::GpuIpcHandle invalidHandle;
+  auto *raw = new lib::GpuShmBuf(invalidHandle, size, 0, size, 0, id);
+  raw->devicePtr = reinterpret_cast<void *>(uintptr_t{0x10000});
+  return std::shared_ptr<lib::GpuShmBuf>(raw, [](lib::GpuShmBuf *buffer) {
+    buffer->devicePtr = nullptr;
+    delete buffer;
+  });
 }
 
-#endif  // HF3FS_GDR_ENABLED
+}  // namespace
+
+TEST_F(TestIovTableGdr, GpuPublicationRejectsDuplicateKeyAndUuidAndSupportsReverseRemoval) {
+  IovTable table;
+  table.init(Path("/mnt/3fs"), 3);
+
+  std::shared_ptr<lib::GpuShmBuf> noHardwareBuffer;
+  auto owner = user(51, 52);
+  auto id = Uuid::random();
+  auto key = id.toHexString() + ".gdr.d0";
+  Path target("gdr://v2/device/0/allocation/64/offset/0/size/64/ipc/" + std::string(128, '0'));
+  auto first =
+      std::make_shared<IovEntry>(IovEntry{key, id, target, owner.uid, owner.gid, 3001, IovBuffer{noHardwareBuffer}});
+  ASSERT_OK(IovTableTestHelper::insert(table, first));
+
+  auto differentId = Uuid::random();
+  auto duplicateKey = std::make_shared<IovEntry>(
+      IovEntry{key, differentId, target, owner.uid, owner.gid, 3002, IovBuffer{noHardwareBuffer}});
+  ASSERT_ERROR(IovTableTestHelper::insert(table, duplicateKey), MetaCode::kExists);
+
+  auto replacementKey = id.toHexString() + ".gdr.d1";
+  auto duplicateId = std::make_shared<IovEntry>(
+      IovEntry{replacementKey, id, target, owner.uid, owner.gid, 3003, IovBuffer{noHardwareBuffer}});
+  ASSERT_ERROR(IovTableTestHelper::insert(table, duplicateId), MetaCode::kExists);
+  ASSERT_OK(table.lookupIov(key.c_str(), owner));
+
+  ASSERT_OK(table.rmIov(key.c_str(), owner));
+  ASSERT_OK(IovTableTestHelper::insert(table, duplicateId));
+  ASSERT_OK(table.lookupIov(replacementKey.c_str(), owner));
+  ASSERT_OK(table.rmIov(replacementKey.c_str(), owner));
+  EXPECT_TRUE(table.lookupIov(replacementKey.c_str(), owner).hasError());
+}
+
+TEST_F(TestIovTableGdr, TaggedGpuEntryUsesNonNullSlotAndUnifiedMetadataPaths) {
+  IovTable table;
+  table.init(Path("/mnt/3fs"), 4);
+
+  auto id = Uuid::random();
+  auto key = id.toHexString() + ".gdr.d0";
+  Path target("gdr://v2/device/0/allocation/4096/offset/0/size/4096/ipc/" + std::string(128, '0'));
+  std::shared_ptr<lib::GpuShmBuf> noHardwareBuffer;
+  auto entry = std::make_shared<IovEntry>(
+      IovEntry{key, id, target, meta::Uid(7), meta::Gid(9), 5150, IovBuffer{noHardwareBuffer}});
+
+  auto iovd = IovTableTestHelper::insert(table, entry);
+  ASSERT_OK(iovd);
+  auto stored = table.entryAt(*iovd);
+  ASSERT_TRUE(stored);
+  EXPECT_TRUE(stored->isGpu());
+
+  auto stat = table.statIov(*iovd, user(7, 9));
+  ASSERT_OK(stat);
+  EXPECT_EQ(stat->asSymlink().target, target);
+  EXPECT_EQ(stat->acl.uid, meta::Uid(7));
+  EXPECT_EQ(stat->acl.gid, meta::Gid(9));
+
+  auto [dirEntries, inodes] = table.listIovs(user(7, 9));
+  ASSERT_EQ(dirEntries->size(), 4);
+  EXPECT_EQ(dirEntries->back().name, key);
+  ASSERT_TRUE(inodes->back());
+  EXPECT_EQ(inodes->back()->asSymlink().target, target);
+  ASSERT_ERROR(table.lookupBuf(IovLookupRequest{id, 0, 1}, meta::Uid(8)), MetaCode::kNoPermission);
+
+  auto removed = table.rmIov(key.c_str(), user(7, 9));
+  ASSERT_OK(removed);
+  EXPECT_FALSE(*removed);
+  EXPECT_FALSE(table.entryAt(*iovd));
+
+  auto deadId = Uuid::random();
+  auto deadKey = deadId.toHexString() + ".gdr.d0";
+  auto deadEntry = std::make_shared<IovEntry>(
+      IovEntry{deadKey, deadId, target, meta::Uid(7), meta::Gid(9), 5150, IovBuffer{noHardwareBuffer}});
+  auto deadIovd = IovTableTestHelper::insert(table, deadEntry);
+  ASSERT_OK(deadIovd);
+  EXPECT_TRUE(table.removeIovsByPid(5150).empty());
+  EXPECT_FALSE(table.entryAt(*deadIovd));
+
+  auto clearId = Uuid::random();
+  auto clearKey = clearId.toHexString() + ".gdr.d0";
+  auto clearEntry = std::make_shared<IovEntry>(
+      IovEntry{clearKey, clearId, target, meta::Uid(7), meta::Gid(9), 6160, IovBuffer{noHardwareBuffer}});
+  auto clearIovd = IovTableTestHelper::insert(table, clearEntry);
+  ASSERT_OK(clearIovd);
+  table.clearGpuIovs();
+  EXPECT_FALSE(table.entryAt(*clearIovd));
+}
+
+TEST_F(TestIovTableGdrWithIB, FuseLookupAcrossWrappedRingSegmentsKeepsHostThenGpuResults) {
+  TestShm testShm(IoRing::bytesRequired(2));
+  if (!testShm.valid()) {
+    GTEST_SKIP() << "POSIX shared memory is unavailable";
+  }
+
+  IovTable table;
+  table.init(Path("/mnt/3fs"), 4);
+  auto id = Uuid::random();
+  auto hostKey = id.toHexString() + ".r1";
+  auto host =
+      table.addIov(hostKey.c_str(), testShm.path(), 7001, user(3, 4), folly::Executor::KeepAlive<>{}, storageClient_);
+  ASSERT_OK(host);
+  ASSERT_TRUE(host->second);
+
+  std::vector<Result<IoBufForIO>> output;
+  std::array<IoArgs, 2> args{};
+  std::memcpy(args[0].bufId, id.data, sizeof(id.data));
+  args[0].bufOff = 8;
+  args[0].ioLen = 8;
+  std::array<IoSqe, 2> sqes{{{0, nullptr}, {1, nullptr}}};
+  detail::lookupIovBuffers(table, output, user(3, 4).uid, args.data(), sqes.data(), 1);
+  ASSERT_EQ(output.size(), 1u);
+  ASSERT_OK(output[0]);
+  auto *hostPtr = ioBufPtr(output[0].value());
+  EXPECT_EQ(hostPtr, host->second->bufStart + 8);
+
+  auto gpuId = Uuid::random();
+  auto gpu = makeFakeGpuBuffer(gpuId, 64);
+  auto gpuKey = gpuId.toHexString() + ".gdr.d0";
+  Path target("gdr://v2/device/0/allocation/64/offset/0/size/64/ipc/" + std::string(128, '0'));
+  auto gpuEntry =
+      std::make_shared<IovEntry>(IovEntry{gpuKey, gpuId, target, meta::Uid(3), meta::Gid(4), 7002, IovBuffer{gpu}});
+  auto gpuIovd = IovTableTestHelper::insert(table, gpuEntry);
+  ASSERT_OK(gpuIovd);
+
+  std::memcpy(args[1].bufId, gpuId.data, sizeof(gpuId.data));
+  args[1].bufOff = 4;
+  args[1].ioLen = 8;
+  detail::lookupIovBuffers(table, output, user(3, 4).uid, args.data(), sqes.data() + 1, 1);
+  ASSERT_EQ(output.size(), 2u);
+  ASSERT_OK(output[0]);
+  EXPECT_EQ(ioBufPtr(output[0].value()), hostPtr);
+  ASSERT_OK(output[1]);
+  ASSERT_TRUE(std::holds_alternative<lib::GpuShmBufForIO>(output[1].value()));
+  const auto &gpuView = std::get<lib::GpuShmBufForIO>(output[1].value());
+  EXPECT_EQ(gpuView.buffer(), gpu);
+  EXPECT_EQ(gpuView.offset(), 4u);
+
+  ASSERT_OK(table.rmIov(hostKey.c_str(), user(3, 4)));
+  std::weak_ptr<lib::GpuShmBuf> gpuLifetime = gpu;
+  {
+    auto latest = table.lookupBuf(IovLookupRequest{gpuId, 0, 1}, user(3, 4).uid);
+    ASSERT_OK(latest);
+    EXPECT_TRUE(std::holds_alternative<lib::GpuShmBufForIO>(*latest));
+
+    auto removedGpu = table.rmIov(gpuKey.c_str(), user(3, 4));
+    ASSERT_OK(removedGpu);
+    EXPECT_FALSE(*removedGpu);
+    EXPECT_FALSE(table.entryAt(*gpuIovd));
+
+    gpuEntry.reset();
+    gpu.reset();
+    EXPECT_FALSE(gpuLifetime.expired());
+  }
+  EXPECT_FALSE(gpuLifetime.expired());
+  output.clear();
+  EXPECT_TRUE(gpuLifetime.expired());
+}
+
+#endif
 
 }  // namespace hf3fs::fuse

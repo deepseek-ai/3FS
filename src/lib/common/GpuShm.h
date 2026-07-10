@@ -1,22 +1,23 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <folly/concurrency/AtomicSharedPtr.h>
+#include <folly/experimental/coro/Baton.h>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
-#include <unordered_map>
+#include <utility>
 #include <vector>
-
-#include <folly/experimental/coro/Baton.h>
 
 #include "client/storage/StorageClient.h"
 #include "common/utils/Coroutine.h"
-#include "common/utils/Path.h"
+#include "common/utils/Result.h"
 #include "common/utils/Uuid.h"
 #include "fbs/meta/Schema.h"
-#include "lib/common/Shm.h"
+#include "lib/common/CudaIpcMemory.h"
 
 namespace hf3fs::lib {
 
@@ -28,14 +29,10 @@ namespace hf3fs::lib {
  * to access GPU memory allocated by the inference engine.
  */
 struct GpuIpcHandle {
-  uint8_t data[64];  // Same size as cudaIpcMemHandle_t
+  uint8_t data[kCudaIpcHandleBytes];
   bool valid = false;
 
   GpuIpcHandle() = default;
-
-  // Serialize for transmission
-  std::string serialize() const;
-  static std::optional<GpuIpcHandle> deserialize(const std::string& data);
 };
 
 /**
@@ -51,50 +48,27 @@ struct GpuIpcHandle {
  * - Requires RDMA GDR registration for storage I/O
  * - May need CUDA context management
  *
- * Usage scenarios:
- * 1. Inference engine allocates GPU memory and creates GpuShmBuf
- * 2. IPC handle is shared with fuse daemon
- * 3. Fuse daemon imports the handle and registers for RDMA
- * 4. Storage I/O goes directly to GPU memory via GDR
+ * The fuse daemon imports the handle published by the client and registers
+ * the resulting device pointer for direct storage-to-GPU I/O.
  */
 struct GpuShmBuf : public std::enable_shared_from_this<GpuShmBuf> {
-  /**
-   * Create from existing GPU device pointer (owner process)
-   *
-   * The caller retains ownership of the GPU memory.
-   *
-   * @param devicePtr GPU device pointer
-   * @param size Size in bytes
-   * @param deviceId CUDA device ID
-   * @param u Owner user ID
-   * @param pid Owner process ID
-   * @param ppid Owner parent process ID
-   */
-  GpuShmBuf(void* devicePtr,
-            size_t size,
-            int deviceId,
-            meta::Uid u,
-            int pid,
-            int ppid);
-
   /**
    * Create by importing from IPC handle (consumer process)
    *
    * @param ipcHandle CUDA IPC memory handle
-   * @param size Size in bytes
+   * @param allocationSize Full exported CUDA allocation size
+   * @param offset View offset within the allocation
+   * @param size View size in bytes
    * @param deviceId CUDA device ID to use for import
    * @param id UUID identifying this buffer
    */
-  GpuShmBuf(const GpuIpcHandle& ipcHandle,
-            size_t size,
-            int deviceId,
-            Uuid id);
+  GpuShmBuf(const GpuIpcHandle &ipcHandle, size_t allocationSize, size_t offset, size_t size, int deviceId, Uuid id);
 
   ~GpuShmBuf();
 
   // Non-copyable
-  GpuShmBuf(const GpuShmBuf&) = delete;
-  GpuShmBuf& operator=(const GpuShmBuf&) = delete;
+  GpuShmBuf(const GpuShmBuf &) = delete;
+  GpuShmBuf &operator=(const GpuShmBuf &) = delete;
 
   /**
    * Register this GPU buffer for I/O operations
@@ -106,10 +80,9 @@ struct GpuShmBuf : public std::enable_shared_from_this<GpuShmBuf> {
    * @param sc Storage client for RDMA operations
    * @param recordMetrics Callback for metrics recording
    */
-  CoTask<void> registerForIO(
-      folly::Executor::KeepAlive<> exec,
-      storage::client::StorageClient& sc,
-      std::function<void()>&& recordMetrics);
+  CoTask<void> registerForIO(folly::Executor::KeepAlive<> exec,
+                             storage::client::StorageClient &sc,
+                             std::function<void()> &&recordMetrics);
 
   /**
    * Get memory handle for I/O at given offset
@@ -127,14 +100,10 @@ struct GpuShmBuf : public std::enable_shared_from_this<GpuShmBuf> {
   /**
    * Check if the buffer ID matches
    */
-  bool checkId(const Uuid& uid) const { return id == uid; }
+  bool checkId(const Uuid &uid) const { return id == uid; }
 
-  /**
-   * Get the IPC handle for sharing with other processes
-   *
-   * @return IPC handle if available
-   */
-  std::optional<GpuIpcHandle> getIpcHandle() const;
+  /** Detailed CUDA IPC import failure, if construction did not produce a usable mapping. */
+  const std::optional<Status> &importError() const { return importError_; }
 
   /**
    * Synchronize GPU memory for RDMA operations
@@ -143,14 +112,12 @@ struct GpuShmBuf : public std::enable_shared_from_this<GpuShmBuf> {
    */
   void sync(int direction) const;
 
-  /**
-   * Check if this is an imported buffer (vs. owned)
-   */
-  bool isImported() const { return isImported_; }
-
   // Public fields (matching ShmBuf interface where applicable)
   Uuid id;
-  void* devicePtr = nullptr;
+  void *allocationBase = nullptr;
+  size_t allocationSize = 0;
+  size_t offset = 0;
+  void *devicePtr = nullptr;
   size_t size = 0;
   int deviceId = -1;
 
@@ -167,11 +134,9 @@ struct GpuShmBuf : public std::enable_shared_from_this<GpuShmBuf> {
   int ioDepth = 0;
 
  private:
-  bool isImported_ = false;
   bool isRegistered_ = false;
-  void* importedPtr_ = nullptr;  // Pointer from cudaIpcOpenMemHandle
-
-  GpuIpcHandle ipcHandle_;
+  std::optional<Status> importError_;
+  std::unique_ptr<CudaIpcMapping> importedMapping_;
 
   // For I/O registration
   std::vector<folly::atomic_shared_ptr<storage::client::IOBuffer>> memhs_;
@@ -195,14 +160,12 @@ class GpuShmBufForIO {
   /**
    * Get pointer to the data at offset
    */
-  uint8_t* ptr() const {
-    return static_cast<uint8_t*>(buf_->devicePtr) + off_;
-  }
+  uint8_t *ptr() const { return static_cast<uint8_t *>(buf_->devicePtr) + off_; }
 
   /**
    * Get memory handle for I/O
    */
-  CoTryTask<storage::client::IOBuffer*> memh(size_t len) const;
+  CoTryTask<storage::client::IOBuffer *> memh(size_t len) const;
 
   /**
    * Get the underlying GpuShmBuf
@@ -217,126 +180,6 @@ class GpuShmBufForIO {
  private:
   std::shared_ptr<GpuShmBuf> buf_;
   size_t off_;
-};
-
-/**
- * IPC Channel for GPU memory sharing
- *
- * Experimental/internal: current GDR v1 publishes GPU iovs through the
- * existing FUSE iov table and strict GdrUri keys. This channel is not on
- * that main path.
- *
- * Provides a mechanism for transferring GPU IPC handles between
- * processes (e.g., inference engine to fuse daemon).
- */
-class GpuIpcChannel {
- public:
-  /**
-   * Create the server side of the channel
-   *
-   * @param path Path for the IPC endpoint
-   * @return Created channel or nullptr on error
-   */
-  static std::unique_ptr<GpuIpcChannel> createServer(const Path& path);
-
-  /**
-   * Create the client side of the channel
-   *
-   * @param path Path to the server endpoint
-   * @return Created channel or nullptr on error
-   */
-  static std::unique_ptr<GpuIpcChannel> createClient(const Path& path);
-
-  ~GpuIpcChannel();
-
-  /**
-   * Send an IPC handle to the peer
-   *
-   * @param handle The IPC handle to send
-   * @param id UUID identifying the buffer
-   * @param size Buffer size
-   * @param deviceId GPU device ID
-   * @return true on success
-   */
-  bool sendHandle(const GpuIpcHandle& handle,
-                  const Uuid& id,
-                  size_t size,
-                  int deviceId);
-
-  /**
-   * Receive an IPC handle from the peer
-   *
-   * @param handle Output parameter for the received handle
-   * @param id Output parameter for buffer UUID
-   * @param size Output parameter for buffer size
-   * @param deviceId Output parameter for GPU device ID
-   * @param timeout Timeout in milliseconds (-1 for blocking)
-   * @return true on success
-   */
-  bool recvHandle(GpuIpcHandle& handle,
-                  Uuid& id,
-                  size_t& size,
-                  int& deviceId,
-                  int timeout = -1);
-
- private:
-  GpuIpcChannel() = default;
-
-  class Impl;
-  std::unique_ptr<Impl> impl_;
-};
-
-/**
- * Table for managing GPU shared memory buffers
- *
- * Similar to ProcShmBuf but for GPU memory.
- */
-class GpuShmBufTable {
- public:
-  /**
-   * Register a GPU buffer
-   *
-   * @param buf The buffer to register
-   * @return Index or error
-   */
-  Result<int> add(std::shared_ptr<GpuShmBuf> buf);
-
-  /**
-   * Remove a GPU buffer
-   *
-   * @param index Index of the buffer to remove
-   */
-  void remove(int index);
-
-  /**
-   * Get a buffer by index
-   */
-  std::shared_ptr<GpuShmBuf> get(int index) const;
-
-  /**
-   * Find a buffer by ID
-   */
-  std::shared_ptr<GpuShmBuf> findById(const Uuid& id) const;
-
-  /**
-   * Find a buffer by device pointer
-   */
-  std::shared_ptr<GpuShmBuf> findByPtr(void* devicePtr) const;
-
-  /**
-   * Get all buffers for a specific device
-   */
-  std::vector<std::shared_ptr<GpuShmBuf>> getByDevice(int deviceId) const;
-
-  /**
-   * Get the total number of buffers
-   */
-  size_t size() const;
-
- private:
-  mutable std::mutex mutex_;
-  std::vector<std::shared_ptr<GpuShmBuf>> buffers_;
-  std::unordered_map<Uuid, int> idToIndex_;
 };
 
 }  // namespace hf3fs::lib

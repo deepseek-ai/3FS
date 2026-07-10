@@ -8,22 +8,24 @@
  */
 
 #include <cstring>
-#include <memory>
-
+#include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <memory>
+#include <string>
+#include <vector>
 
+#include "client/storage/StorageClient.h"
 #include "common/net/ib/AcceleratorMemory.h"
 #include "common/net/ib/RDMABuf.h"
 #include "common/net/ib/RDMABufAccelerator.h"
+#include "lib/common/GpuShm.h"
 #include "tests/GtestHelpers.h"
 
 namespace hf3fs::net {
 
 class TestRDMABufAccelerator : public ::testing::Test {
  protected:
-  static bool hasGpu() {
-    return GDRManager::instance().isAvailable();
-  }
+  static bool hasGpu() { return GDRManager::instance().isAvailable(); }
 };
 
 // ==========================================================================
@@ -38,12 +40,20 @@ TEST_F(TestRDMABufAccelerator, SCN_L2_001_02_CreateFromGpuPointerNoGDR) {
 
   // GIVEN: GDRManager::isAvailable() returns false
   // WHEN: createFromGpuPointer is called
-  auto buf = RDMABufAccelerator::createFromGpuPointer(
-      reinterpret_cast<void*>(0x1000), 4096, 0);
+  auto buf = RDMABufAccelerator::createFromGpuPointer(reinterpret_cast<void *>(0x1000), 4096, 0);
 
   // THEN: Returns invalid buffer
   EXPECT_FALSE(buf.valid());
   EXPECT_FALSE(static_cast<bool>(buf));
+}
+
+TEST_F(TestRDMABufAccelerator, GpuShmPreservesIpcImportErrorState) {
+  lib::GpuIpcHandle invalidHandle;
+  lib::GpuShmBuf gpuShm(invalidHandle, 4096, 0, 4096, 0, Uuid{});
+
+  ASSERT_TRUE(gpuShm.importError().has_value());
+  EXPECT_EQ(gpuShm.importError()->code(), StatusCode::kInvalidArg);
+  EXPECT_EQ(gpuShm.devicePtr, nullptr);
 }
 
 // @tests SCN-L2-001-01
@@ -53,7 +63,7 @@ TEST_F(TestRDMABufAccelerator, SCN_L2_001_01_CreateFromGpuPointerSuccess) {
   }
 
   // Integration test with real GPU memory
-  auto& manager = GDRManager::instance();
+  auto &manager = GDRManager::instance();
   ASSERT_TRUE(manager.isAvailable());
   EXPECT_NE(manager.getRegionCache(), nullptr);
 }
@@ -76,6 +86,7 @@ TEST_F(TestRDMABufAccelerator, SCN_L2_003_03_UnifiedEmpty) {
   EXPECT_EQ(unified.type(), RDMABufUnified::Type::Empty);
   EXPECT_FALSE(unified.isHost());
   EXPECT_FALSE(unified.isGpu());
+  EXPECT_FALSE(unified.isDevice());
   EXPECT_EQ(unified.getMR(0), nullptr);
 
   auto remoteBuf = unified.toRemoteBuf();
@@ -90,6 +101,7 @@ TEST_F(TestRDMABufAccelerator, SCN_L2_003_01_UnifiedGpuDispatch) {
 
   // THEN: isGpu()==true, isHost()==false
   EXPECT_TRUE(unified.isGpu());
+  EXPECT_TRUE(unified.isDevice());
   EXPECT_FALSE(unified.isHost());
   EXPECT_EQ(unified.type(), RDMABufUnified::Type::Gpu);
 
@@ -97,7 +109,7 @@ TEST_F(TestRDMABufAccelerator, SCN_L2_003_01_UnifiedGpuDispatch) {
   EXPECT_FALSE(unified.valid());
 
   // Access underlying buffer
-  auto& gpu = unified.asGpu();
+  auto &gpu = unified.asGpu();
   EXPECT_FALSE(gpu.valid());
   EXPECT_EQ(gpu.devicePtr(), nullptr);
 }
@@ -111,10 +123,11 @@ TEST_F(TestRDMABufAccelerator, SCN_L2_003_02_UnifiedHostDispatch) {
   // THEN: isHost()==true, isGpu()==false
   EXPECT_TRUE(unified.isHost());
   EXPECT_FALSE(unified.isGpu());
+  EXPECT_FALSE(unified.isDevice());
   EXPECT_EQ(unified.type(), RDMABufUnified::Type::Host);
 
   // Access underlying buffer
-  auto& host = unified.asHost();
+  auto &host = unified.asHost();
   EXPECT_FALSE(host.valid());
 }
 
@@ -165,6 +178,35 @@ TEST_F(TestRDMABufAccelerator, SCN_L2_006_02_SyncOnInvalidBuffer) {
   // THEN: No-op, no crash
   buf.sync(0);
   buf.sync(1);
+}
+
+TEST_F(TestRDMABufAccelerator, CudaZeroRangeDoesNotRequireGdrManagerInitialization) {
+  int deviceCount = 0;
+  auto countResult = cudaGetDeviceCount(&deviceCount);
+  if (countResult != cudaSuccess || deviceCount == 0) {
+    auto error = std::string(cudaGetErrorString(countResult));
+    cudaGetLastError();
+    GTEST_SKIP() << "No CUDA device available: " << error;
+  }
+
+  constexpr size_t kSize = 256;
+  constexpr int kDeviceId = 0;
+  ASSERT_EQ(cudaSetDevice(kDeviceId), cudaSuccess);
+  void *devicePtr = nullptr;
+  ASSERT_EQ(cudaMalloc(&devicePtr, kSize), cudaSuccess);
+  ASSERT_EQ(cudaMemset(devicePtr, 0xAB, kSize), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  auto *range = static_cast<uint8_t *>(devicePtr) + 64;
+  ASSERT_OK(storage::client::detail::zeroCudaDeviceRange(range, 96, kDeviceId));
+
+  std::vector<uint8_t> host(kSize);
+  ASSERT_EQ(cudaMemcpy(host.data(), devicePtr, kSize, cudaMemcpyDeviceToHost), cudaSuccess);
+  for (size_t i = 0; i < kSize; ++i) {
+    EXPECT_EQ(host[i], i >= 64 && i < 160 ? 0 : 0xAB);
+  }
+
+  EXPECT_EQ(cudaFree(devicePtr), cudaSuccess);
 }
 
 }  // namespace hf3fs::net
