@@ -6,7 +6,7 @@
 # target_add_test() picks up local *.cc files. The FUSE parser/metadata test
 # stays in tests/fuse and is added explicitly below.
 
-if(HF3FS_GDR_AVAILABLE)
+if(HF3FS_ENABLE_GDR)
   # libfuse3 search paths (mirrored from src/fuse/CMakeLists.txt)
   if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     link_directories(/usr/local/lib/x86_64-linux-gnu/ /usr/lib64 /usr/local/lib64)

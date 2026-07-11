@@ -23,10 +23,11 @@
 #include "UsrbIoGdrInternal.h"
 #include "hf3fs_usrbio.h"
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
 #include <cuda_runtime.h>
 #endif
 
+#include "common/cuda/CudaMemory.h"
 #include "common/utils/Uuid.h"
 #include "lib/common/CudaIpcMemory.h"
 #include "lib/common/GdrUri.h"
@@ -52,12 +53,13 @@ struct GpuIovHandle {
   ~GpuIovHandle() {
     importedMapping.reset();
     if (ownsMemory && allocationBase) {
-#ifdef HF3FS_GDR_ENABLED
-      auto error = cudaSetDevice(deviceId);
-      if (error != cudaSuccess) {
-        XLOGF(WARN, "cudaSetDevice({}) failed before freeing GPU iov: {}", deviceId, cudaGetErrorString(error));
+#ifdef HF3FS_ENABLE_GDR
+      auto guard = hf3fs::cuda::ScopedDevice::create(deviceId);
+      if (!guard) {
+        XLOGF(WARN, "Failed to select CUDA device {} before freeing GPU iov: {}", deviceId, guard.error());
+        return;
       }
-      error = cudaFree(allocationBase);
+      auto error = cudaFree(allocationBase);
       if (error != cudaSuccess) {
         XLOGF(WARN, "cudaFree failed for GPU iov: {}", cudaGetErrorString(error));
       }
@@ -215,7 +217,7 @@ int registerAndPublishGpuIov(struct hf3fs_iov *iov,
 }
 
 int validateGpuDevice(int deviceId) {
-  auto available = hf3fs::lib::cudaIpcDeviceAvailable(deviceId);
+  auto available = hf3fs::cuda::supportsIpc(deviceId);
   if (!available) {
     XLOGF(ERR, "Failed to query CUDA device {}: {}", deviceId, available.error());
     return resultToErrno(available.error());
@@ -227,13 +229,13 @@ int allocateGpuMemory(size_t size, int deviceId, void **devicePtr) {
   if (!devicePtr || size == 0) {
     return -EINVAL;
   }
-#ifdef HF3FS_GDR_ENABLED
-  auto error = cudaSetDevice(deviceId);
-  if (error != cudaSuccess) {
-    XLOGF(ERR, "cudaSetDevice({}) failed: {}", deviceId, cudaGetErrorString(error));
+#ifdef HF3FS_ENABLE_GDR
+  auto guard = hf3fs::cuda::ScopedDevice::create(deviceId);
+  if (!guard) {
+    XLOGF(ERR, "Failed to select CUDA device {}: {}", deviceId, guard.error());
     return -ENODEV;
   }
-  error = cudaMalloc(devicePtr, size);
+  auto error = cudaMalloc(devicePtr, size);
   if (error != cudaSuccess) {
     XLOGF(ERR, "cudaMalloc({}) failed: {}", size, cudaGetErrorString(error));
     return error == cudaErrorMemoryAllocation ? -ENOMEM : -EIO;
@@ -251,12 +253,12 @@ int allocateGpuMemory(size_t size, int deviceId, void **devicePtr) {
 extern "C" {
 
 bool hf3fs_gdr_available(void) {
-  auto count = hf3fs::lib::cudaIpcDeviceCount();
+  auto count = hf3fs::cuda::deviceCount();
   if (!count) {
     return false;
   }
   for (int deviceId = 0; deviceId < *count; ++deviceId) {
-    auto available = hf3fs::lib::cudaIpcDeviceAvailable(deviceId);
+    auto available = hf3fs::cuda::supportsIpc(deviceId);
     if (available && *available) {
       return true;
     }
@@ -265,7 +267,7 @@ bool hf3fs_gdr_available(void) {
 }
 
 int hf3fs_gdr_device_count(void) {
-  auto count = hf3fs::lib::cudaIpcDeviceCount();
+  auto count = hf3fs::cuda::deviceCount();
   return count ? *count : 0;
 }
 
@@ -483,12 +485,12 @@ int hf3fs_iovsync_gpu_internal(const struct hf3fs_iov *iov, int direction) {
   if (!handle) {
     return -EINVAL;
   }
-#ifdef HF3FS_GDR_ENABLED
-  auto error = cudaSetDevice(handle->deviceId);
-  if (error != cudaSuccess) {
+#ifdef HF3FS_ENABLE_GDR
+  auto guard = hf3fs::cuda::ScopedDevice::create(handle->deviceId);
+  if (!guard) {
     return -ENODEV;
   }
-  error = cudaDeviceSynchronize();
+  auto error = cudaDeviceSynchronize();
   if (error != cudaSuccess) {
     XLOGF(ERR, "cudaDeviceSynchronize failed: {}", cudaGetErrorString(error));
     return -EIO;

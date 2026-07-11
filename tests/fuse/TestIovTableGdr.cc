@@ -452,21 +452,7 @@ TEST_F(TestIovTableGdr, FullReadHoleRemainsEofAndIsNotZeroFilled) {
   EXPECT_EQ(zeroCalls, 0u);
 }
 
-#ifdef HF3FS_GDR_ENABLED
-
-namespace {
-
-std::shared_ptr<lib::GpuShmBuf> makeFakeGpuBuffer(const Uuid &id, size_t size) {
-  lib::GpuIpcHandle invalidHandle;
-  auto *raw = new lib::GpuShmBuf(invalidHandle, size, 0, size, 0, id);
-  raw->devicePtr = reinterpret_cast<void *>(uintptr_t{0x10000});
-  return std::shared_ptr<lib::GpuShmBuf>(raw, [](lib::GpuShmBuf *buffer) {
-    buffer->devicePtr = nullptr;
-    delete buffer;
-  });
-}
-
-}  // namespace
+#ifdef HF3FS_ENABLE_GDR
 
 TEST_F(TestIovTableGdr, GpuPublicationRejectsDuplicateKeyAndUuidAndSupportsReverseRemoval) {
   IovTable table;
@@ -551,76 +537,6 @@ TEST_F(TestIovTableGdr, TaggedGpuEntryUsesNonNullSlotAndUnifiedMetadataPaths) {
   ASSERT_OK(clearIovd);
   table.clearGpuIovs();
   EXPECT_FALSE(table.entryAt(*clearIovd));
-}
-
-TEST_F(TestIovTableGdrWithIB, FuseLookupAcrossWrappedRingSegmentsKeepsHostThenGpuResults) {
-  TestShm testShm(IoRing::bytesRequired(2));
-  if (!testShm.valid()) {
-    GTEST_SKIP() << "POSIX shared memory is unavailable";
-  }
-
-  IovTable table;
-  table.init(Path("/mnt/3fs"), 4);
-  auto id = Uuid::random();
-  auto hostKey = id.toHexString() + ".r1";
-  auto host =
-      table.addIov(hostKey.c_str(), testShm.path(), 7001, user(3, 4), folly::Executor::KeepAlive<>{}, storageClient_);
-  ASSERT_OK(host);
-  ASSERT_TRUE(host->second);
-
-  std::vector<Result<IoBufForIO>> output;
-  std::array<IoArgs, 2> args{};
-  std::memcpy(args[0].bufId, id.data, sizeof(id.data));
-  args[0].bufOff = 8;
-  args[0].ioLen = 8;
-  std::array<IoSqe, 2> sqes{{{0, nullptr}, {1, nullptr}}};
-  detail::lookupIovBuffers(table, output, user(3, 4).uid, args.data(), sqes.data(), 1);
-  ASSERT_EQ(output.size(), 1u);
-  ASSERT_OK(output[0]);
-  auto *hostPtr = ioBufPtr(output[0].value());
-  EXPECT_EQ(hostPtr, host->second->bufStart + 8);
-
-  auto gpuId = Uuid::random();
-  auto gpu = makeFakeGpuBuffer(gpuId, 64);
-  auto gpuKey = gpuId.toHexString() + ".gdr.d0";
-  Path target("gdr://v2/device/0/allocation/64/offset/0/size/64/ipc/" + std::string(128, '0'));
-  auto gpuEntry =
-      std::make_shared<IovEntry>(IovEntry{gpuKey, gpuId, target, meta::Uid(3), meta::Gid(4), 7002, IovBuffer{gpu}});
-  auto gpuIovd = IovTableTestHelper::insert(table, gpuEntry);
-  ASSERT_OK(gpuIovd);
-
-  std::memcpy(args[1].bufId, gpuId.data, sizeof(gpuId.data));
-  args[1].bufOff = 4;
-  args[1].ioLen = 8;
-  detail::lookupIovBuffers(table, output, user(3, 4).uid, args.data(), sqes.data() + 1, 1);
-  ASSERT_EQ(output.size(), 2u);
-  ASSERT_OK(output[0]);
-  EXPECT_EQ(ioBufPtr(output[0].value()), hostPtr);
-  ASSERT_OK(output[1]);
-  ASSERT_TRUE(std::holds_alternative<lib::GpuShmBufForIO>(output[1].value()));
-  const auto &gpuView = std::get<lib::GpuShmBufForIO>(output[1].value());
-  EXPECT_EQ(gpuView.buffer(), gpu);
-  EXPECT_EQ(gpuView.offset(), 4u);
-
-  ASSERT_OK(table.rmIov(hostKey.c_str(), user(3, 4)));
-  std::weak_ptr<lib::GpuShmBuf> gpuLifetime = gpu;
-  {
-    auto latest = table.lookupBuf(IovLookupRequest{gpuId, 0, 1}, user(3, 4).uid);
-    ASSERT_OK(latest);
-    EXPECT_TRUE(std::holds_alternative<lib::GpuShmBufForIO>(*latest));
-
-    auto removedGpu = table.rmIov(gpuKey.c_str(), user(3, 4));
-    ASSERT_OK(removedGpu);
-    EXPECT_FALSE(*removedGpu);
-    EXPECT_FALSE(table.entryAt(*gpuIovd));
-
-    gpuEntry.reset();
-    gpu.reset();
-    EXPECT_FALSE(gpuLifetime.expired());
-  }
-  EXPECT_FALSE(gpuLifetime.expired());
-  output.clear();
-  EXPECT_TRUE(gpuLifetime.expired());
 }
 
 #endif

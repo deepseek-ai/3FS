@@ -11,6 +11,8 @@
 
 #include <array>
 #include <cerrno>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -23,7 +25,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
 #include <cuda_runtime.h>
 #endif
 
@@ -37,6 +39,10 @@
 namespace {
 
 static bool hasGpu() { return hf3fs_gdr_available(); }
+
+uint8_t *deviceAddress(void *base, size_t offset) {
+  return reinterpret_cast<uint8_t *>(reinterpret_cast<uintptr_t>(base) + offset);
+}
 
 // Temp directory for symlink testing
 class TmpDir {
@@ -225,7 +231,7 @@ TEST_F(TestUsrbIoGdrFixture, CudaIpcCapabilityAndSuballocationExportDoNotRequire
   ASSERT_EQ(cudaMalloc(&allocation, 4096), cudaSuccess);
   SCOPE_EXIT { EXPECT_EQ(cudaFree(allocation), cudaSuccess); };
 
-  auto *view = static_cast<uint8_t *>(allocation) + 512;
+  auto *view = deviceAddress(allocation, 512);
   auto exported = hf3fs::lib::exportCudaIpcMemory(view, 1024, deviceId);
   ASSERT_OK(exported);
   EXPECT_EQ(exported->allocationBase, allocation);
@@ -387,7 +393,7 @@ TEST_F(TestUsrbIoGdrFixture, WrapPublishesBaseOffsetAndSupportsMultipleNonOwning
     }
   };
   ASSERT_EQ(cudaMemset(allocation, 0x11, 4096), cudaSuccess);
-  auto *view = static_cast<uint8_t *>(allocation) + 512;
+  auto *view = deviceAddress(allocation, 512);
   ASSERT_EQ(cudaMemset(view, 0x7A, 1024), cudaSuccess);
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
 

@@ -5,7 +5,6 @@
 
 #include "PerProcTable.h"
 #include "client/storage/StorageClient.h"
-#include "common/net/ib/MemoryTypes.h"
 #include "common/utils/Path.h"
 #include "fbs/meta/Schema.h"
 
@@ -62,27 +61,12 @@ struct ShmBuf {
   int ioDepth = 0;
   std::optional<IorAttrs> iora;
 
-  /**
-   * Check if this buffer is on accelerator memory
-   * @return true if memory is on a device (GPU, etc.)
-   */
-  bool isAcceleratorMemory() const {
-    return memoryType_ == net::MemoryType::Device ||
-           memoryType_ == net::MemoryType::Managed;
-  }
-
-  /**
-   * Get the memory type of this buffer
-   */
-  net::MemoryType getMemoryType() const { return memoryType_; }
-
  private:
   void mapBuf();
 
  private:
   bool owner_;
   int numaNode_;
-  net::MemoryType memoryType_ = net::MemoryType::Host;
   //  int fd_;
 
   // for client agent

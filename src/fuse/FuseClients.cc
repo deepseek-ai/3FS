@@ -14,9 +14,6 @@
 
 #include "common/app/ApplicationBase.h"
 #include "common/monitor/Recorder.h"
-#ifdef HF3FS_GDR_ENABLED
-#include "common/net/ib/AcceleratorMemory.h"
-#endif
 #include "common/utils/BackgroundRunner.h"
 #include "common/utils/Coroutine.h"
 #include "common/utils/Duration.h"
@@ -73,24 +70,6 @@ Result<Void> FuseClients::init(const flat::AppInfo &appInfo,
                                const String &tokenFile,
                                FuseConfig &fuseConfig) {
   config = &fuseConfig;
-
-#ifdef HF3FS_GDR_ENABLED
-  if (!net::IBManager::initialized()) {
-    return makeError(StatusCode::kInvalidArg, "IBManager must be started before FUSE GDR initialization");
-  }
-  net::GDRConfig gdrConfig;
-  gdrConfig.set_enabled(true);
-  auto gdrResult = net::GDRManager::instance().init(gdrConfig);
-  RETURN_ON_ERROR(gdrResult);
-  managesGdr = true;
-  bool initComplete = false;
-  SCOPE_EXIT {
-    if (!initComplete && managesGdr) {
-      net::GDRManager::instance().shutdown();
-      managesGdr = false;
-    }
-  };
-#endif
 
   fuseMount = appInfo.clusterId;
   XLOGF_IF(FATAL,
@@ -211,9 +190,6 @@ Result<Void> FuseClients::init(const flat::AppInfo &appInfo,
       std::make_unique<folly::IOThreadPoolExecutor>(fuseConfig.notify_inval_threads(),
                                                     std::make_shared<folly::NamedThreadFactory>("NotifyInvalThread"));
 
-#ifdef HF3FS_GDR_ENABLED
-  initComplete = true;
-#endif
   return Void{};
 }
 
@@ -255,12 +231,8 @@ void FuseClients::stop() {
     client->stopAndJoin();
     client.reset();
   }
-#ifdef HF3FS_GDR_ENABLED
-  if (managesGdr) {
-    iovs.clearGpuIovs();
-    net::GDRManager::instance().shutdown();
-    managesGdr = false;
-  }
+#ifdef HF3FS_ENABLE_GDR
+  iovs.clearGpuIovs();
 #endif
 }
 

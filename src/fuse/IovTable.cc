@@ -1,5 +1,6 @@
 #include "IovTable.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <cstring>
@@ -12,9 +13,6 @@
 
 #include "IoRing.h"
 #include "fbs/meta/Common.h"
-#ifdef HF3FS_GDR_ENABLED
-#include "common/net/ib/AcceleratorMemory.h"
-#endif
 #include "lib/common/GdrUri.h"
 
 namespace hf3fs::fuse {
@@ -272,13 +270,13 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
     }
   }
 
-#ifndef HF3FS_GDR_ENABLED
+#ifndef HF3FS_ENABLE_GDR
   if (iovaRes->isGdr) {
     return makeError(StatusCode::kInvalidArg, "GDR not enabled in this build");
   }
 #endif
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
   // GDR path: shmPath is a gdr:// URI, not a filesystem path
   if (iovaRes->isGdr) {
     auto gdrTarget = lib::parseGdrUri(shmPath.native());
@@ -286,37 +284,21 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
       return makeError(StatusCode::kInvalidArg, "failed to parse GDR target URI");
     }
     if (iovaRes->gpuDeviceId != gdrTarget->deviceId) {
-      return makeError(StatusCode::kInvalidArg,
-                       "gdr key device {} does not match URI device {}",
-                       iovaRes->gpuDeviceId,
-                       gdrTarget->deviceId);
+      return MAKE_ERROR_F(StatusCode::kInvalidArg,
+                          "gdr key device {} does not match URI device {}",
+                          iovaRes->gpuDeviceId,
+                          gdrTarget->deviceId);
     }
 
-    // parseGdrUri success guarantees a valid IPC handle.
-    lib::GpuIpcHandle ipcHandle;
-    std::memcpy(ipcHandle.data, gdrTarget->ipcHandle.data(), lib::kGdrIpcHandleBytes);
-    ipcHandle.valid = true;
-
-    // Keep deregistration and CUDA IPC close ordered even when the entry is
-    // removed outside FuseClients::stop().
-    auto gpuShm = std::shared_ptr<lib::GpuShmBuf>(new lib::GpuShmBuf(ipcHandle,
-                                                                     gdrTarget->allocationSize,
-                                                                     gdrTarget->offset,
-                                                                     gdrTarget->size,
-                                                                     gdrTarget->deviceId,
-                                                                     iovaRes->id),
-                                                  [](lib::GpuShmBuf *buf) {
-                                                    folly::coro::blockingWait(buf->deregisterForIO());
-                                                    delete buf;
-                                                  });
-
-    if (!gpuShm->devicePtr) {
-      return makeError(StatusCode::kInvalidArg, "failed to import GPU memory via IPC handle");
-    }
-
-    gpuShm->key = key;
-    gpuShm->user = ui.uid;
-    gpuShm->pid = pid;
+    lib::CudaIpcHandle ipcHandle;
+    std::copy(gdrTarget->ipcHandle.begin(), gdrTarget->ipcHandle.end(), ipcHandle.begin());
+    auto gpuShmResult = lib::GpuShmBuf::create(ipcHandle,
+                                               gdrTarget->allocationSize,
+                                               gdrTarget->offset,
+                                               gdrTarget->size,
+                                               gdrTarget->deviceId);
+    RETURN_ON_ERROR(gpuShmResult);
+    auto gpuShm = std::move(*gpuShmResult);
 
     // Allocate iov descriptor slot
     auto iovdRes = entries_->alloc();
@@ -330,15 +312,6 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
         entries_->dealloc(iovd);
       }
     };
-
-    // Register GPU memory for RDMA I/O
-    auto recordMetrics = []() {};
-    folly::coro::blockingWait(gpuShm->registerForIO(exec, sc, std::move(recordMetrics)));
-    auto memh = folly::coro::blockingWait(gpuShm->memh(0));
-    if (!memh) {
-      folly::coro::blockingWait(gpuShm->deregisterForIO());
-      return makeError(StatusCode::kIOError, "failed to register GPU memory for RDMA");
-    }
 
     auto entry = std::make_shared<IovEntry>(
         IovEntry{std::string(key), iovaRes->id, shmPath, ui.uid, ui.gid, pid, IovBuffer{gpuShm}});
@@ -478,10 +451,9 @@ Result<std::shared_ptr<lib::ShmBuf>> IovTable::rmIov(const char *key,
     XLOGF_IF(FATAL, !removeEntryLocked(iovd, entry), "iov entry changed while holding the table lock");
   }
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
   if (entry->isGpu()) {
-    // The GpuShmBuf shared_ptr deleter clears IOBuffer/MR ownership before
-    // GpuShmBuf closes its imported CUDA IPC mapping.
+    // RDMABuf deregisters every MR before releasing its CUDA IPC mapping owner.
     entry.reset();
     return std::shared_ptr<lib::ShmBuf>();
   }
@@ -546,7 +518,7 @@ Result<IoBufForIO> makeIoBufForIO(const std::shared_ptr<IovEntry> &entry, const 
         if constexpr (std::is_same_v<Buffer, lib::ShmBuf>) {
           return IoBufForIO{lib::ShmBufForIO(buffer, request.offset)};
         }
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
         else {
           return IoBufForIO{lib::GpuShmBufForIO(buffer, request.offset)};
         }
@@ -698,7 +670,7 @@ IovTable::listIovs(const meta::UserInfo &ui) {
                         std::make_shared<std::vector<std::optional<meta::Inode>>>(std::move(ins)));
 }
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
 void IovTable::clearGpuIovs() {
   std::vector<std::shared_ptr<lib::GpuShmBuf>> gpuBuffers;
   {
@@ -734,9 +706,6 @@ void IovTable::clearGpuIovs() {
     }
   }
 
-  for (auto &gpu : gpuBuffers) {
-    folly::coro::blockingWait(gpu->deregisterForIO());
-  }
   gpuBuffers.clear();
 }
 #endif

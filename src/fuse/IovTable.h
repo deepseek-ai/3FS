@@ -13,7 +13,7 @@
 #include "fbs/meta/Schema.h"
 #include "fuse/IovTypes.h"
 #include "lib/common/Shm.h"
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
 #include "lib/common/GpuShm.h"
 #endif
 
@@ -21,7 +21,7 @@ namespace hf3fs::fuse {
 
 class IovTableTestHelper;
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
 using IovBuffer = std::variant<std::shared_ptr<lib::ShmBuf>, std::shared_ptr<lib::GpuShmBuf>>;
 #else
 using IovBuffer = std::variant<std::shared_ptr<lib::ShmBuf>>;
@@ -37,7 +37,7 @@ struct IovEntry {
   IovBuffer buffer;
 
   bool isGpu() const {
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
     return std::holds_alternative<std::shared_ptr<lib::GpuShmBuf>>(buffer);
 #else
     return false;
@@ -68,7 +68,7 @@ class IovTable {
                   std::span<const IovLookupRequest> requests,
                   meta::Uid requester) const;
   std::shared_ptr<const IovEntry> entryAt(int iovd) const;
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
   void clearGpuIovs();
 #endif
 

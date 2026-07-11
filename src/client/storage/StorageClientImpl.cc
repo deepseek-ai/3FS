@@ -14,7 +14,6 @@
 #include "common/logging/LogHelper.h"
 #include "common/monitor/Recorder.h"
 #include "common/monitor/ScopedMetricsWriter.h"
-#include "common/net/ib/AcceleratorMemory.h"
 #include "common/utils/ExponentialBackoffRetry.h"
 #include "common/utils/RequestInfo.h"
 #include "common/utils/Result.h"
@@ -706,12 +705,8 @@ typename hf3fs::storage::BatchReadReq buildBatchRequest(const ClientRequestConte
     requestedBytes += op->length;
     tagged_bytes_per_operation->addSample(op->length);
 
-    // Check if this IO uses a GPU buffer
-    if (op->buffer && op->buffer->isGpuMemory()) {
+    if (op->buffer && op->buffer->isDeviceMemory()) {
       hasGpuBuffer = true;
-      int gpuDevId = op->buffer->gpuDeviceId();
-      auto preferredIB = hf3fs::net::GDRManager::instance().getBestIBDevice(gpuDevId);
-      XLOGF(DBG, "GPU read I/O: gpuDevice={}, preferredIBDevice={}", gpuDevId, preferredIB.value_or(-1));
     }
 
     op->requestId = requestId;
@@ -1760,7 +1755,7 @@ CoTryTask<void> StorageClientImpl::batchReadWithoutRetry(ClientRequestContext &r
       for (auto readIO : batchIOs) {
         // Skip CPU memcpy for GPU memory buffers - this should not happen
         // because inline data is disabled for GPU buffers, but check anyway
-        if (readIO->buffer && readIO->buffer->isGpuMemory()) {
+        if (readIO->buffer && readIO->buffer->isDeviceMemory()) {
           XLOGF(ERR, "BUG: Inline data received for GPU buffer - cannot memcpy to GPU memory");
           setErrorCodeOfOp(readIO, StorageClientCode::kInvalidArg);
           continue;
@@ -1774,7 +1769,7 @@ CoTryTask<void> StorageClientImpl::batchReadWithoutRetry(ClientRequestContext &r
       for (auto readIO : batchIOs) {
         if (readIO->result.lengthInfo && *readIO->result.lengthInfo > 0) {
           // Skip CPU checksum verification for GPU memory - server checksum is trusted
-          if (readIO->buffer && readIO->buffer->isGpuMemory()) {
+          if (readIO->buffer && readIO->buffer->isDeviceMemory()) {
             XLOGF(DBG, "Skipping CPU checksum verification for GPU buffer");
             continue;
           }
@@ -1935,13 +1930,7 @@ CoTryTask<void> StorageClientImpl::sendWriteRequest(ClientRequestContext &reques
   ops_per_request.addSample(1, requestCtx.requestTagSet);
 
   // Check if buffer is GPU memory - skip CPU operations if so
-  bool isGpuBuffer = writeIO->buffer && writeIO->buffer->isGpuMemory();
-
-  if (isGpuBuffer) {
-    int gpuDevId = writeIO->buffer->gpuDeviceId();
-    auto preferredIB = hf3fs::net::GDRManager::instance().getBestIBDevice(gpuDevId);
-    XLOGF(DBG, "GPU write I/O: gpuDevice={}, preferredIBDevice={}", gpuDevId, preferredIB.value_or(-1));
-  }
+  bool isGpuBuffer = writeIO->buffer && writeIO->buffer->isDeviceMemory();
 
   auto preparedChecksum = prepareWriteChecksum(config_.chunk_checksum_type(),
                                                options.verifyChecksum(),

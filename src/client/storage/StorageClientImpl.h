@@ -29,6 +29,8 @@ class StorageClientImpl : public StorageClient {
   hf3fs::client::ICommonMgmtdClient &getMgmtdClient() override { return mgmtdClient_; }
   void stop() override;
 
+  Result<IOBuffer> registerGpuIOBuffer(uint8_t *gpuPtr, size_t len) override;
+
   CoTryTask<void> batchRead(std::span<ReadIO> readIOs,
                             const flat::UserInfo &userInfo,
                             const ReadOptions &options = ReadOptions(),

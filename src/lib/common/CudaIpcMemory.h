@@ -18,9 +18,6 @@ struct CudaIpcExport {
   CudaIpcHandle ipcHandle{};
 };
 
-Result<int> cudaIpcDeviceCount();
-Result<bool> cudaIpcDeviceAvailable(int deviceId);
-
 Result<CudaIpcExport> exportCudaIpcMemory(void *devicePtr, size_t viewSize, int deviceId);
 
 class CudaIpcMapping {

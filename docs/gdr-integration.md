@@ -15,16 +15,15 @@ This split creates two distinct capabilities:
    whether the local process can use CUDA IPC on at least one visible device.
    It does not inspect FUSE, `nvidia_peermem`, the selected NIC, or
    `ibv_reg_mr`.
-2. **FUSE-side GDR capability.** FUSE starts its `GDRManager` only after
-   `IBManager` has started. When FUSE resolves a GDR IOV publication, it imports
-   the CUDA IPC allocation and registers the requested view with the available
-   IB devices.
+2. **FUSE-side GDR capability.** When FUSE resolves a GDR IOV publication, it
+   imports the CUDA IPC allocation and registers the requested view with every
+   active IB device.
 
 A successful application capability query is therefore only a prerequisite.
 The return value from the publication operation (`hf3fs_iovcreate_device()` or
 `hf3fs_iovwrap_device()`) is the final per-buffer result: success means FUSE
 accepted the symlink, imported the CUDA allocation, and registered the
-published view with at least one IB device. `ibv_reg_mr` can still fail after
+published view with every active IB device. `ibv_reg_mr` can still fail after
 `hf3fs_gdr_available()` returned `true`.
 
 ## Prerequisites
@@ -59,21 +58,19 @@ cmake -DHF3FS_ENABLE_GDR=ON ...
 ```
 
 - `HF3FS_ENABLE_GDR` requests CUDA/GDR support at CMake configure time.
-- `HF3FS_GDR_ENABLED` is the target-scoped C++ compile definition added to
-  GDR-enabled targets.
-- `HF3FS_GDR_ENABLED=0` in the environment prevents FUSE's `GDRManager` from
-  becoming available. It does not change the application-side implementation
-  of `hf3fs_gdr_available()`.
+- The same name is defined as `HF3FS_ENABLE_GDR=1` for GDR-enabled C++ targets.
+- Configuration fails when GDR is requested but the CUDA runtime or driver
+  library is unavailable. There is no separate runtime environment switch.
 
 `hf3fs_iovopen_device()` and `hf3fs_iovwrap_device()` are declared only when
-the consuming target is compiled with `HF3FS_GDR_ENABLED`.
+the consuming target is compiled with `HF3FS_ENABLE_GDR`.
 `hf3fs_iovcreate_device()` remains declared in all builds for API
 compatibility, but returns `-ENOTSUP` when CUDA/GDR support is not compiled in.
 
 ### Runtime
 
-- Start `IBManager` before initializing the FUSE clients. FUSE rejects GDR
-  initialization if IB has not started.
+- Start `IBManager` before publishing a GPU IOV. Per-buffer registration fails
+  if IB has not started or no active IB device exists.
 - Run the application on the same host as the FUSE process that serves the
   mount.
 - The application and FUSE process must be allowed to share CUDA allocations
@@ -172,7 +169,7 @@ unavailable, `-ENOENT` when the publication does not exist, `-ENODEV` for an
 unavailable device, `-EINVAL` for malformed or mismatched metadata, and
 `-EIO` for CUDA import failures.
 
-**Availability:** declared only with `HF3FS_GDR_ENABLED`.
+**Availability:** declared only with `HF3FS_ENABLE_GDR`.
 
 ---
 
@@ -215,7 +212,7 @@ Representative errors include `-ENOTSUP`, `-ENODEV`, `-EINVAL`, `-ENOMEM`,
 `-EIO`, and publication errors returned as negative errno values. The wrapped
 allocation remains caller-owned on every failure path.
 
-**Availability:** declared only with `HF3FS_GDR_ENABLED`.
+**Availability:** declared only with `HF3FS_ENABLE_GDR`.
 
 ### IOV Lifecycle
 
@@ -247,8 +244,10 @@ For a create/wrap publisher, remove the GDR publication while leaving the
 local IOV object alive. For an open importer, this is intentionally a no-op:
 an importer is not allowed to remove the exporter's publication.
 
-The publisher must not unlink while FUSE or another process can still start
-new work against the IOV.
+The publisher must wait for all I/O using the IOV to complete and destroy every
+application importer before unlinking or destroying the publication. CUDA
+requires the exported allocation to remain alive until every imported mapping
+has been closed.
 
 ### Synchronization
 
@@ -281,8 +280,7 @@ bool hf3fs_gdr_available(void);
 
 Returns `true` when at least one locally visible CUDA device supports the
 application's CUDA IPC requirements (unified addressing and a usable compute
-mode). It does not initialize or query FUSE's `GDRManager`, and it does not
-prove that an MR can be created.
+mode). It does not query FUSE or prove that an MR can be created.
 
 Use the return value of create/wrap publication, which includes FUSE-side
 import and registration, as the final per-buffer decision.
@@ -434,22 +432,26 @@ The application process owns CUDA allocation/IPC publication only:
 
 FUSE owns the data-plane import and registration:
 
-- `GDRManager` is initialized after `IBManager`;
 - the v2 URI is parsed and the full CUDA allocation is imported;
 - only the published view is exposed to I/O and offered for RDMA registration;
-- the resulting `AcceleratorMemoryRegion` owns each successfully created
-  per-IB `ibv_mr`; publication requires at least one.
+- one shared `RDMABuf::Inner` owns every per-IB `ibv_mr`, the CUDA device
+  identity, and the imported mapping owner;
+- publication succeeds only when every active IB device accepts the MR.
 
-Removing a FUSE GPU IOV first releases its `IOBuffer` and MRs, then closes the
-CUDA IPC mapping. FUSE shutdown clears GPU IOVs before shutting down
-`GDRManager`; the process-wide application shutdown stops `IBManager` after
-FUSE has stopped. The required resource order is:
+Removing a FUSE GPU IOV releases its `IOBuffer`. `RDMABuf::Inner` first
+deregisters every MR and only then releases the owner that closes the CUDA IPC
+mapping. FUSE shutdown clears GPU IOVs before the process-wide shutdown stops
+`IBManager`. The lifetime constraints are:
 
 ```text
-ibv_mr -> CUDA IPC mapping -> GDRManager -> IBManager
+IBManager outlives every ibv_mr
+CUDA IPC mapping outlives every ibv_mr that covers it
+exporter allocation outlives every CUDA IPC mapping
 ```
 
-This order also applies to dead-process cleanup and explicit unlink paths.
+Explicit unlink and shutdown paths preserve these constraints. An exporter
+that exits or frees its allocation before importers close violates the CUDA IPC
+contract; 3FS cannot repair that ordering after the fact.
 
 ### GDR URI v2 Contract
 
@@ -518,6 +520,15 @@ A CUDA device pointer is not CPU-dereferenceable. Do not use `memcpy`,
 loads and stores on `iov->base`. Use CUDA APIs or kernels, or pass the pointer
 as an opaque I/O address.
 
+Before an allocation is exported or directly registered, 3FS validates its
+CUDA device and allocation bounds and enables
+`CU_POINTER_ATTRIBUTE_SYNC_MEMOPS` for the whole allocation. FUSE repeats this
+preparation on its imported CUDA mapping before `ibv_reg_mr`; owner-side and
+importer-side CUDA contexts must both use conservative memory-operation
+semantics. Address offsets inside 3FS use checked integer arithmetic;
+converting a GPU-backed `RDMABuf` to a host `span` or `ByteRange` is a fatal
+invariant violation.
+
 For GPU I/O:
 
 - inline reads are disabled for a batch containing a GPU buffer;
@@ -583,8 +594,7 @@ Backend behavior remains backend-specific:
 ## Known Limitations
 
 - **Per-buffer MR registration is authoritative.** Local CUDA IPC capability
-  and FUSE `GDRManager` initialization do not guarantee that a specific
-  GPU/view/NIC registration will succeed.
+  does not guarantee that a specific GPU/view/NIC registration will succeed.
 - **`nvidia_peermem` is required by the implemented registration path.**
   Device API failures are returned to the caller; no host IOV is substituted.
 - **CUDA IPC exposes the whole allocation.** View bounds restrict 3FS and RDMA,
@@ -593,6 +603,35 @@ Backend behavior remains backend-specific:
   use `cudaDeviceSynchronize()`, not stream-scoped fencing.
 - **No GDR block partitioning.** Device IOV APIs require `block_size == 0`.
 - **Publisher-coordinated lifetime.** There is no distributed reference count;
-  the exporter must outlive FUSE use and every importer.
-- **Topology selection is best effort.** GPU-to-IB affinity does not guarantee
-  a particular PCIe path or successful peer-memory registration.
+  all I/O must complete and the exporter must outlive FUSE use and every
+  importer.
+- **All-HCA registration.** Partial-HCA GDR is not supported. A GPU IOV is
+  rejected if any active IB device cannot register it; transport selection is
+  therefore never given a sparse rkey set.
+- **IPC-import MR support is platform-dependent.** The target driver,
+  `nvidia_peermem`, HCA, and CUDA combination must pass the two-process
+  `IpcImportedPointerRegistersWithEveryHca` hardware test.
+- **No registration cache.** An IOV is registered once for its published
+  lifetime. Add a 64KB-normalized, allocation-ID-aware cache only if measured
+  registration latency requires it.
+
+## Target-Machine Validation
+
+Run the GDR test binary on the NVIDIA/RDMA host used for deployment:
+
+```bash
+ctest --test-dir build -R test_gdr --output-on-failure
+```
+
+Do not accept a skipped
+`TestCudaRDMABuf.IpcImportedPointerRegistersWithEveryHca` test as GDR
+validation. That two-process test proves that the exporter can prepare and
+publish a CUDA allocation, the importer can enable `SYNC_MEMOPS`, and every
+active HCA can register the imported view. The deployment acceptance test must
+also submit at least one real storage read and write through a mounted GDR IOV;
+the unit test does not emulate an HCA data transfer.
+
+## References
+
+- [NVIDIA GPUDirect RDMA: synchronization, registration, and memory ordering](https://docs.nvidia.com/cuda/gpudirect-rdma/)
+- [NVIDIA CUDA Driver API: pointer attributes and `SYNC_MEMOPS`](https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__UNIFIED.html)

@@ -255,7 +255,7 @@ int hf3fs_iovcreate_device(struct hf3fs_iov *iov,
     XLOGF(ERR, "device iov does not support block_size: {}", block_size);
     return -EINVAL;
   }
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
   if (hf3fs_gdr_available()) {
     XLOGF(DBG, "Using GDR path for device {}", device_id);
     return hf3fs_iovcreate_gpu_internal(iov, hf3fs_mount_point, size, block_size, device_id);
@@ -326,8 +326,8 @@ int hf3fs_iovopen(struct hf3fs_iov *iov,
   return 0;
 }
 
-// Only compiled when HF3FS_GDR_ENABLED — matches header guard.
-#ifdef HF3FS_GDR_ENABLED
+// Only compiled when HF3FS_ENABLE_GDR — matches header guard.
+#ifdef HF3FS_ENABLE_GDR
 int hf3fs_iovopen_device(struct hf3fs_iov *iov,
                          const uint8_t id[16],
                          const char *hf3fs_mount_point,
@@ -351,7 +351,7 @@ void hf3fs_iovunlink(struct hf3fs_iov *iov) {
     return;
   }
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
   if (hf3fs_iov_is_gpu_internal(iov)) {
     auto result = hf3fs_iovunlink_gpu_internal(iov);
     if (result != 0) {
@@ -366,7 +366,7 @@ void hf3fs_iovunlink(struct hf3fs_iov *iov) {
 }
 
 void hf3fs_iovdestroy(struct hf3fs_iov *iov) {
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
   if (iov && hf3fs_iov_is_gpu_internal(iov)) {
     hf3fs_iovdestroy_gpu_internal(iov);
     return;
@@ -415,8 +415,8 @@ int hf3fs_iovwrap(struct hf3fs_iov *iov,
   return 0;
 }
 
-// Only compiled when HF3FS_GDR_ENABLED — matches header guard.
-#ifdef HF3FS_GDR_ENABLED
+// Only compiled when HF3FS_ENABLE_GDR — matches header guard.
+#ifdef HF3FS_ENABLE_GDR
 int hf3fs_iovwrap_device(struct hf3fs_iov *iov,
                          void *device_ptr,
                          const uint8_t id[16],
@@ -935,7 +935,7 @@ enum hf3fs_mem_type hf3fs_iov_mem_type(const struct hf3fs_iov *iov) {
   if (!iov) {
     return HF3FS_MEM_HOST;
   }
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
   if (hf3fs_iov_is_gpu_internal(iov)) {
     return HF3FS_MEM_DEVICE;
   }
@@ -947,7 +947,7 @@ int hf3fs_iov_device_id(const struct hf3fs_iov *iov) {
   if (!iov) {
     return -1;
   }
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
   if (hf3fs_iov_is_gpu_internal(iov)) {
     return hf3fs_iov_gpu_device_internal(iov);
   }
@@ -959,7 +959,7 @@ int hf3fs_iovsync(const struct hf3fs_iov *iov, int direction) {
   if (!iov) {
     return -EINVAL;
   }
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
   if (hf3fs_iov_is_gpu_internal(iov)) {
     return hf3fs_iovsync_gpu_internal(iov, direction);
   }

@@ -112,13 +112,13 @@ int hf3fs_iovcreate_device(struct hf3fs_iov *iov,
                            size_t block_size,
                            int device_id);
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
 // Open an existing device memory IOV by UUID (cross-process reopen)
 // The importer borrows the publisher's publication; destroy closes only the
 // importer's CUDA IPC mapping and does not unlink the publication.
 // Returns -ENOTSUP when local CUDA IPC is not available.
 // GDR v2 does not support block partitioning; block_size must be 0.
-// Only declared when HF3FS_GDR_ENABLED is defined at compile time.
+// Only declared when HF3FS_ENABLE_GDR is defined at compile time.
 int hf3fs_iovopen_device(struct hf3fs_iov *iov,
                          const uint8_t id[16],
                          const char *hf3fs_mount_point,
@@ -132,7 +132,7 @@ int hf3fs_iovopen_device(struct hf3fs_iov *iov,
 // underlying allocation even when only this subrange is published.
 // Returns -ENOTSUP when local CUDA IPC is not available.
 // GDR v2 does not support block partitioning; block_size must be 0.
-// Only declared when HF3FS_GDR_ENABLED is defined at compile time.
+// Only declared when HF3FS_ENABLE_GDR is defined at compile time.
 int hf3fs_iovwrap_device(struct hf3fs_iov *iov,
                          void *device_ptr,
                          const uint8_t id[16],

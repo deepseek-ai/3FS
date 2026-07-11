@@ -8,7 +8,7 @@
 #
 # When HF3FS_ENABLE_GDR is ON:
 #   - CUDA Toolkit will be searched
-#   - HF3FS_GDR_ENABLED will be defined
+#   - HF3FS_ENABLE_GDR=1 will be defined for opted-in targets
 #   - CUDA libraries will be linked to relevant targets
 #
 # Usage in CMakeLists.txt:
@@ -17,7 +17,6 @@
 
 option(HF3FS_ENABLE_GDR "Enable GPU Direct RDMA (GDR) support" OFF)
 
-set(HF3FS_GDR_AVAILABLE OFF)
 set(HF3FS_CUDA_LIBRARIES "")
 set(HF3FS_CUDA_INCLUDE_DIRS "")
 
@@ -33,7 +32,6 @@ if(HF3FS_ENABLE_GDR)
                 message(FATAL_ERROR
                     "CUDAToolkit was found, but required CUDA::cudart and CUDA::cuda_driver targets are unavailable")
             endif()
-            set(HF3FS_GDR_AVAILABLE ON)
             set(HF3FS_CUDA_LIBRARIES CUDA::cudart CUDA::cuda_driver)
             set(HF3FS_CUDA_INCLUDE_DIRS ${CUDAToolkit_INCLUDE_DIRS})
             message(STATUS "Found CUDA Toolkit ${CUDAToolkit_VERSION}")
@@ -44,7 +42,6 @@ if(HF3FS_ENABLE_GDR)
         # Fallback for older CMake
         find_package(CUDA QUIET)
         if(CUDA_FOUND AND CUDA_CUDA_LIBRARY)
-            set(HF3FS_GDR_AVAILABLE ON)
             set(HF3FS_CUDA_LIBRARIES ${CUDA_LIBRARIES} ${CUDA_CUDA_LIBRARY})
             list(REMOVE_DUPLICATES HF3FS_CUDA_LIBRARIES)
             set(HF3FS_CUDA_INCLUDE_DIRS ${CUDA_INCLUDE_DIRS})
@@ -56,18 +53,18 @@ if(HF3FS_ENABLE_GDR)
         endif()
     endif()
 
-    if(HF3FS_GDR_AVAILABLE)
-        message(STATUS "GDR support enabled")
-
-        # Check for nvidia_peermem (informational only)
-        if(EXISTS "/sys/module/nvidia_peermem")
-            message(STATUS "nvidia_peermem module detected")
-        else()
-            message(STATUS "nvidia_peermem module not detected (required at runtime for GDR)")
-        endif()
-    else()
+    if(NOT HF3FS_CUDA_LIBRARIES)
         message(FATAL_ERROR
             "HF3FS_ENABLE_GDR=ON requires CUDA runtime and driver libraries, but required CUDA components were not found")
+    endif()
+
+    message(STATUS "GDR support enabled")
+
+    # Check for nvidia_peermem (informational only)
+    if(EXISTS "/sys/module/nvidia_peermem")
+        message(STATUS "nvidia_peermem module detected")
+    else()
+        message(STATUS "nvidia_peermem module not detected (required at runtime for GDR)")
     endif()
 else()
     message(STATUS "GDR support disabled (use -DHF3FS_ENABLE_GDR=ON to enable)")
@@ -80,8 +77,8 @@ function(target_add_gdr_support TARGET)
         set(GDR_SCOPE PRIVATE)
     endif()
 
-    if(HF3FS_GDR_AVAILABLE)
-        target_compile_definitions(${TARGET} ${GDR_SCOPE} HF3FS_GDR_ENABLED)
+    if(HF3FS_ENABLE_GDR)
+        target_compile_definitions(${TARGET} ${GDR_SCOPE} HF3FS_ENABLE_GDR=1)
         target_include_directories(${TARGET} PRIVATE ${HF3FS_CUDA_INCLUDE_DIRS})
         # Project targets use the plain target_link_libraries signature. Keeping
         # that signature also propagates CUDA link requirements from static

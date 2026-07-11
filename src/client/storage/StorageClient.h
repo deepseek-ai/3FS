@@ -10,7 +10,7 @@
 #include "UpdateChannelAllocator.h"
 #include "client/mgmtd/ICommonMgmtdClient.h"
 #include "common/net/Client.h"
-#include "common/net/ib/RDMABufAccelerator.h"
+#include "common/net/ib/RDMABuf.h"
 #include "common/utils/Address.h"
 #include "common/utils/Coroutine.h"
 #include "common/utils/Result.h"
@@ -58,18 +58,7 @@ class IOBuffer : public folly::MoveOnly {
 
   size_t size() const { return rdmabuf_.size(); }
 
-  // Use integer address arithmetic so GPU device addresses do not go through
-  // host pointer comparison/addition rules.
-  bool contains(const uint8_t *data, uint32_t len) const {
-    auto *basePtr = rdmabuf_.ptr();
-    if (!basePtr || !data) {
-      return false;
-    }
-    auto base = reinterpret_cast<uintptr_t>(basePtr);
-    auto dataAddr = reinterpret_cast<uintptr_t>(data);
-    auto capacity = rdmabuf_.capacity();
-    return dataAddr >= base && dataAddr - base <= capacity && len <= capacity - (dataAddr - base);
-  }
+  bool contains(const uint8_t *data, uint32_t len) const { return rdmabuf_.contains(data, len); }
 
   std::optional<size_t> offsetOf(const uint8_t *data, uint32_t len) const {
     if (!contains(data, len)) {
@@ -80,63 +69,32 @@ class IOBuffer : public folly::MoveOnly {
 
   uint8_t *dataAtOffset(size_t offset) const {
     auto *basePtr = rdmabuf_.ptr();
-    auto capacity = rdmabuf_.capacity();
+    auto size = rdmabuf_.size();
     auto base = reinterpret_cast<uintptr_t>(basePtr);
-    if (!basePtr || offset > capacity || base > std::numeric_limits<uintptr_t>::max() - offset) {
+    if (!basePtr || offset > size || base > std::numeric_limits<uintptr_t>::max() - offset) {
       return nullptr;
     }
     return reinterpret_cast<uint8_t *>(base + offset);
   }
 
-  net::RDMABuf subrange(size_t offset, size_t length) const {
-    if (rdmabuf_.isHost()) {
-      return rdmabuf_.asHost().subrange(offset, length);
-    }
-    // GPU buffers cannot produce host RDMABuf subranges.
-    // Callers must use subrangeRemote() for GPU-compatible paths.
-    XLOGF(DFATAL, "IOBuffer::subrange() called on GPU buffer - use subrangeRemote() instead");
-    return net::RDMABuf();
-  }
-
   /**
    * Get an RDMARemoteBuf for a subrange — works for both host and GPU.
    * For GPU buffers, the returned RDMARemoteBuf contains the device virtual
-   * address and rkeys from AcceleratorMemoryRegion, suitable for direct
-   * RDMA read/write without CPU copies.
+   * address and per-HCA rkeys, suitable for direct RDMA read/write without
+   * CPU copies.
    */
   net::RDMARemoteBuf subrangeRemote(size_t offset, size_t length) const {
     return rdmabuf_.toRemoteBuf().subrange(offset, length);
   }
 
-  /**
-   * Get the underlying unified RDMA buffer
-   */
-  const net::RDMABufUnified &rdmabuf() const { return rdmabuf_; }
-
-  /**
-   * Get an RDMARemoteBuf for remote RDMA operations
-   */
-  net::RDMARemoteBuf toRemoteBuf() const { return rdmabuf_.toRemoteBuf(); }
-
   IOBuffer(hf3fs::net::RDMABuf rdmabuf)
       : rdmabuf_(std::move(rdmabuf)) {}
 
-  IOBuffer(hf3fs::net::RDMABufUnified unified)
-      : rdmabuf_(std::move(unified)) {}
-
-  /**
-   * Check if this buffer contains device (GPU) memory.
-   * When true, CPU operations (memcpy, checksum) must be avoided.
-   *
-   * @implements Design doc 5.5: IOBuffer.isDeviceMemory() -> rdmabuf_.isDevice()
-   */
-  bool isDeviceMemory() const { return rdmabuf_.isDevice(); }
-
-  /** Alias retained for backward compatibility in existing code. */
-  bool isGpuMemory() const { return isDeviceMemory(); }
+  /** Device buffers must not be accessed by CPU memcpy, memset, or checksum code. */
+  bool isDeviceMemory() const { return rdmabuf_.isDeviceMemory(); }
 
   /** Returns the CUDA device ID for GPU buffers, or -1 for host buffers. */
-  int gpuDeviceId() const { return isGpuMemory() ? rdmabuf_.asGpu().deviceId() : -1; }
+  int cudaDeviceId() const { return rdmabuf_.cudaDeviceId().value_or(-1); }
 
   /**
    * Zero a byte range relative to data().
@@ -147,7 +105,7 @@ class IOBuffer : public folly::MoveOnly {
   Result<Void> zeroRange(size_t offset, size_t length) const;
 
  private:
-  net::RDMABufUnified rdmabuf_;
+  net::RDMABuf rdmabuf_;
 
   friend class IOBase;
   friend class StorageClient;
@@ -166,7 +124,7 @@ Result<PreparedWriteChecksum> prepareWriteChecksum(ChecksumType targetType,
                                                    const uint8_t *data,
                                                    size_t length);
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
 namespace detail {
 
 Result<Void> zeroCudaDeviceRange(void *devicePtr, size_t length, int deviceId);
@@ -634,9 +592,11 @@ class StorageClient : public folly::MoveOnly {
   // delete the returned IOBuffer object to deregister the buffer
   virtual Result<IOBuffer> registerIOBuffer(uint8_t *buf, size_t len);
 
-  // Register a GPU memory buffer for RDMA.
-  // The returned IOBuffer has isGpuMemory() == true, which prevents
+  // Register a GPU memory buffer for RDMA. Non-RDMA implementations reject it.
+  // The returned IOBuffer has isDeviceMemory() == true, which prevents
   // CPU operations (inline memcpy, checksum) on the buffer.
+  // The caller must keep the CUDA allocation alive until the IOBuffer and all
+  // I/O operations using it have been destroyed.
   virtual Result<IOBuffer> registerGpuIOBuffer(uint8_t *gpuPtr, size_t len);
 
   virtual CoTryTask<void> batchRead(std::span<ReadIO> readIOs,

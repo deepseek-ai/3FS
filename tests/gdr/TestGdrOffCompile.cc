@@ -5,13 +5,15 @@
 #include <type_traits>
 #include <variant>
 
+#include "common/cuda/CudaMemory.h"
+#include "common/net/ib/RDMABuf.h"
 #include "fuse/IovTable.h"
 #include "fuse/IovTypes.h"
 #include "lib/api/hf3fs_usrbio.h"
 #include "lib/common/CudaIpcMemory.h"
 #include "tests/GtestHelpers.h"
 
-#ifndef HF3FS_GDR_ENABLED
+#ifndef HF3FS_ENABLE_GDR
 
 namespace hf3fs {
 namespace {
@@ -29,16 +31,22 @@ TEST(GdrOffCompileGuard, CudaIpcStubsAndHostIovTypesRemainUsable) {
   hf3fs_iov iov{};
   EXPECT_EQ(hf3fs_iovcreate_device(&iov, "/unused", 4096, 1, 0), -EINVAL);
 
-  auto count = lib::cudaIpcDeviceCount();
+  auto count = cuda::deviceCount();
   ASSERT_OK(count);
   EXPECT_EQ(*count, 0);
 
-  auto available = lib::cudaIpcDeviceAvailable(0);
+  auto available = cuda::supportsIpc(0);
   ASSERT_OK(available);
   EXPECT_FALSE(*available);
 
   auto exported = lib::exportCudaIpcMemory(reinterpret_cast<void *>(uintptr_t{0x1000}), 4096, 0);
   ASSERT_ERROR(exported, StatusCode::kNotImplemented);
+
+  auto inspected = cuda::inspectDeviceMemory(reinterpret_cast<void *>(uintptr_t{0x1000}), 4096, 0);
+  ASSERT_ERROR(inspected, StatusCode::kNotImplemented);
+
+  auto registered = net::RDMABuf::createFromCudaBuffer(reinterpret_cast<uint8_t *>(uintptr_t{0x1000}), 4096, 0);
+  ASSERT_ERROR(registered, StatusCode::kNotImplemented);
 
   fuse::IovEntry entry;
   EXPECT_FALSE(entry.isGpu());

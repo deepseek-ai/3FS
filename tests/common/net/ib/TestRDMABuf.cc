@@ -7,55 +7,15 @@
 #include <limits>
 #include <map>
 #include <thread>
-#include <type_traits>
 #include <vector>
 
 #include "SetupIB.h"
 #include "common/net/ib/IBDevice.h"
 #include "common/net/ib/RDMABuf.h"
-#include "common/net/ib/RDMABufAccelerator.h"
 #include "common/utils/Coroutine.h"
 #include "gtest/gtest.h"
 
 namespace hf3fs::net {
-
-static_assert(!std::is_copy_constructible_v<RDMABufUnified>);
-static_assert(!std::is_copy_assignable_v<RDMABufUnified>);
-static_assert(std::is_nothrow_move_constructible_v<RDMABufUnified>);
-static_assert(std::is_nothrow_move_assignable_v<RDMABufUnified>);
-
-TEST(TestRDMABufUnifiedPure, ThreeStateDispatch) {
-  RDMABufUnified empty;
-  EXPECT_EQ(empty.type(), RDMABufUnified::Type::Empty);
-  EXPECT_FALSE(empty.valid());
-  EXPECT_EQ(empty.ptr(), nullptr);
-  EXPECT_EQ(empty.size(), 0u);
-  EXPECT_EQ(empty.capacity(), 0u);
-  EXPECT_EQ(empty.getMR(0), nullptr);
-  EXPECT_FALSE(empty.toRemoteBuf());
-
-  RDMABufUnified host(RDMABuf{});
-  EXPECT_EQ(host.type(), RDMABufUnified::Type::Host);
-  EXPECT_TRUE(host.isHost());
-  EXPECT_FALSE(host.isDevice());
-  EXPECT_FALSE(host.valid());
-
-  RDMABufUnified gpu(RDMABufAccelerator{});
-  EXPECT_EQ(gpu.type(), RDMABufUnified::Type::Gpu);
-  EXPECT_FALSE(gpu.isHost());
-  EXPECT_TRUE(gpu.isDevice());
-  EXPECT_FALSE(gpu.valid());
-
-  RDMABufUnified moved(std::move(gpu));
-  EXPECT_EQ(moved.type(), RDMABufUnified::Type::Gpu);
-  EXPECT_TRUE(moved.isDevice());
-
-  RDMABufUnified assigned;
-  assigned = std::move(moved);
-  EXPECT_EQ(assigned.type(), RDMABufUnified::Type::Gpu);
-  EXPECT_TRUE(assigned.isDevice());
-  EXPECT_FALSE(assigned.valid());
-}
 
 class TestRDMARemoteBuf : public test::SetupIB {};
 
@@ -141,27 +101,6 @@ TEST_F(TestRDMABuf, Default) {
 
   RDMABuf buf2 = buf;
   ASSERT_FALSE(buf2);
-}
-
-TEST_F(TestRDMABuf, UnifiedHostDispatchesValidBufferAfterMove) {
-  auto allocated = RDMABuf::allocate(4096);
-  ASSERT_TRUE(allocated);
-  auto *ptr = allocated.ptr();
-
-  RDMABufUnified unified(std::move(allocated));
-  ASSERT_EQ(unified.type(), RDMABufUnified::Type::Host);
-  ASSERT_TRUE(unified.valid());
-  EXPECT_EQ(unified.ptr(), ptr);
-  EXPECT_EQ(unified.size(), 4096u);
-  EXPECT_EQ(unified.capacity(), 4096u);
-  EXPECT_TRUE(unified.toRemoteBuf());
-
-  RDMABufUnified moved;
-  moved = std::move(unified);
-  ASSERT_EQ(moved.type(), RDMABufUnified::Type::Host);
-  EXPECT_TRUE(moved.valid());
-  EXPECT_EQ(moved.ptr(), ptr);
-  EXPECT_TRUE(moved.toRemoteBuf());
 }
 
 TEST_F(TestRDMABuf, Allocate) {

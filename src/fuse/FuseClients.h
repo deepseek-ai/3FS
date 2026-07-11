@@ -250,8 +250,5 @@ struct FuseClients {
 
   std::unique_ptr<folly::IOThreadPoolExecutor> notifyInvalExec;
   const FuseConfig *config;
-#ifdef HF3FS_GDR_ENABLED
-  bool managesGdr = false;
-#endif
 };
 }  // namespace hf3fs::fuse

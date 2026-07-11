@@ -6,13 +6,13 @@
 
 #include "common/utils/Uuid.h"
 #include "lib/common/Shm.h"
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
 #include "lib/common/GpuShm.h"
 #endif
 
 namespace hf3fs::fuse {
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
 using IoBufForIO = std::variant<lib::ShmBufForIO, lib::GpuShmBufForIO>;
 
 inline uint8_t *ioBufPtr(const IoBufForIO &buf) {

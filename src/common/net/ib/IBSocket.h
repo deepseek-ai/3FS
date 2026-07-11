@@ -17,7 +17,6 @@
 #include <folly/Memory.h>
 #include <folly/Optional.h>
 #include <folly/Range.h>
-#include <folly/ScopeGuard.h>
 #include <folly/String.h>
 #include <folly/Synchronized.h>
 #include <folly/Utility.h>
@@ -60,7 +59,6 @@
 #include "common/net/ib/IBConnect.h"
 #include "common/net/ib/IBDevice.h"
 #include "common/net/ib/RDMABuf.h"
-#include "common/net/ib/RDMABufAccelerator.h"
 #include "common/utils/Address.h"
 #include "common/utils/ConfigBase.h"
 #include "common/utils/Coroutine.h"
@@ -193,43 +191,10 @@ class IBSocket : public Socket, folly::MoveOnly {
         : socket_(socket),
           opcode_(opcode),
           reqs_(),
-          localBufs_(),
-          gpuOwners_() {}
+          localBufs_() {}
 
     Result<Void> add(const RDMARemoteBuf &remoteBuf, RDMABuf localBuf);
     Result<Void> add(RDMARemoteBuf remoteBuf, std::span<RDMABuf> localBufs);
-
-    /**
-     * Add an RDMA request using a unified (host or GPU) buffer.
-     * For host buffers, delegates to the RDMABuf overload.
-     * For GPU buffers, constructs the request from RDMABufAccelerator.
-     */
-    Result<Void> add(const RDMARemoteBuf &remoteBuf, const RDMABufUnified &localBuf) {
-      if (localBuf.isHost()) {
-        // Make a copy since the existing overload takes by value
-        RDMABuf hostBuf = localBuf.asHost();
-        return add(remoteBuf, std::move(hostBuf));
-      } else if (localBuf.isGpu()) {
-        // Borrow the existing MR from AcceleratorMemoryRegion instead of
-        // re-registering via createFromUserBuffer (which would create duplicate
-        // MRs on all IB devices). Keep the minimal GPU owner snapshot alive
-        // until this batch completes or is cleared.
-        auto owner = localBuf.asGpu().ownerSnapshot();
-        auto mr = localBuf.asGpu().getMR(socket_->port_.dev()->id());
-        if (!mr) {
-          return makeError(StatusCode::kInvalidArg, "GPU buffer has no MR registered for IB device");
-        }
-        auto localRdmaBuf = RDMABuf::createFromExternalMR(const_cast<uint8_t *>(localBuf.asGpu().ptr()),
-                                                          localBuf.asGpu().size(),
-                                                          mr,
-                                                          socket_->port_.dev()->id());
-        auto addResult = add(remoteBuf, std::move(localRdmaBuf));
-        RETURN_ON_ERROR(addResult);
-        gpuOwners_.push_back(GpuOwnerSnapshot{std::move(owner)});
-        return Void{};
-      }
-      return makeError(StatusCode::kInvalidArg, "empty unified buffer");
-    }
 
     void reserve(size_t numReqs, size_t numLocalBufs) {
       reqs_.reserve(numReqs);
@@ -239,17 +204,12 @@ class IBSocket : public Socket, folly::MoveOnly {
     void clear() {
       reqs_.clear();
       localBufs_.clear();
-      gpuOwners_.clear();
       waitLatency_ = std::chrono::nanoseconds(0);
       transferLatency_ = std::chrono::nanoseconds(0);
     }
 
     ibv_wr_opcode opcode() const { return opcode_; }
     CoTryTask<void> post() {
-      if (gpuOwners_.empty()) {
-        co_return co_await socket_->rdmaBatch(opcode_, reqs_, localBufs_, waitLatency_, transferLatency_);
-      }
-      auto gpuOwnerGuard = folly::makeGuard([this] { gpuOwners_.clear(); });
       co_return co_await socket_->rdmaBatch(opcode_, reqs_, localBufs_, waitLatency_, transferLatency_);
     }
 
@@ -257,15 +217,10 @@ class IBSocket : public Socket, folly::MoveOnly {
     std::chrono::nanoseconds transferLatency() const { return transferLatency_; };
 
    private:
-    struct GpuOwnerSnapshot {
-      RDMABufAccelerator::OwnerSnapshot owner;
-    };
-
     IBSocket *socket_;
     ibv_wr_opcode opcode_;
     std::vector<RDMAReq> reqs_;
     std::vector<RDMABuf> localBufs_;
-    std::vector<GpuOwnerSnapshot> gpuOwners_;
     std::chrono::nanoseconds waitLatency_;
     std::chrono::nanoseconds transferLatency_;
   };

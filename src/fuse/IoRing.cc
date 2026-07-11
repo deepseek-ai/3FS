@@ -148,11 +148,11 @@ CoTask<void> IoRing::process(
         continue;
       }
 
-#ifdef HF3FS_GDR_ENABLED
+#ifdef HF3FS_ENABLE_GDR
       auto bufPtr = ioBufPtr(bufs[i].value());
-      auto memh = co_await std::visit(
-          [&](auto &b) -> CoTryTask<storage::client::IOBuffer *> { return b.memh(args.ioLen); },
-          bufs[i].value());
+      auto memh =
+          co_await std::visit([&](auto &b) -> CoTryTask<storage::client::IOBuffer *> { return b.memh(args.ioLen); },
+                              bufs[i].value());
 #else
       auto bufPtr = bufs[i]->ptr();
       auto memh = co_await bufs[i]->memh(args.ioLen);
@@ -176,9 +176,8 @@ CoTask<void> IoRing::process(
         truncateVers[i] = *beginWrite;
       }
 
-      auto addRes = forRead_
-                        ? ioExec.addRead(i, inodes[i]->inode, 0, args.fileOff, args.ioLen, bufPtr, **memh)
-                        : ioExec.addWrite(i, inodes[i]->inode, 0, args.fileOff, args.ioLen, bufPtr, **memh);
+      auto addRes = forRead_ ? ioExec.addRead(i, inodes[i]->inode, 0, args.fileOff, args.ioLen, bufPtr, **memh)
+                             : ioExec.addWrite(i, inodes[i]->inode, 0, args.fileOff, args.ioLen, bufPtr, **memh);
       if (!addRes) {
         res[i] = -static_cast<ssize_t>(addRes.error().code());
       }

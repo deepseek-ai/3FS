@@ -101,10 +101,6 @@ class CallContext {
       return batch_.add(remoteBuf, localBuf);
     }
 
-    Result<Void> add(const net::RDMARemoteBuf &remoteBuf, const net::RDMABufUnified &localBuf) {
-      return batch_.add(remoteBuf, localBuf);
-    }
-
     CoTask<void> applyTransmission(Duration timeout);
 
     CoTryTask<void> post() { return batch_.post(); }
