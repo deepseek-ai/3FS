@@ -1,5 +1,5 @@
-set(CLANG_FORMAT "/usr/bin/clang-format-14")
-if(EXISTS ${CLANG_FORMAT})
+find_program(CLANG_FORMAT NAMES clang-format-14 clang-format)
+if(CLANG_FORMAT)
     message(STATUS "Found clang-format at ${CLANG_FORMAT}")
 
     set(SOURCE_DIRS

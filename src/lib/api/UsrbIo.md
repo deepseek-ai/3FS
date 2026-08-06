@@ -36,7 +36,7 @@ int hf3fs_iorcreate4(struct hf3fs_ior *ior,
 - **for_read**: `true` if this Ior handles read requests, `false` if this Ior handles write requests. An Ior cannot handle read requests and write requests simultaneously.
 - **io_depth**: `0` for no control with I/O depth. If greater than 0, then only when `io_depth` I/O requests are in queue, they will be issued to server as a batch. If smaller than 0, then USRBIO will wait for at most `-io_depth` I/O requests are in queue and issue them in one batch. 
 - **timeout**: Maximum wait time for batching when `io_depth` < 0.
-- **numa**: Numa ID for Ior shared memory. `-1` for current process numa ID.
+- **numa**: Numa ID for Ior shared memory. `-1` for no NUMA binding.
 - **flags**: A flag composed of OR-ed bits to specify special behaviors.
 
 #### Return Value
@@ -82,7 +82,7 @@ int hf3fs_iovcreate(struct hf3fs_iov *iov,
 - **hf3fs_mount_point**: Mount point for 3FS. This parameter is used to distinguish 3FS clusters, enabling a single machine to mount multiple 3FS instances.
 - **size**: Shared memory size for this Iov.
 - **block_size**: If not `0`, this function will allocate multiple shared memory blocks, each sized no larger than `block_size`. `0` for allocate a single large shared memory. All IOs on this Iov should not span across the block margin. This parameter is for optimization on IB register time.
-- **numa**: Numa ID for Ior shared memory. `-1` for current process numa ID.
+- **numa**: Numa ID for Iov shared memory. `-1` for no NUMA binding. For device memory, use `hf3fs_iovcreate_device()`.
 
 #### Return Value
 - If success, return 0.
@@ -250,7 +250,7 @@ constexpr uint64_t BLOCK_SIZE = (32 << 20);
 int main() {
     struct hf3fs_ior ior;
     hf3fs_iorcreate4(&ior, "/hf3fs/mount/point", NUM_IOS, true, 0, 0, -1, 0);
-    
+
     struct hf3fs_iov iov;
     hf3fs_iovcreate(&iov, "/hf3fs/mount/point", NUM_IOS * BLOCK_SIZE, 0, -1);
 

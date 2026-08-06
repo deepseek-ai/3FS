@@ -57,6 +57,24 @@ monitor::OperationRecorder syncDoneRecorder{"storage.sync_done"};
 monitor::OperationRecorder storageReqRemoveChunksRecorder{"storage.req_remove_chunks"};
 monitor::OperationRecorder storageRemoveRangeRecorder{"storage.remove_range"};
 
+Result<Void> materializeServerComputedChecksum(UpdateIO &updateIO, uint32_t featureFlags, const uint8_t *data) {
+  if (!BITFLAGS_CONTAIN(featureFlags, FeatureFlags::SERVER_COMPUTE_CHECKSUM)) {
+    return Void{};
+  }
+  if (!updateIO.isWrite()) {
+    return makeError(StatusCode::kInvalidArg, "server-computed checksum is only valid for WRITE updates");
+  }
+  if (updateIO.checksum.type == ChecksumType::NONE) {
+    return makeError(StatusCode::kInvalidArg, "server-computed checksum requires a non-NONE target checksum type");
+  }
+  if (data == nullptr && updateIO.length != 0) {
+    return makeError(StatusCode::kInvalidArg, "server-computed checksum requires staged write data");
+  }
+
+  updateIO.checksum = ChecksumInfo::create(updateIO.checksum.type, data, updateIO.length);
+  return Void{};
+}
+
 Result<Void> StorageOperator::init(uint32_t numberOfDisks) {
   storageReadAvgBytes.setLambda([&] {
     auto totalReadBytes = totalReadBytes_.exchange(0);
@@ -519,7 +537,7 @@ CoTask<IOResult> StorageOperator::handleUpdate(ServiceRequestContext &requestCtx
 }
 
 CoTask<IOResult> StorageOperator::doUpdate(ServiceRequestContext &requestCtx,
-                                           const UpdateIO &updateIO,
+                                           UpdateIO &updateIO,
                                            const UpdateOptions &updateOptions,
                                            uint32_t featureFlags,
                                            const std::shared_ptr<StorageTarget> &target,
@@ -595,6 +613,19 @@ CoTask<IOResult> StorageOperator::doUpdate(ServiceRequestContext &requestCtx,
       }
     }
   }
+
+  if (BITFLAGS_CONTAIN(featureFlags, FeatureFlags::SERVER_COMPUTE_CHECKSUM) &&
+      BITFLAGS_CONTAIN(featureFlags, FeatureFlags::BYPASS_RDMAXMIT) &&
+      !BITFLAGS_CONTAIN(featureFlags, FeatureFlags::SEND_DATA_INLINE)) {
+    co_return makeError(StatusCode::kInvalidArg, "cannot compute a server checksum when RDMA transfer is bypassed");
+  }
+
+  auto checksumResult = materializeServerComputedChecksum(updateIO, featureFlags, job.state().data);
+  if (UNLIKELY(!checksumResult)) {
+    XLOGF(ERR, "Failed to materialize server-computed checksum for {}: {}", updateIO, checksumResult.error());
+    co_return makeError(std::move(checksumResult.error()));
+  }
+  job.updateIO().checksum = updateIO.checksum;
 
   if (BITFLAGS_CONTAIN(featureFlags, FeatureFlags::BYPASS_DISKIO)) {
     job.setResult(updateIO.length);

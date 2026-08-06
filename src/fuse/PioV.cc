@@ -1,5 +1,7 @@
 #include "PioV.h"
 
+#include <limits>
+
 namespace hf3fs::lib::agent {
 PioV::PioV(storage::client::StorageClient &storageClient, int chunkSizeLim, std::vector<ssize_t> &res)
     : storageClient_(storageClient),
@@ -183,16 +185,44 @@ CoTryTask<void> PioV::executeWrite(const UserInfo &userInfo, const storage::clie
 }
 
 template <typename Io>
-void concatIoRes(bool read, std::vector<ssize_t> &res, const Io &ios, bool allowHoles) {
+Result<Void> zeroReadRange(const Io &io, size_t offset, size_t length) {
+  if (io.buffer == nullptr) {
+    return makeError(StorageClientCode::kInvalidArg, "read hole has no registered IOBuffer");
+  }
+  if (offset > io.length || length > io.length - offset) {
+    return makeError(StorageClientCode::kInvalidArg,
+                     fmt::format("read hole range [{}, {}) exceeds IO length {}", offset, offset + length, io.length));
+  }
+
+  auto ioBufferOffset = io.buffer->offsetOf(io.data, io.length);
+  if (!ioBufferOffset || *ioBufferOffset > std::numeric_limits<size_t>::max() - offset) {
+    return makeError(StorageClientCode::kInvalidArg, "read hole is outside its registered IOBuffer");
+  }
+  return io.buffer->zeroRange(*ioBufferOffset + offset, length);
+}
+
+template <typename Io>
+void concatIoRes(bool read,
+                 std::vector<ssize_t> &res,
+                 const Io &ios,
+                 bool allowHoles,
+                 const std::function<Result<Void>(const typename Io::value_type &, size_t, size_t)> &zeroRange) {
   ssize_t lastIovIdx = -1;
   bool inHole = false;
-  std::optional<size_t> holeIo = 0;
+  std::optional<size_t> holeIo;
   size_t holeOff = 0;
   size_t holeSize = 0;
   ssize_t iovIdx = 0;
   for (size_t i = 0; i < ios.size(); ++i, lastIovIdx = iovIdx) {
     const auto &io = ios[i];
     iovIdx = reinterpret_cast<ssize_t>(io.userCtx);
+    if (lastIovIdx != iovIdx) {
+      inHole = false;
+      holeIo = std::nullopt;
+      holeOff = 0;
+      holeSize = 0;
+    }
+
     uint32_t iolen = 0;
     if (io.result.lengthInfo) {
       iolen = *io.result.lengthInfo;
@@ -224,21 +254,23 @@ void concatIoRes(bool read, std::vector<ssize_t> &res, const Io &ios, bool allow
 
         if (read && allowHoles) {  // zerofill the hole we found
           auto &hio = ios[*holeIo];
-          memset(hio.data + holeOff, 0, hio.length - holeOff);
-          for (size_t j = *holeIo + 1; j < i; ++j) {
-            memset(ios[j].data, 0, ios[j].length);
+          auto zeroResult = zeroRange(hio, holeOff, hio.length - holeOff);
+          for (size_t j = *holeIo + 1; zeroResult && j < i; ++j) {
+            zeroResult = zeroRange(ios[j], 0, ios[j].length);
           }
 
-          res[iovIdx] += holeSize;
+          if (zeroResult) {
+            res[iovIdx] += holeSize;
+          } else {
+            XLOGF(ERR, "Failed to zero-fill read hole for iov index {}: {}", iovIdx, zeroResult.error());
+            res[iovIdx] = -static_cast<ssize_t>(zeroResult.error().code());
+          }
 
           inHole = false;  // out of hole now, but we may begin a new hole
           holeIo = std::nullopt;
         } else {
           res[iovIdx] = -static_cast<ssize_t>(ClientAgentCode::kHoleInIoOutcome);
         }
-      } else if (lastIovIdx != iovIdx) {
-        inHole = false;
-        holeIo = std::nullopt;
       }
     } else if (read && io.result.lengthInfo.error().code() == StorageClientCode::kChunkNotFound) {
       // ignore
@@ -265,11 +297,20 @@ void concatIoRes(bool read, std::vector<ssize_t> &res, const Io &ios, bool allow
   }
 }
 
+void detail::finishReadResults(std::vector<ssize_t> &res,
+                               std::span<const storage::client::ReadIO> ios,
+                               bool allowHoles,
+                               const ReadHoleZeroer &zeroRange) {
+  concatIoRes(true, res, ios, allowHoles, zeroRange);
+}
+
 void PioV::finishIo(bool allowHoles) {
   if (wios_.empty()) {
-    concatIoRes(true, res_, rios_, allowHoles);
+    detail::finishReadResults(res_, rios_, allowHoles, zeroReadRange<storage::client::ReadIO>);
   } else {
-    concatIoRes(false, res_, wios_, false);
+    concatIoRes(false, res_, wios_, false, [](const storage::client::WriteIO &, size_t, size_t) -> Result<Void> {
+      return makeError(StorageClientCode::kInvalidArg, "write result cannot contain a readable hole");
+    });
   }
 }
 }  // namespace hf3fs::lib::agent
