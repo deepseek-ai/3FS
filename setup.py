@@ -6,11 +6,9 @@ import sys
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 #import setuptools_scm as stscm
-import subprocess
 
 #version = stscm.get_version(root=".", relative_to=__file__)
-rev = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').rstrip()
-version = "1.2.9+" + rev
+version = "1.2.9"
 print('package version', version)
         
 
