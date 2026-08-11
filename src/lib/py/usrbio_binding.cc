@@ -288,17 +288,20 @@ PYBIND11_MODULE(hf3fs_py_usrbio, m) {
             //       iov->size);
 
             userdata.inc_ref();
-            py::gil_scoped_release gr;
-
-            auto res = hf3fs_prep_io(self.get(),
-                                     (iov->base_iov ? iov->base_iov : iov).get(),
-                                     read,
-                                     iov->base,
-                                     fd,
-                                     off,
-                                     iov->size,
-                                     (void *)userdata.ptr());
+            int res;
+            {
+              py::gil_scoped_release gr;
+              res = hf3fs_prep_io(self.get(),
+                                  (iov->base_iov ? iov->base_iov : iov).get(),
+                                  read,
+                                  iov->base,
+                                  fd,
+                                  off,
+                                  iov->size,
+                                  (void *)userdata.ptr());
+            }
             if (res < 0) {
+              userdata.dec_ref();
               throw OSException{-res};
             }
 
