@@ -53,6 +53,25 @@ def test_read_file_does_not_deregister_failed_registration(io_module, monkeypatc
     close.assert_called_once_with(17)
 
 
+def test_read_file_releases_fd_after_shared_memory_failure(io_module, monkeypatch):
+    module, native = io_module
+    monkeypatch.setattr(module.os, "open", Mock(return_value=19))
+    close = Mock()
+    monkeypatch.setattr(module.os, "close", close)
+    error = OSError("shared memory failed")
+    monkeypatch.setattr(
+        module.multiprocessing.shared_memory,
+        "SharedMemory",
+        Mock(side_effect=error),
+    )
+
+    with pytest.raises(OSError, match="shared memory failed"):
+        module.read_file("input", hf3fs_mount_point="/3fs", block_size=8)
+
+    native.deregister_fd.assert_called_once_with(19)
+    close.assert_called_once_with(19)
+
+
 def test_read_file_releases_resources_after_iovec_failure(io_module, monkeypatch):
     module, native = io_module
     native.register_fd.return_value = None
@@ -74,6 +93,31 @@ def test_read_file_releases_resources_after_iovec_failure(io_module, monkeypatch
 
     native.deregister_fd.assert_called_once_with(23)
     close.assert_called_once_with(23)
+    shared_memory.close.assert_called_once_with()
+    shared_memory.unlink.assert_called_once_with()
+
+
+def test_read_file_releases_resources_after_ioring_failure(io_module, monkeypatch):
+    module, native = io_module
+    monkeypatch.setattr(module.os, "open", Mock(return_value=27))
+    close = Mock()
+    monkeypatch.setattr(module.os, "close", close)
+
+    shared_memory = Mock()
+    shared_memory.buf = bytearray(8)
+    monkeypatch.setattr(
+        module.multiprocessing.shared_memory,
+        "SharedMemory",
+        Mock(return_value=shared_memory),
+    )
+    monkeypatch.setattr(module, "make_iovec", Mock(return_value=shared_memory.buf))
+    monkeypatch.setattr(module, "make_ioring", Mock(side_effect=RuntimeError("ioring failed")))
+
+    with pytest.raises(RuntimeError, match="ioring failed"):
+        module.read_file("input", hf3fs_mount_point="/3fs", block_size=8)
+
+    native.deregister_fd.assert_called_once_with(27)
+    close.assert_called_once_with(27)
     shared_memory.close.assert_called_once_with()
     shared_memory.unlink.assert_called_once_with()
 
