@@ -1,4 +1,4 @@
-#  Fire-Flyer File System
+# Fire-Flyer File System
 
 [![Build](https://github.com/deepseek-ai/3fs/actions/workflows/build.yml/badge.svg)](https://github.com/deepseek-ai/3fs/actions/workflows/build.yml)
 [![License](https://img.shields.io/badge/LICENSE-MIT-blue.svg)](LICENSE)
