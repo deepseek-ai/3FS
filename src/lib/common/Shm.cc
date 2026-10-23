@@ -173,4 +173,13 @@ void ShmBuf::mapBuf() {
 
   XLOGF(DBG, "this {} owner {} buf start {} size {} off {}", (void *)this, owner_, (void *)bufStart, size, off);
 }
+
+void ShmBuf::adviseHugePages() {
+  // Must run before the pages are faulted in, so before registerForIO().
+  // Under defrag=madvise the first fault may then wait for compaction.
+  if (madvise(bufStart, size, MADV_HUGEPAGE) < 0) {
+    auto err = errno;
+    XLOGF(WARN, "madvise(MADV_HUGEPAGE) on shm {} failed errno {}", path.native(), err);
+  }
+}
 }  // namespace hf3fs::lib

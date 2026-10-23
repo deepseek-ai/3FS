@@ -30,6 +30,9 @@ struct ShmBuf {
 
   CoTask<void> deregisterForIO();
   void unmapBuf();
+  // Asks for huge pages. tmpfs grants them only on huge=advise, within_size or always mounts,
+  // or when shmem_enabled is force.
+  void adviseHugePages();
   bool maybeUnlinkShm() {
     if (owner_) {
       shm_unlink(path.c_str());
