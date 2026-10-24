@@ -205,7 +205,8 @@ impl ChunkAllocator {
     }
 
     pub fn get_compact_task(&mut self, max_reserved: u64) -> Option<GroupId> {
-        let reserved = self.counter.reserved_chunks();
+        // max_reserved is in bytes (C++ config `max_reserved_chunks`, hf3fs::Size).
+        let reserved = self.counter.used_size().reserved_size.0;
         if reserved <= max_reserved {
             return None;
         }
