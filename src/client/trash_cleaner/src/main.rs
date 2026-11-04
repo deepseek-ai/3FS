@@ -598,6 +598,21 @@ mod tests {
             }
         }
     }
+
+    /// A dirent with `d_type == DT_UNKNOWN`, exactly what the fuse layer hands
+    /// to readdir for an entry whose inode could not be filled in.  `Entry` is
+    /// `#[repr(transparent)]` over `libc::dirent64`, so an all-zero dirent is a
+    /// valid value and `file_type()` reports `None`.
+    #[test]
+    fn test_check_item_unknown_dtype() {
+        // SAFETY: `Entry` is `#[repr(transparent)]` over `libc::dirent64`, a C
+        // struct made of integers and a char array, so the all-zero bit
+        // pattern is a valid value for it.
+        let entry: nix::dir::Entry = unsafe { std::mem::zeroed() };
+        assert_eq!(entry.file_type(), None);
+        assert_eq!(Trash::check_item(&entry), Err("unknown file type".to_string()));
+        assert_eq!(DirEntry::new(entry).ftype, 0);
+    }
 }
 
 #[derive(StructOpt, Debug)]
