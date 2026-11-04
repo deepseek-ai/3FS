@@ -49,7 +49,11 @@ impl DirEntry {
     pub fn new(entry: nix::dir::Entry) -> DirEntry {
         DirEntry {
             ino: entry.ino(),
-            ftype: entry.file_type().unwrap() as u8,
+            // `d_type` is `DT_UNKNOWN` for entries whose inode could not be
+            // filled in by readdir (the fuse layer returns a zeroed direntry
+            // for those), so do not unwrap here: one unknown entry must not
+            // abort the whole scan.
+            ftype: entry.file_type().map_or(0, |file_type| file_type as u8),
             name: entry
                 .file_name()
                 .to_str()
@@ -216,8 +220,14 @@ impl Trash {
     }
 
     fn check_item(entry: &nix::dir::Entry) -> Result<bool, String> {
-        if entry.file_type().unwrap() != nix::dir::Type::Directory {
-            return Err("not directory".to_string());
+        // `d_type` can be `DT_UNKNOWN` for entries whose inode could not be
+        // filled in by readdir. Treat those as unknown items and skip them
+        // instead of panicking, so that one bad entry does not stop the cleaner
+        // for every other user.
+        match entry.file_type() {
+            Some(nix::dir::Type::Directory) => {}
+            Some(_) => return Err("not directory".to_string()),
+            None => return Err("unknown file type".to_string()),
         }
         let name = entry.file_name().to_str();
         if let Err(_) = name {
