@@ -20,6 +20,7 @@
 #include <folly/logging/xlog.h>
 #include <gtest/gtest_prod.h>
 #include <infiniband/verbs.h>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -38,6 +39,7 @@ namespace hf3fs::net {
 using RDMABufMR = ibv_mr *;
 
 class RDMARemoteBuf {
+ public:
   struct Rkey {
     uint32_t rkey = 0;
     int devId = -1;
@@ -45,7 +47,6 @@ class RDMARemoteBuf {
     bool operator==(const Rkey &) const = default;
   };
 
- public:
   RDMARemoteBuf()
       : addr_(0),
         length_(0),
@@ -87,7 +88,7 @@ class RDMARemoteBuf {
   }
 
   RDMARemoteBuf subrange(size_t offset, size_t len) const {
-    if (UNLIKELY(offset + len > length_)) {
+    if (UNLIKELY(offset > length_ || len > length_ - offset)) {
       return RDMARemoteBuf();
     }
     RDMARemoteBuf remote = *this;
@@ -137,6 +138,8 @@ class RDMABufPool;
 
 class RDMABuf {
  public:
+  using BackingOwner = std::shared_ptr<void>;
+
   RDMABuf()
       : RDMABuf(nullptr, nullptr, 0) {}
 
@@ -159,7 +162,14 @@ class RDMABuf {
   size_t size() const { return length_; }
   bool empty() const { return size() == 0; }
 
-  bool contains(const uint8_t *data, uint32_t len) const { return ptr() <= data && data + len <= ptr() + capacity(); }
+  bool contains(const uint8_t *data, uint32_t len) const {
+    if (!buf_ || !begin_ || !data) {
+      return false;
+    }
+    auto base = reinterpret_cast<uintptr_t>(begin_);
+    auto address = reinterpret_cast<uintptr_t>(data);
+    return address >= base && address - base <= length_ && len <= length_ - (address - base);
+  }
 
   void resetRange() {
     if (LIKELY(buf_ != nullptr)) {
@@ -172,7 +182,11 @@ class RDMABuf {
     if (UNLIKELY(n > size())) {
       return false;
     }
-    begin_ += n;
+    auto next = addAddress(begin_, n);
+    if (UNLIKELY(!next)) {
+      return false;
+    }
+    begin_ = next;
     length_ -= n;
     return true;
   }
@@ -185,10 +199,11 @@ class RDMABuf {
   }
 
   RDMABuf subrange(size_t offset, size_t length) const {
-    if (UNLIKELY(offset + length > size())) {
+    if (UNLIKELY(offset > size() || length > size() - offset)) {
       return RDMABuf();
     }
-    return RDMABuf(buf_, begin_ + offset, length);
+    auto begin = addAddress(begin_, offset);
+    return begin ? RDMABuf(buf_, begin, length) : RDMABuf();
   }
 
   RDMABuf first(size_t length) const { return subrange(0, length); }
@@ -218,20 +233,35 @@ class RDMABuf {
   }
 
   RDMARemoteBuf toRemoteBuf() const {
-    std::array<RDMARemoteBuf::Rkey, IBDevice::kMaxDeviceCnt> rkeys;
+    std::array<RDMARemoteBuf::Rkey, IBDevice::kMaxDeviceCnt> rkeys{};
     if (UNLIKELY(!buf_ || !buf_->getRkeys(rkeys))) {
       return RDMARemoteBuf();
     }
-    return RDMARemoteBuf((uint64_t)begin_, length_, rkeys);
+    return RDMARemoteBuf(reinterpret_cast<uint64_t>(begin_), length_, rkeys);
   }
 
   operator RDMARemoteBuf() { return toRemoteBuf(); }
 
-  operator std::span<const uint8_t>() const { return {ptr(), size()}; }
-  operator std::span<uint8_t>() { return {ptr(), size()}; }
+  operator std::span<const uint8_t>() const {
+    assertHostAccessible();
+    return {ptr(), size()};
+  }
+  operator std::span<uint8_t>() {
+    assertHostAccessible();
+    return {ptr(), size()};
+  }
 
-  operator folly::MutableByteRange() { return {ptr(), size()}; }
-  operator folly::ByteRange() const { return {ptr(), size()}; }
+  operator folly::MutableByteRange() {
+    assertHostAccessible();
+    return {ptr(), size()};
+  }
+  operator folly::ByteRange() const {
+    assertHostAccessible();
+    return {ptr(), size()};
+  }
+
+  bool isDeviceMemory() const { return buf_ && buf_->cudaDeviceId().has_value(); }
+  std::optional<int> cudaDeviceId() const { return buf_ ? buf_->cudaDeviceId() : std::nullopt; }
 
   bool operator==(const RDMABuf &o) const = default;
 
@@ -251,21 +281,36 @@ class RDMABuf {
           ptr_(nullptr),
           capacity_(capacity),
           mrs_(),
-          userBuffer_(false) {}
+          ownsAllocation_(true),
+          cudaDeviceId_(),
+          backingOwner_() {}
 
     Inner(uint8_t *buf, size_t len)
         : pool_(std::weak_ptr<RDMABufPool>()),
           ptr_(buf),
           capacity_(len),
           mrs_(),
-          userBuffer_(true) {}
+          ownsAllocation_(false),
+          cudaDeviceId_(),
+          backingOwner_() {}
+
+    Inner(uint8_t *buf, size_t len, int cudaDeviceId, BackingOwner backingOwner)
+        : pool_(),
+          ptr_(buf),
+          capacity_(len),
+          mrs_(),
+          ownsAllocation_(false),
+          cudaDeviceId_(cudaDeviceId),
+          backingOwner_(std::move(backingOwner)) {}
 
     Inner(Inner &&o)
         : pool_(std::move(o.pool_)),
           ptr_(std::exchange(o.ptr_, nullptr)),
           capacity_(std::exchange(o.capacity_, 0)),
           mrs_(std::exchange(o.mrs_, std::array<RDMABufMR, IBDevice::kMaxDeviceCnt>())),
-          userBuffer_(std::exchange(o.userBuffer_, false)) {}
+          ownsAllocation_(std::exchange(o.ownsAllocation_, false)),
+          cudaDeviceId_(std::exchange(o.cudaDeviceId_, std::nullopt)),
+          backingOwner_(std::move(o.backingOwner_)) {}
 
     ~Inner();
 
@@ -281,13 +326,17 @@ class RDMABuf {
     const uint8_t *ptr() const { return ptr_; }
     uint8_t *ptr() { return ptr_; }
     size_t capacity() const { return capacity_; }
+    std::optional<int> cudaDeviceId() const { return cudaDeviceId_; }
 
    private:
     std::weak_ptr<RDMABufPool> pool_;
     uint8_t *ptr_;
     size_t capacity_;
     std::array<RDMABufMR, IBDevice::kMaxDeviceCnt> mrs_;
-    bool userBuffer_;
+    bool ownsAllocation_;
+    std::optional<int> cudaDeviceId_;
+    // Destroyed after ~Inner() deregisters every MR and releases any owned allocation.
+    BackingOwner backingOwner_;
   };
 
   static RDMABuf allocate(size_t size, std::weak_ptr<RDMABufPool> pool);
@@ -309,7 +358,30 @@ class RDMABuf {
 
   static RDMABuf createFromUserBuffer(uint8_t *buf, size_t len);
 
+  /**
+   * Prepare a CUDA device-memory view for GPUDirect RDMA and register it with
+   * every active IB device. The optional owner is released after all MRs have
+   * been deregistered. Pass -1 as the expected device to discover it from the
+   * pointer.
+   */
+  static Result<RDMABuf> createFromCudaBuffer(uint8_t *ptr,
+                                              size_t len,
+                                              int expectedCudaDeviceId,
+                                              BackingOwner backingOwner = {});
+
  private:
+  static uint8_t *addAddress(uint8_t *ptr, size_t offset) {
+    auto address = reinterpret_cast<uintptr_t>(ptr);
+    if (!ptr || address > std::numeric_limits<uintptr_t>::max() - offset) {
+      return nullptr;
+    }
+    return reinterpret_cast<uint8_t *>(address + offset);
+  }
+
+  void assertHostAccessible() const {
+    XLOGF_IF(FATAL, isDeviceMemory(), "CUDA device memory cannot be accessed as a host byte range");
+  }
+
   std::shared_ptr<Inner> buf_;
   uint8_t *begin_;
   size_t length_;

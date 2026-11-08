@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <utility>
 
+#include "common/cuda/CudaMemory.h"
 #include "common/monitor/Recorder.h"
 #include "common/net/ib/IBDevice.h"
 #include "memory/common/GlobalMemoryAllocator.h"
@@ -47,6 +48,44 @@ RDMABuf RDMABuf::createFromUserBuffer(uint8_t *buf, size_t len) {
   return RDMABuf(std::shared_ptr<RDMABuf::Inner>(new RDMABuf::Inner(std::move(inner)), RDMABuf::Inner::deallocate));
 }
 
+Result<RDMABuf> RDMABuf::createFromCudaBuffer(uint8_t *ptr,
+                                              size_t len,
+                                              int expectedCudaDeviceId,
+                                              BackingOwner backingOwner) {
+#ifdef HF3FS_ENABLE_GDR
+  // NVIDIA requires SYNC_MEMOPS to be enabled before a CUDA allocation is
+  // pinned for GPUDirect RDMA. Do this in the registering process as well as
+  // in the exporter, because an IPC mapping has its own CUDA context.
+  auto view = cuda::prepareGdrMemory(ptr, len, expectedCudaDeviceId);
+  RETURN_ON_ERROR(view);
+
+  if (!IBManager::initialized()) {
+    return makeError(RPCCode::kIBDeviceNotInitialized, "IB is not initialized");
+  }
+  if (IBDevice::all().empty()) {
+    return makeError(RPCCode::kIBDeviceNotFound, "no active IB device is available");
+  }
+
+  // Keep the imported/allocation device current while nvidia_peermem pins the
+  // view through ibv_reg_mr; the caller's previous device is restored after
+  // registration completes.
+  auto deviceGuard = cuda::ScopedDevice::create(view->deviceId);
+  RETURN_ON_ERROR(deviceGuard);
+
+  RDMABuf::Inner inner(ptr, len, view->deviceId, std::move(backingOwner));
+  if (inner.registerMemory() != 0) {
+    return makeError(StatusCode::kIOError, "failed to register CUDA memory with every active IB device");
+  }
+  return RDMABuf(std::shared_ptr<RDMABuf::Inner>(new RDMABuf::Inner(std::move(inner)), RDMABuf::Inner::deallocate));
+#else
+  (void)ptr;
+  (void)len;
+  (void)expectedCudaDeviceId;
+  (void)backingOwner;
+  return makeError(StatusCode::kNotImplemented, "CUDA/GDR is disabled in this build");
+#endif
+}
+
 RDMABuf::Inner::~Inner() {
   XLOGF(DBG, "RDMABuf free and deregister, ptr {}", (void *)ptr_);
   for (auto &dev : IBDevice::all()) {
@@ -56,7 +95,7 @@ RDMABuf::Inner::~Inner() {
       dev->deregMemory(mr);
     }
   }
-  if (ptr_ && !userBuffer_) {
+  if (ptr_ && ownsAllocation_) {
     rdmaBufMem.addSample(-capacity_);
     hf3fs::memory::deallocate(ptr_);
   }

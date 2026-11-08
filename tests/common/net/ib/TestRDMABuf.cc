@@ -4,6 +4,7 @@
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/GtestHelpers.h>
 #include <gtest/gtest.h>
+#include <limits>
 #include <map>
 #include <thread>
 #include <vector>
@@ -79,6 +80,15 @@ TEST_F(TestRDMARemoteBuf, Subrange) {
   auto buf8 = buf;
   ASSERT_FALSE(buf8.advance(buf.size() + 1));
   ASSERT_FALSE(buf8.subtract(buf.size() + 1));
+}
+
+TEST(TestRDMARemoteBufPure, SubrangeRejectsOverflow) {
+  RDMARemoteBuf buf(0x1000, 16, {});
+
+  ASSERT_TRUE(buf);
+  EXPECT_FALSE(buf.subrange(std::numeric_limits<size_t>::max(), 1));
+  EXPECT_FALSE(buf.subrange(8, std::numeric_limits<size_t>::max()));
+  EXPECT_TRUE(buf.subrange(16, 0));
 }
 
 class TestRDMABuf : public test::SetupIB {};

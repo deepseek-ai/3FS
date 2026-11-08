@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <semaphore.h>
 
-#include "IovTable.h"
+#include "IovTypes.h"
 #include "UserConfig.h"
 #include "client/storage/StorageClient.h"
 #include "common/utils/AtomicSharedPtrTable.h"
@@ -13,6 +13,7 @@
 #include "lib/common/Shm.h"
 
 namespace hf3fs::fuse {
+
 struct RcInode;
 struct IoArgs {
   uint8_t bufId[16];
@@ -120,6 +121,7 @@ class IoRing : public std::enable_shared_from_this<IoRing> {
   }
   std::vector<IoRingJob> jobsToProc(int maxJobs);
   int cqeCount() const { return (cqeHead.load() + entries - cqeTail.load()) % entries; }
+  const meta::UserInfo &userInfo() const { return userInfo_; }
   CoTask<void> process(
       int spt,
       int toProc,
@@ -127,7 +129,7 @@ class IoRing : public std::enable_shared_from_this<IoRing> {
       const storage::client::IoOptions &storageIo,
       UserConfig &userConfig,
       std::function<void(std::vector<std::shared_ptr<RcInode>> &, const IoArgs *, const IoSqe *, int)> &&lookupFiles,
-      std::function<void(std::vector<Result<lib::ShmBufForIO>> &, const IoArgs *, const IoSqe *, int)> &&lookupBufs);
+      std::function<void(std::vector<Result<IoBufForIO>> &, const IoArgs *, const IoSqe *, int)> &&lookupBufs);
 
  public:
   bool addSqe(int idx, const void *userdata) {

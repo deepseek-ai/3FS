@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdint>
+#include <limits>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -7,6 +10,7 @@
 #include "UpdateChannelAllocator.h"
 #include "client/mgmtd/ICommonMgmtdClient.h"
 #include "common/net/Client.h"
+#include "common/net/ib/RDMABuf.h"
 #include "common/utils/Address.h"
 #include "common/utils/Coroutine.h"
 #include "common/utils/Result.h"
@@ -45,25 +49,88 @@ class RoutingTarget {
 
 class IOBuffer : public folly::MoveOnly {
  public:
-  uint8_t *data() const { return const_cast<uint8_t *>(rdmabuf.ptr()); }
+  /**
+   * Get the raw data pointer.
+   * WARNING: For GPU buffers, this returns a device address that is NOT
+   * CPU-dereferenceable. Use subrangeRemote() for RDMA operations.
+   */
+  uint8_t *data() const { return const_cast<uint8_t *>(rdmabuf_.ptr()); }
 
-  size_t size() const { return rdmabuf.size(); }
+  size_t size() const { return rdmabuf_.size(); }
 
-  bool contains(const uint8_t *data, uint32_t len) const { return rdmabuf.contains(data, len); }
+  bool contains(const uint8_t *data, uint32_t len) const { return rdmabuf_.contains(data, len); }
 
-  net::RDMABuf subrange(size_t offset, size_t length) const { return rdmabuf.subrange(offset, length); }
+  std::optional<size_t> offsetOf(const uint8_t *data, uint32_t len) const {
+    if (!contains(data, len)) {
+      return std::nullopt;
+    }
+    return reinterpret_cast<uintptr_t>(data) - reinterpret_cast<uintptr_t>(rdmabuf_.ptr());
+  }
+
+  uint8_t *dataAtOffset(size_t offset) const {
+    auto *basePtr = rdmabuf_.ptr();
+    auto size = rdmabuf_.size();
+    auto base = reinterpret_cast<uintptr_t>(basePtr);
+    if (!basePtr || offset > size || base > std::numeric_limits<uintptr_t>::max() - offset) {
+      return nullptr;
+    }
+    return reinterpret_cast<uint8_t *>(base + offset);
+  }
+
+  /**
+   * Get an RDMARemoteBuf for a subrange — works for both host and GPU.
+   * For GPU buffers, the returned RDMARemoteBuf contains the device virtual
+   * address and per-HCA rkeys, suitable for direct RDMA read/write without
+   * CPU copies.
+   */
+  net::RDMARemoteBuf subrangeRemote(size_t offset, size_t length) const {
+    return rdmabuf_.toRemoteBuf().subrange(offset, length);
+  }
 
   IOBuffer(hf3fs::net::RDMABuf rdmabuf)
-      : rdmabuf(std::move(rdmabuf)) {}
+      : rdmabuf_(std::move(rdmabuf)) {}
+
+  /** Device buffers must not be accessed by CPU memcpy, memset, or checksum code. */
+  bool isDeviceMemory() const { return rdmabuf_.isDeviceMemory(); }
+
+  /** Returns the CUDA device ID for GPU buffers, or -1 for host buffers. */
+  int cudaDeviceId() const { return rdmabuf_.cudaDeviceId().value_or(-1); }
+
+  /**
+   * Zero a byte range relative to data().
+   *
+   * Host memory is zeroed synchronously with memset. Device memory is zeroed
+   * with CUDA and synchronized before this method returns.
+   */
+  Result<Void> zeroRange(size_t offset, size_t length) const;
 
  private:
-  const hf3fs::net::RDMABuf rdmabuf;
+  net::RDMABuf rdmabuf_;
 
   friend class IOBase;
   friend class StorageClient;
   friend class StorageClientImpl;
   friend class StorageClientInMem;
 };
+
+struct PreparedWriteChecksum {
+  ChecksumInfo checksum;
+  bool computeOnServer = false;
+};
+
+Result<PreparedWriteChecksum> prepareWriteChecksum(ChecksumType targetType,
+                                                   bool verifyChecksum,
+                                                   bool deviceMemory,
+                                                   const uint8_t *data,
+                                                   size_t length);
+
+#ifdef HF3FS_ENABLE_GDR
+namespace detail {
+
+Result<Void> zeroCudaDeviceRange(void *devicePtr, size_t length, int deviceId);
+
+}  // namespace detail
+#endif
 
 class IOBase : public folly::MoveOnly {
  private:
@@ -89,7 +156,16 @@ class IOBase : public folly::MoveOnly {
   status_code_t statusCode() const { return hf3fs::getStatusCode(result.lengthInfo); }
   uint32_t resultLen() const { return result.lengthInfo ? *result.lengthInfo : 0; }
   uint32_t dataLen() const { return length; }
-  uint8_t *dataEnd() const { return data + length; }
+  uint8_t *dataEnd() const {
+    if (!data) {
+      return nullptr;
+    }
+    auto addr = reinterpret_cast<uintptr_t>(data);
+    if (addr > std::numeric_limits<uintptr_t>::max() - length) {
+      return nullptr;
+    }
+    return reinterpret_cast<uint8_t *>(addr + length);
+  }
   ChunkIdRange chunkRange() const { return {chunkId, chunkId, 1}; }
   uint32_t numProcessedChunks() const { return bool(result.lengthInfo); }
   void resetResult() { result = IOResult{}; }
@@ -515,6 +591,13 @@ class StorageClient : public folly::MoveOnly {
 
   // delete the returned IOBuffer object to deregister the buffer
   virtual Result<IOBuffer> registerIOBuffer(uint8_t *buf, size_t len);
+
+  // Register a GPU memory buffer for RDMA. Non-RDMA implementations reject it.
+  // The returned IOBuffer has isDeviceMemory() == true, which prevents
+  // CPU operations (inline memcpy, checksum) on the buffer.
+  // The caller must keep the CUDA allocation alive until the IOBuffer and all
+  // I/O operations using it have been destroyed.
+  virtual Result<IOBuffer> registerGpuIOBuffer(uint8_t *gpuPtr, size_t len);
 
   virtual CoTryTask<void> batchRead(std::span<ReadIO> readIOs,
                                     const flat::UserInfo &userInfo,

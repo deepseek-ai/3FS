@@ -201,6 +201,7 @@ include(cmake/DumpConfig.cmake)
 include(cmake/Jemalloc.cmake)
 include(cmake/ApacheArrow.cmake)
 include(cmake/AddCrate.cmake)
+include(cmake/Cuda.cmake)
 configure_file(cmake/CTestCustom.cmake ${CMAKE_BINARY_DIR} @ONLY)
 
 add_subdirectory(src)

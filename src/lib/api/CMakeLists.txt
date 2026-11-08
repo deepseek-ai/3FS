@@ -1,6 +1,12 @@
 target_add_lib(hf3fs_api client-lib-common storage-client numa rt)
 target_add_shared_lib(hf3fs_api_shared client-lib-common storage-client numa rt)
 
+# Add CUDA/GDR support if enabled
+if(HF3FS_ENABLE_GDR)
+    target_add_gdr_support(hf3fs_api SCOPE PUBLIC)
+    target_add_gdr_support(hf3fs_api_shared SCOPE PUBLIC)
+endif()
+
 add_custom_command(
     TARGET hf3fs_api_shared
     POST_BUILD

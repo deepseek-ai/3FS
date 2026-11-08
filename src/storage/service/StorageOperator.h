@@ -27,6 +27,8 @@ namespace hf3fs::storage {
 
 struct Components;
 
+Result<Void> materializeServerComputedChecksum(UpdateIO &updateIO, uint32_t featureFlags, const uint8_t *data);
+
 class StorageOperator {
  public:
   class Config : public ConfigBase<Config> {
@@ -106,7 +108,7 @@ class StorageOperator {
                                 TargetPtr &target);
 
   CoTask<IOResult> doUpdate(ServiceRequestContext &requestCtx,
-                            const UpdateIO &updateIO,
+                            UpdateIO &updateIO,
                             const UpdateOptions &updateOptions,
                             uint32_t featureFlags,
                             const std::shared_ptr<StorageTarget> &target,

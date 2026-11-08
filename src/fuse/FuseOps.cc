@@ -598,7 +598,7 @@ bool flushAndSync(fuse_req_t req,
                   struct fuse_entry_param *e = nullptr) {
   auto ino = real_ino(fino);
 
-  struct fuse_file_info fi2 {};
+  struct fuse_file_info fi2{};
   if (!fi) {
     fi = &fi2;
   }
@@ -815,7 +815,7 @@ void hf3fs_setattr(fuse_req_t req, fuse_ino_t fino, struct stat *attr, int to_se
   }
 
   auto ino = real_ino(fino);
-  struct fuse_file_info fi2 {};
+  struct fuse_file_info fi2{};
   if (!fi) {
     fi = &fi2;
   }
@@ -1234,7 +1234,14 @@ void hf3fs_symlink(fuse_req_t req, const char *link, fuse_ino_t fparent, const c
                                        ior->ioDepth,
                                        *ior->iora);
           if (!res2) {
-            handle_error(req, res);
+            auto rollback = d.iovs.rmIov(name, userInfo, ior);
+            XLOGF_IF(ERR,
+                     !rollback,
+                     "failed to roll back iov {} after io-ring creation failed: {}",
+                     name,
+                     rollback.error());
+            handle_error(req, res2);
+            return;
           }
           // record the ior index for later removal
           res->second->iorIndex = *res2;
@@ -1779,7 +1786,7 @@ void hf3fs_opendir(fuse_req_t req, fuse_ino_t fino, struct fuse_file_info *fi) {
   XLOGF(OP_LOG_LEVEL, "hf3fs_opendir(ino={}, pid={})", ino, fuse_req_ctx(req)->pid);
   record("opendir", fuse_req_ctx(req)->uid);
 
-  fi->fh = (uintptr_t) new DirHandle{d.dirHandle.fetch_add(1), fuse_req_ctx(req)->pid, false};
+  fi->fh = (uintptr_t)new DirHandle{d.dirHandle.fetch_add(1), fuse_req_ctx(req)->pid, false};
 
   auto dname = checkVirtDir(ino);
   if (dname && *dname == "iovs") {
@@ -1815,17 +1822,9 @@ void hf3fs_releasedir(fuse_req_t req, fuse_ino_t fino, struct fuse_file_info *fi
 
   if (dh->iovDir) {
     // releasedir() is called only the last process with the inherited fd closes it or exits
-    auto &iovs = *d.iovs.iovs;
-    auto n = iovs.slots.nextAvail.load();
-    for (int i = 0; i < n; ++i) {
-      auto iov = iovs.table[i].load();
-      if (iov && iov->pid == dh->pid) {
-        XLOGF(INFO, "unlinking iov {} symlink from dead pid {}", iov->key, dh->pid);
-        d.iovs.rmIov(iov->key.c_str(), meta::UserInfo{iov->user, meta::Gid{iov->user.toUnderType()}});
-        if (iov->isIoRing) {
-          d.iors.rmIoRing(iov->iorIndex);
-        }
-      }
+    auto ioRingIndexes = d.iovs.removeIovsByPid(dh->pid);
+    for (auto ioRingIndex : ioRingIndexes) {
+      d.iors.rmIoRing(ioRingIndex);
     }
   }
 
