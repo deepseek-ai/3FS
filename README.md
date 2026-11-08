@@ -86,7 +86,7 @@ yum install cmake libuv-devel lz4-devel xz-devel double-conversion-devel libdwar
     gperftools-devel gperftools openssl-devel gcc gcc-c++ boost-devel
 
 # for OpenCloudOS 9 and TencentOS 4
-dnf install epol-release wget git meson cmake perl lld gcc gcc-c++ autoconf lz4 lz4-devel xz xz-devel \
+dnf install epel-release wget git meson cmake perl lld gcc gcc-c++ autoconf lz4 lz4-devel xz xz-devel \
     double-conversion-devel libdwarf-devel libunwind-devel libaio-devel gflags-devel glog-devel \
     libuv-devel gmock-devel gperftools gperftools-devel openssl-devel boost-static boost-devel mono-devel \
     libevent-devel libibverbs-devel numactl-devel python3-devel
