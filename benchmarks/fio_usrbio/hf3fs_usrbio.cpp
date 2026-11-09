@@ -178,8 +178,8 @@ static int hf3fs_usrbio_commit(struct thread_data *td) {
 
     for (int i = 0; i < sd->queued; i++) {
         if (cqe[i].result < 0) {
-            std::cout << "cqe error " << res << std::endl;
-            return res;
+            std::cout << "cqe error " << cqe[i].result << std::endl;
+            return cqe[i].result;
         }
     }
 
