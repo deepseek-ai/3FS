@@ -118,7 +118,8 @@ class DirEntry(object):
         self._etype = etype
         self._parentFd = parentFd
         self._client = client
-        self._st = None
+        # Cached stat results, keyed by follow_symlinks.
+        self._st = {}
 
     @property
     def name(self):
@@ -156,9 +157,14 @@ class DirEntry(object):
         return self._etype == self._DT_LNK
 
     def stat(self, follow_symlinks=True):
-        if self._st is None:
-            self._st = self._client.stat(self._name, dir_fd=self._parentFd, follow_symlinks=follow_symlinks)
-        return self._st
+        # follow_symlinks=False and follow_symlinks=True return different results for a symlink,
+        # so they must not share the same cached entry.
+        follow_symlinks = bool(follow_symlinks)
+        if follow_symlinks not in self._st:
+            self._st[follow_symlinks] = self._client.stat(
+                self._name, dir_fd=self._parentFd, follow_symlinks=follow_symlinks
+            )
+        return self._st[follow_symlinks]
 
 @withClient
 def scandir(path='.', dir_fd=None, client=None):
