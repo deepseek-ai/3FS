@@ -71,6 +71,19 @@ def test_solve_placement_model_v25(chain_table_type, num_nodes, group_size):
   )
   model.run(pyomo_solver="appsi_highs", max_timelimit=30, auto_relax=True)
 
+@pytest.mark.skipif(importlib.util.find_spec("highspy") is None, reason="cannot find solver")
+def test_solve_chain_replication_bibd_with_highs(tmp_path):
+  model = DataPlacementModel(
+    chain_table_type="CR",
+    num_nodes=4,
+    num_targets_per_disk=3,
+    group_size=3,
+    bibd_only=True,
+    qlinearize=True,
+    relax_lb=0,
+  )
+  model.solve(pyomo_solver="appsi_highs", output_path=str(tmp_path))
+
 @pytest.mark.parametrize('placement_params', placement_params)
 @pytest.mark.skipif(importlib.util.find_spec("highspy") is None, reason="cannot find solver")
 def test_solve_rebalance_model(placement_params):
