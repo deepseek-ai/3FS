@@ -166,7 +166,7 @@ def rmtree(dir_paths: List[str], expire: Optional[str], yes: bool):
         else:
             msg = f"Move {dir_path} to the trash, it will be automatically deleted after {expire}"
     if not yes:
-        assert click.confirm(msg, abort=True)
+        click.confirm(msg, abort=True)
 
     for dir_path in dir_paths:
         try:
