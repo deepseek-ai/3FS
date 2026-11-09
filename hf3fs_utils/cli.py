@@ -81,22 +81,24 @@ def mv(old_path: str, new_path: str):
 
 
 class ExpireType(click.ParamType):
-    def get_metavar(self, param) -> str:
+    # click 8.2 passes ctx to get_metavar, older versions do not.
+    def get_metavar(self, param, ctx=None) -> str:
         return "[1h|3h|8h|1d|3d|7d]"
 
     def convert(self, value, param, ctx):
         norm_value = value
-        if norm_value.endswith("hour"):
-            norm_value = norm_value.replace("hour", "h")
-        elif norm_value.endswith("hours"):
+        # Check the plural forms first, "hours" also ends with "hour".
+        if norm_value.endswith("hours"):
             norm_value = norm_value.replace("hours", "h")
-        elif norm_value.endswith("day"):
-            norm_value = norm_value.replace("day", "d")
+        elif norm_value.endswith("hour"):
+            norm_value = norm_value.replace("hour", "h")
         elif norm_value.endswith("days"):
             norm_value = norm_value.replace("days", "d")
+        elif norm_value.endswith("day"):
+            norm_value = norm_value.replace("day", "d")
 
         if norm_value not in TRASH_CONFIGS.keys():
-            self.fail(f"{value} is invalid, valid options are {self.get_metavar()}", param, ctx)
+            self.fail(f"{value} is invalid, valid options are {self.get_metavar(param, ctx)}", param, ctx)
         else:
             return norm_value
 
