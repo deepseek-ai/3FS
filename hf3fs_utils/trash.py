@@ -166,7 +166,11 @@ class Trash:
                         and append_timestamp_if_exists
                         and retry < 10
                     ):
-                        current_trash_name = f"{trash_name[0:200]}.{get_timestamp_us()}"
+                        suffix = f".{get_timestamp_us()}"
+                        # Leave room for the suffix without splitting a UTF-8 character.
+                        prefix = trash_name[0:200].encode("utf8")
+                        prefix = prefix[:255 - len(suffix)].decode("utf8", errors="ignore")
+                        current_trash_name = f"{prefix}{suffix}"
                     else:
                         raise
         finally:
