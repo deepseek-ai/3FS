@@ -224,12 +224,25 @@ static int hf3fs_usrbio_open(struct thread_data *td, struct fio_file *f) {
     }
 
     f->fd = open(f->file_name, flags);
-    hf3fs_reg_fd(f->fd, 0);
-    td->o.open_files++;
+    if (f->fd < 0) {
+        return -errno;
+    }
+
+    int res = hf3fs_reg_fd(f->fd, 0);
+    if (res < 0) {
+        close(f->fd);
+        f->fd = -1;
+        return res;
+    }
+
     return 0;
 }
 
 static int hf3fs_usrbio_close(struct thread_data *td, struct fio_file *f) {
+    if (f->fd < 0) {
+        return 0;
+    }
+
     hf3fs_dereg_fd(f->fd);
     close(f->fd);
     f->fd = -1;
