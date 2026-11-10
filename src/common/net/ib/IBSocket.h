@@ -232,6 +232,11 @@ class IBSocket : public Socket, folly::MoveOnly {
 
  private:
   static constexpr size_t kRDMAPostBatch = 8;
+  // Inline size asked for at QP creation, and on Mellanox/NVIDIA NICs the
+  // largest send posted inline: 256 - 16 (ctrl) - 4 (inline header), the most
+  // that fits the 256-byte BlueFlame buffer of mlx5 NICs.
+  static constexpr uint32_t kBFMaxInlineSend = 256 - 16 - 4;
+  static constexpr uint32_t kMellanoxVendorId = 0x02c9;
 
   enum class State {
     INIT,
@@ -538,6 +543,7 @@ class IBSocket : public Socket, folly::MoveOnly {
 
   // socket send
   SendBuffers sendBufs_;
+  uint32_t maxInlineData_ = 0;
   size_t sendNotSignaled_ = 0;
   size_t sendSignaled_ = 0;
   size_t sendAcked_ = 0;

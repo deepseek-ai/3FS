@@ -843,6 +843,11 @@ int IBSocket::postSend(uint32_t idx, size_t len, uint32_t flags) {
       .lkey = sendBufs_.getMr()->lkey,
   };
 
+  if (len <= maxInlineData_) {
+    // a small message goes in the WQE, so the NIC does not have to read it from memory
+    flags |= IBV_SEND_INLINE;
+  }
+
   uint32_t signal = 0;
   if (++sendNotSignaled_ >= connectConfig_.buf_signal_batch) {
     signal = sendNotSignaled_;
