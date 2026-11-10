@@ -81,7 +81,7 @@ def mv(old_path: str, new_path: str):
 
 
 class ExpireType(click.ParamType):
-    def get_metavar(self, param) -> str:
+    def get_metavar(self, param, ctx=None) -> str:
         return "[1h|3h|8h|1d|3d|7d]"
 
     def convert(self, value, param, ctx):
@@ -96,7 +96,7 @@ class ExpireType(click.ParamType):
             norm_value = norm_value.replace("days", "d")
 
         if norm_value not in TRASH_CONFIGS.keys():
-            self.fail(f"{value} is invalid, valid options are {self.get_metavar()}", param, ctx)
+            self.fail(f"{value} is invalid, valid options are {self.get_metavar(param, ctx)}", param, ctx)
         else:
             return norm_value
 
