@@ -1218,7 +1218,8 @@ void hf3fs_symlink(fuse_req_t req, const char *link, fuse_ino_t fparent, const c
                                pid,
                                userInfo,
                                &d.client->tpg().bgThreadPool().randomPick(),
-                               *d.storageClient);
+                               *d.storageClient,
+                               d.config->enable_iov_huge_pages());
       if (res.hasError()) {
         handle_error(req, res);
       } else {

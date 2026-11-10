@@ -95,6 +95,22 @@ hf3fs_iovcreate(&iov, "/hf3fs/mount/point", 1 << 30, 0, -1);
 hf3fs_iovdestroy(&iov);
 ```
 
+#### Huge Pages
+The shared memory lives in `/dev/shm` and is backed by 4KiB pages by default. To back Iovs with 2MiB transparent huge pages, mount `/dev/shm` with `huge=advise` and turn on these switches:
+
+- `enable_iov_huge_pages = true` in `hf3fs_fuse_main.toml` (the item is hot-updated and applies to Iovs created after the change). The FUSE daemon then calls `madvise(MADV_HUGEPAGE)` on its mapping of each Iov before registering it for IB.
+- `HF3FS_USRBIO_IOV_HUGE_PAGES=yes` in the environment of the application. `hf3fs_iovcreate()` then does the same on the application's mapping.
+
+A 2MiB range gets a huge page only if the mapping that touches it first asked for one. The daemon registers an Iov in the background after `hf3fs_iovcreate()` returns, one block at a time, and the registration touches every page. An application that writes to the Iov while it is still being registered races with the daemon, so turn on both switches. The daemon option alone is enough only if the application writes to the Iov after the whole registration has finished, for example after its first I/O completes when `block_size` is `0` (with a nonzero `block_size`, the first I/O can complete before the other blocks are registered). Mappings that `hf3fs_iovopen()` makes in another process are not advised, and `hf3fs_iovwrap()` uses a buffer that the application mapped itself, so the application has to advise those before touching them.
+
+Huge pages make IB registration and the first touch of a large Iov cheaper, and the Iov needs fewer IOMMU mappings, or fewer RDMA NIC translation entries when the IOMMU is off or in passthrough mode. Only whole 2MiB ranges get huge pages, so use a multiple of 2MiB for `size` (and for `block_size` if it is not `0`). Other users of `/dev/shm` are not affected unless they ask for huge pages themselves.
+
+```bash
+mount -o remount,huge=advise /dev/shm
+```
+
+Of the values of `/sys/kernel/mm/transparent_hugepage/shmem_enabled`, only `deny` and `force` affect `/dev/shm`. `huge=within_size` and `huge=always` give huge pages without these switches, but to every file in `/dev/shm`, and they fall back to smaller pages right away when no free 2MiB page is available. A mapping that asks for huge pages behaves differently: under the common `transparent_hugepage/defrag` setting `madvise` the kernel reclaims and compacts memory before it falls back, so registering or first writing an Iov can take several times longer on a host with fragmented memory. Setting `defrag` to `defer` avoids the wait, but then fewer Iov pages get huge pages, and the setting applies to the whole system. Check `ShmemPmdMapped` of the mapping in `/proc/<pid>/smaps` of the FUSE daemon to see whether an Iov got huge pages.
+
 ### hf3fs_iovdestroy
 
 #### Summary
