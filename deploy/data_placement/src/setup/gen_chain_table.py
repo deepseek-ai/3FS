@@ -96,6 +96,7 @@ def main():
   assert args.chain_id_prefix < 100
 
   chain_list = generate_chains(**vars(args), incidence_matrix=incidence_matrix)
+  os.makedirs(args.output_path, exist_ok=True)
 
   with open(os.path.join(args.output_path, "generated_chains.csv"), "w") as fout:
     print(f"ChainId,{','.join(['TargetId']*len(chain_list[0].target_list))}", file=fout)
