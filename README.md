@@ -111,6 +111,17 @@ cmake -S . -B build \
 cmake --build build -j 32
 ```
 
+If the configure step reports a missing `third_party/zstd/lib`, or fails with
+
+    Target "folly_deps" INTERFACE_INCLUDE_DIRECTORIES property contains path:
+      "<repo>/third_party/zstd/lib"
+    which is prefixed in the source directory
+
+the source tree is incomplete: either the submodules are not initialized or the
+patches are not applied. Run `git submodule update --init --recursive` and
+`./patches/apply.sh` as described above, then configure again in a clean `build`
+directory.
+
 Due to the historical use of `std::shuffle`, binaries compiled with different compiler versions (e.g., `g++10` vs. `g++11 +`) may be incompatible ([issue](https://github.com/deepseek-ai/3FS/issues/368)). To resolve this, you must explicitly specify `-DSHUFFLE_METHOD` during compilation to lock in a consistent shuffle algorithm:
 
 - Existing Clusters: Use the method corresponding to the compiler version previously used to deploy the cluster (`g++10` or `g++11`).
