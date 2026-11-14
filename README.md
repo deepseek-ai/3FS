@@ -3,6 +3,8 @@
 [![Build](https://github.com/deepseek-ai/3fs/actions/workflows/build.yml/badge.svg)](https://github.com/deepseek-ai/3fs/actions/workflows/build.yml)
 [![License](https://img.shields.io/badge/LICENSE-MIT-blue.svg)](LICENSE)
 
+[ English | [简体中文](https://github.com/deepseek-ai/3FS/blob/main/README.zh.md) ]
+
 The Fire-Flyer File System (3FS) is a high-performance distributed file system designed to address the challenges of AI training and inference workloads. It leverages modern SSDs and RDMA networks to provide a shared storage layer that simplifies development of distributed applications. Key features and benefits of 3FS include:
 
 - Performance and Usability
