@@ -1,6 +1,8 @@
 #include "Shm.h"
 
+#include <cstring>
 #include <fcntl.h>
+#include <fmt/core.h>
 #include <folly/experimental/coro/BlockingWait.h>
 #include <numa.h>
 #include <sys/mman.h>
@@ -161,9 +163,12 @@ void ShmBuf::mapBuf() {
   SCOPE_EXIT { close(fd); };
 
   if (owner_) {
-    auto res = ftruncate(fd, size);
-    if (res < 0) {
-      throw std::runtime_error("failed to ftruncate");
+    // Reserve the pages now: with a sparse ftruncate, a full /dev/shm only shows up later as SIGBUS in whichever
+    // process first touches a page, which can be hf3fs_fuse_main initializing a client's ioring.
+    auto res = posix_fallocate(fd, 0, size);
+    if (res != 0) {
+      shm_unlink(path.c_str());
+      throw std::runtime_error(fmt::format("failed to allocate {} bytes for shm {}: {}", size, path.native(), strerror(res)));
     }
   }
   bufStart = (uint8_t *)mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
