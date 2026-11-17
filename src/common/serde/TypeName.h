@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <variant>
 
 #include "common/utils/Nameof.hpp"
@@ -15,6 +16,10 @@ inline constexpr std::string_view type_name_v = [] {
     return nameof::nameof_short_type<T>();
   }
 }();
+
+// Preserve the tag written by Clang builds, independent of the compiler's type spelling.
+template <>
+inline constexpr std::string_view type_name_v<int64_t> = "long";
 
 template <class T>
 inline constexpr auto variant_type_names_v = std::array<std::string_view, 0>{};
