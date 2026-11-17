@@ -4,6 +4,7 @@ check_rmrf = true
 chunk_size_limit = '0'
 dryrun_bench_mode = false
 enable_interrupt = false
+enable_iov_huge_pages = false
 enable_priority = false
 enable_read_cache = true
 enable_writeback_cache = false
