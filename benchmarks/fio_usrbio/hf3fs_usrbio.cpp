@@ -73,25 +73,29 @@ struct hf3fs_usrbio_data {
 };
 
 static int hf3fs_usrbio_init(struct thread_data *td) {
-    td->io_ops_data = static_cast<void *>(new hf3fs_usrbio_data);
+    auto *data = new hf3fs_usrbio_data;
+    td->io_ops_data = static_cast<void *>(data);
     struct hf3fs_usrbio_options *options = td->eo;
 
-    auto &ior_r = static_cast<hf3fs_usrbio_data *>(td->io_ops_data)->ior_r;
-    auto res = hf3fs_iorcreate3(&ior_r, options->mountpoint, td->o.iodepth, true, options->ior_depth, 0, options->ior_timeout, -1);
+    auto res = hf3fs_iorcreate3(&data->ior_r, options->mountpoint, td->o.iodepth, true, options->ior_depth, 0, options->ior_timeout, -1);
     if (res < 0) {
+        delete data;
+        td->io_ops_data = nullptr;
         return res;
     }
 
-    auto &ior_w = static_cast<hf3fs_usrbio_data *>(td->io_ops_data)->ior_w;
-    res = hf3fs_iorcreate(&ior_w, options->mountpoint, td->o.iodepth, false, options->ior_depth, -1);
+    res = hf3fs_iorcreate(&data->ior_w, options->mountpoint, td->o.iodepth, false, options->ior_depth, -1);
     if (res < 0) {
+        hf3fs_iordestroy(&data->ior_r);
+        delete data;
+        td->io_ops_data = nullptr;
         return res;
     }
 
-    auto *data = static_cast<hf3fs_usrbio_data *>(td->io_ops_data);
     data->io_us.resize(td->o.iodepth);
     data->queued = 0;
     data->events = 0;
+    data->last_ddir = DDIR_INVAL;
 
     return 0;
 }
@@ -206,7 +210,15 @@ static struct io_u *hf3fs_usrbio_event(struct thread_data *td, int event) {
 }
 
 static void hf3fs_usrbio_cleanup(struct thread_data *td) {
-    delete static_cast<hf3fs_usrbio_data *>(td->io_ops_data);
+    auto *data = static_cast<hf3fs_usrbio_data *>(td->io_ops_data);
+    if (data == nullptr) {
+        return;
+    }
+
+    hf3fs_iordestroy(&data->ior_r);
+    hf3fs_iordestroy(&data->ior_w);
+    delete data;
+    td->io_ops_data = nullptr;
 }
 
 static int hf3fs_usrbio_open(struct thread_data *td, struct fio_file *f) {
