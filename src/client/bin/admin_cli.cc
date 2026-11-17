@@ -92,6 +92,15 @@ int main(int argc, char **argv) {
   logging::initOrDie(config.log());
   hf3fs::SysResource::increaseProcessFDLimit(524288);
 
+  // Registered before the clients below on purpose: locals are destroyed in reverse declaration
+  // order, so the guard declared first runs last, and IBManager must be stopped only after every
+  // object that can own an RDMA transport is gone. Otherwise Transport::~Transport() reaches
+  // IBManager::close() with socketManager_ already reset, closeImpl() drops the IBSocket without
+  // closeGracefully(), and the peer keeps an orphan QP until its periodic WRType::CHECK exhausts
+  // the RC retry budget. Same ordering as hf3fs_fuse.cpp, where the IBManager guard precedes the
+  // clients guard.
+  SCOPE_EXIT { hf3fs::net::IBManager::stop(); };
+
   std::shared_ptr<net::Client> client;
   std::shared_ptr<kv::fdb::FDBContext> fdbContext;
   std::shared_ptr<kv::IKVEngine> kvEngine;
@@ -108,8 +117,6 @@ int main(int argc, char **argv) {
       return true;
     }();
   };
-  SCOPE_EXIT { hf3fs::net::IBManager::stop(); };
-
   auto monitorResult = hf3fs::monitor::Monitor::start(config.monitor());
   XLOGF_IF(CRITICAL, !monitorResult, "Start monitor failed: {}", monitorResult.error().describe());
   SCOPE_EXIT { hf3fs::monitor::Monitor::stop(); };
