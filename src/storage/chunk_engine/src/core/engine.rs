@@ -1146,7 +1146,10 @@ mod tests {
         });
 
         // 5. compact.
-        assert_eq!(engine.compact_groups(10000), 0);
+        // the threshold is reserved space in BYTES (256 slots × 64KiB = 16MiB
+        // at this point): equal threshold → no trigger; below reserved → trigger.
+        assert_eq!(engine.compact_groups(engine.used_size().reserved_size.0), 0);
+        assert_eq!(engine.compact_groups(10000), 1);
         assert_eq!(engine.compact_groups(0), 1);
         assert_eq!(engine.used_size().allocated_size, CHUNK_SIZE_SMALL * 512);
         assert_eq!(engine.used_size().reserved_size, CHUNK_SIZE_SMALL * 256);
