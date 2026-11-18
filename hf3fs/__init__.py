@@ -289,7 +289,7 @@ class BinaryFile(AbstractContextManager):
         off = self._off
         flen = self.seek(0, os.SEEK_END)
         self.seek(off)
-        return flen - off
+        return max(0, flen - off)
 
     def read(self, size=None, readahead=None):
         if size is None:
