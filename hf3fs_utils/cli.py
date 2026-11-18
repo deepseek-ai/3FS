@@ -17,8 +17,8 @@ def get_filesystem(path: str) -> FileSystem:
     else:
         path = os.path.realpath(path)
         parts = path.split(os.sep)
-        for i in range(1, 4):
-            p = os.sep.join(parts[:i])
+        for i in range(1, len(parts) + 1):
+            p = os.sep.join(parts[:i]) or os.sep
             if os.path.exists(os.path.join(p, "3fs-virt")):
                 mountpoint = p
                 break
