@@ -88,10 +88,16 @@ def read_file(fn, hf3fs_mount_point=None, block_size=1 << 30, off=0, priority=No
         hf3fs_mount_point = extract_mount_point(fn)
 
     bufs = []
+    fd = None
+    fd_registered = False
+    shm = None
+    iov = None
+    ior = None
 
     try:
         fd = os.open(fn, os.O_RDONLY)
         register_fd(fd)
+        fd_registered = True
         shm = multiprocessing.shared_memory.SharedMemory(size=block_size, create=True)
         iov = make_iovec(shm, hf3fs_mount_point)
         ior = make_ioring(hf3fs_mount_point, 1, priority=priority)
@@ -131,9 +137,12 @@ def read_file(fn, hf3fs_mount_point=None, block_size=1 << 30, off=0, priority=No
         else:
             return b''.join(bufs)
     finally:
-        deregister_fd(fd)
-        os.close(fd)
+        if fd_registered:
+            deregister_fd(fd)
+        if fd is not None:
+            os.close(fd)
         del ior
         del iov
-        shm.close()
-        shm.unlink()
+        if shm is not None:
+            shm.close()
+            shm.unlink()
