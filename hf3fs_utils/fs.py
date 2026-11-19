@@ -73,7 +73,11 @@ class FileSystem:
                 ioctl_version = int.from_bytes(buffer, sys.byteorder, signed=False)
             except OSError:
                 pass
-            assert ioctl_version >= 1
+            if ioctl_version < 1:
+                raise RuntimeError(
+                    f"{self.mountpoint} does not support the required ioctl version, "
+                    f"got {ioctl_version}, require at least 1"
+                )
         finally:
             if virt_fd is not None:
                 os.close(virt_fd)
