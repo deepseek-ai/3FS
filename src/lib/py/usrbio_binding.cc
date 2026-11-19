@@ -319,7 +319,7 @@ PYBIND11_MODULE(hf3fs_py_usrbio, m) {
               read: True / False，需与 ioring 的参数一致
               fd: 文件描述符
               off: 文件读取或写入偏移量
-              userdata: 默认为 None，可以指定一个 Python object，用户需确保该 object 不会被垃圾回收
+              userdata: 默认为 None，可以指定一个 Python object。该对象会被保持至操作完成。为避免引用环，userdata 不应直接或间接引用 iov
           )")
       .def(
           "submit",
