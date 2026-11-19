@@ -117,7 +117,7 @@ int hf3fs_iovcreate_general(struct hf3fs_iov *iov,
                             int priority = 0,
                             int timeout = 0,
                             uint64_t flags = 0) {
-  if (!iov) {
+  if (!iov || !hf3fs_mount_point || !size || block_size > size) {
     return -EINVAL;
   }
 
@@ -131,6 +131,11 @@ int hf3fs_iovcreate_general(struct hf3fs_iov *iov,
   hf3fs::lib::ShmBuf *shm;
   try {
     shm = new hf3fs::lib::ShmBuf(p, size, block_size, numa, hf3fs::meta::Uid(getuid()), getpid(), getppid());
+  } catch (const std::system_error &e) {
+    XLOGF(ERR, "failed to create/map shm for iov {}: {}", p, e.what());
+    return -e.code().value();
+  } catch (const std::bad_alloc &) {
+    return -ENOMEM;
   } catch (const std::runtime_error &e) {
     XLOGF(ERR, "failed to create/map shm for iov {}", e.what());
     return -EIO;
@@ -154,8 +159,9 @@ int hf3fs_iovcreate_general(struct hf3fs_iov *iov,
                           is_io_ring && flags != 0 ? fmt::format(".f{:b}", flags) : std::string());
   auto lres = symlink(target.c_str(), link.c_str());
   if (lres < 0) {
+    const int err = errno;
     XLOGF(ERR, "failed to register iov '{}' to hf3fs '{}'", target, link);
-    return -errno;
+    return -err;
   }
   if (is_io_ring) {
     shm->maybeUnlinkShm();
@@ -210,7 +216,7 @@ void hf3fs_iovdestroy_general(struct hf3fs_iov *iov,
                           is_io_ring ? fmt::format(".{}{}", for_read ? 'r' : 'w', io_depth) : std::string(),
                           is_io_ring && priority != 0 ? fmt::format(".p{}", priority < 0 ? 'h' : 'l') : std::string(),
                           is_io_ring ? fmt::format(".t{}", timeout) : std::string(),
-                          is_io_ring && flags != 0 ? fmt::format(".f{}", flags) : std::string());
+                          is_io_ring && flags != 0 ? fmt::format(".f{:b}", flags) : std::string());
   unlink(link.c_str());
 
   auto *shm = static_cast<hf3fs::lib::ShmBuf *>(iov->iovh);
@@ -326,7 +332,13 @@ int hf3fs_iovwrap(struct hf3fs_iov *iov,
 
 struct Hf3fsIorHandle {
   std::unique_ptr<hf3fs::fuse::IoRing> ior;
-  sem_t *submitSem;
+  sem_t *submitSem{SEM_FAILED};
+
+  ~Hf3fsIorHandle() {
+    if (submitSem != SEM_FAILED) {
+      sem_close(submitSem);
+    }
+  }
 };
 
 static int cqeSem(sem_t *&sem, const char *hf3fs_mount_point, int prio) {
@@ -362,7 +374,7 @@ static int cqeSem(sem_t *&sem, const char *hf3fs_mount_point, int prio) {
 
   auto semName = std::string("/") + (pm->c_str() + 4);
   sem = sem_open(semName.c_str(), 0);
-  if (!sem) {
+  if (sem == SEM_FAILED) {
     return -errno;
   }
 
@@ -383,20 +395,19 @@ int hf3fs_iorwrap(struct hf3fs_ior *ior,
     return -EINVAL;
   }
 
-  auto iorh = std::make_unique<Hf3fsIorHandle>(
-      Hf3fsIorHandle{std::make_unique<hf3fs::fuse::IoRing>(
-                         std::shared_ptr<hf3fs::lib::ShmBuf>{},
-                         "",
-                         hf3fs::meta::UserInfo{hf3fs::meta::Uid{geteuid()}, hf3fs::meta::Gid{getegid()}, ""},
-                         for_read,
-                         (uint8_t *)buf,
-                         size,
-                         io_depth,
-                         priority,
-                         hf3fs::Duration(std::chrono::nanoseconds((uint64_t)timeout * 1000000)),
-                         flags,
-                         false),
-                     nullptr});
+  auto iorh = std::make_unique<Hf3fsIorHandle>();
+  iorh->ior = std::make_unique<hf3fs::fuse::IoRing>(
+      std::shared_ptr<hf3fs::lib::ShmBuf>{},
+      "",
+      hf3fs::meta::UserInfo{hf3fs::meta::Uid{geteuid()}, hf3fs::meta::Gid{getegid()}, ""},
+      for_read,
+      (uint8_t *)buf,
+      size,
+      io_depth,
+      priority,
+      hf3fs::Duration(std::chrono::nanoseconds((uint64_t)timeout * 1000000)),
+      flags,
+      false);
   if (strlen(hf3fs_mount_point) >= sizeof(ior->mount_point)) {
     XLOGF(ERR, "mount point too long '{}'", hf3fs_mount_point);
     return -EINVAL;
@@ -468,7 +479,7 @@ int hf3fs_iorcreate3(struct hf3fs_ior *ior,
 
   res = hf3fs_iorwrap(ior, ior->iov.base, hf3fs_mount_point, ior->iov.size, for_read, io_depth, priority, timeout, 0);
   if (res < 0) {
-    hf3fs_iovdestroy(&ior->iov);
+    hf3fs_iovdestroy_general(&ior->iov, true, for_read, io_depth, priority, timeout);
     XLOGF(ERR, "ioring create failed: hf3fs_iorwrap failed {}", res);
     return res;
   }
@@ -507,7 +518,7 @@ int hf3fs_iorcreate4(struct hf3fs_ior *ior,
 
   res = hf3fs_iorwrap(ior, ior->iov.base, hf3fs_mount_point, ior->iov.size, for_read, io_depth, 0, timeout, flags);
   if (res < 0) {
-    hf3fs_iovdestroy(&ior->iov);
+    hf3fs_iovdestroy_general(&ior->iov, true, for_read, io_depth, 0, timeout, flags);
     XLOGF(ERR, "ioring create failed: hf3fs_iorwrap failed {}", res);
     return res;
   }

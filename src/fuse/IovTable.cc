@@ -121,12 +121,20 @@ std::optional<int> IovTable::iovDesc(meta::InodeId iid) {
   return diid - iidn - iovIidStart;
 }
 
-Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(const char *key,
-                                                                              const Path &shmPath,
-                                                                              pid_t pid,
-                                                                              const meta::UserInfo &ui,
-                                                                              folly::Executor::KeepAlive<> exec,
-                                                                              storage::client::StorageClient &sc) {
+static meta::Inode iovInode(int iovd, const lib::ShmBuf &shm, const meta::UserInfo &ui) {
+  return meta::Inode{
+      meta::InodeId::iov(iovd),
+      meta::InodeData{meta::Symlink{linkPref / shm.path}, meta::Acl{ui.uid, ui.gid, meta::Permission(0400)}}};
+}
+
+Result<meta::Inode> IovTable::addIov(const char *key,
+                                   const Path &shmPath,
+                                   pid_t pid,
+                                   const meta::UserInfo &ui,
+                                   folly::Executor::KeepAlive<> exec,
+                                   storage::client::StorageClient &sc,
+                                   IoRingTable &rings,
+                                   const Path &ringMount) {
   static monitor::DistributionRecorder mapTimesCount("fuse.iov.times", monitor::TagSet{{"mount_name", mountName}});
   static monitor::DistributionRecorder mapBytesDist("fuse.iov.bytes", monitor::TagSet{{"mount_name", mountName}});
   static monitor::CountRecorder shmSizeCount("fuse.iov.total_bytes", monitor::TagSet{{"mount_name", mountName}}, false);
@@ -146,13 +154,15 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
     return makeError(StatusCode::kInvalidArg, "failed to stat shm path or it's not a regular file");
   }
 
-  if (iovaRes->blockSize > (size_t)st.st_size) {
+  if (st.st_size <= 0) {
+    return makeError(StatusCode::kInvalidArg, "empty shm object");
+  } else if (iovaRes->blockSize > (size_t)st.st_size) {
     return makeError(StatusCode::kInvalidArg, "invalid block size set in shm key");
   } else if (iovaRes->isIoRing && iovaRes->ioDepth > IoRing::ioRingEntries((size_t)st.st_size)) {
     return makeError(StatusCode::kInvalidArg, "invalid io batch size set in shm key");
   }
 
-  while (true) {
+  try {
     auto iovdRes = iovs->alloc();
     if (!iovdRes) {
       return makeError(ClientAgentCode::kTooManyOpenFiles, "too many iovs allocated");
@@ -179,7 +189,7 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
            &allocLatency = allocLatency,
            &ibRegLatency = ibRegLatency](auto p) {
             auto start = SteadyClock::now();
-            folly::coro::blockingWait(p->deregisterForIO());
+            p->deregisterForIO();
             auto now = SteadyClock::now();
             ibRegLatency.addSample(now - start, monitor::TagSet{{"instance", "dereg"}, {"uid", uids}});
 
@@ -210,9 +220,6 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
     shm->ioDepth = iovaRes->ioDepth;
     shm->iora = iovaRes->iora;
 
-    // the idx should be reserved by us
-    iovs->table[iovd].store(shm);
-
     start = SteadyClock::now();
     auto recordMetrics = [blockSize = shm->blockSize, start, uids]() mutable {
       ibRegBytesDist.addSample(blockSize, monitor::TagSet{{"instance", "reg"}, {"uid", uids}});
@@ -220,47 +227,67 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
     };
 
     if (!iovaRes->isIoRing) {  // io ring bufs don't need to be registered for ib io
-      folly::coro::blockingWait(shm->registerForIO(exec, sc, recordMetrics));
+      auto registration = shm->registerForIO(sc, std::move(recordMetrics));
+      auto res = exec ? folly::coro::blockingWait(std::move(registration).scheduleOn(std::move(exec)))
+                      : folly::coro::blockingWait(std::move(registration));
+      RETURN_ON_ERROR(res);
     }
 
-    {
-      std::unique_lock lock(iovdLock_);
-      iovds_[key] = iovd;
+    auto inode = iovInode(iovd, *shm, ui);
+    std::scoped_lock lock(iovdLock_, shmLock);
+    if (iovds_.contains(shm->key) || shmsById.contains(shm->id)) {
+      return makeError(MetaCode::kExists, "iov already registered");
     }
 
-    {
-      std::unique_lock lock(shmLock);
-      shmsById[iovaRes->id] = iovd;
+    SCOPE_EXIT {
+      if (dealloc) {
+        iovds_.erase(shm->key);
+        shmsById.erase(shm->id);
+      }
+    };
+    iovds_.emplace(shm->key, iovd);
+    shmsById.emplace(shm->id, iovd);
+
+    if (shm->isIoRing) {
+      auto res = rings.addIoRing(ringMount,
+                                shm,
+                                shm->key,
+                                ui,
+                                shm->forRead,
+                                shm->bufStart,
+                                shm->size,
+                                shm->ioDepth,
+                                shm->iora.value_or(IorAttrs{}));
+      RETURN_ON_ERROR(res);
+      shm->iorIndex = *res;
     }
 
-    auto statRes = statIov(iovd, ui);
-    RETURN_ON_ERROR(statRes);
-
+    // Readers cannot see the entry until both the maps and its resources are ready.
+    iovs->table[iovd].store(shm);
     dealloc = false;
-    return std::make_pair(*statRes, iovaRes->isIoRing ? shm : std::shared_ptr<lib::ShmBuf>());
+    return inode;
+  } catch (const std::bad_alloc &) {
+    return makeError(StatusCode::kNotEnoughMemory);
+  } catch (const std::exception &e) {
+    return MAKE_ERROR_F(StatusCode::kIOError, "failed to create iov: {}", e.what());
   }
 }
 
 Result<std::shared_ptr<lib::ShmBuf>> IovTable::rmIov(const char *key, const meta::UserInfo &ui) {
-  auto res = lookupIov(key, ui);
-  RETURN_ON_ERROR(res);
-
-  {
-    std::unique_lock lock(iovdLock_);
-    iovds_.erase(key);
+  std::scoped_lock lock(iovdLock_, shmLock);
+  auto it = iovds_.find(key);
+  if (it == iovds_.end()) {
+    return MAKE_ERROR_F(MetaCode::kNotFound, "iov key not found {}", key);
+  }
+  auto iovd = it->second;
+  auto shm = iovs->table[iovd].load();
+  if (shm->user != ui.uid) {
+    return makeError(MetaCode::kNoPermission, "iov not for user");
   }
 
-  {
-    auto res = parseKey(key);
-
-    std::unique_lock lock(shmLock);
-    shmsById.erase(res->id);
-  }
-
-  auto iovd = iovDesc(res->id);
-  auto shm = iovs->table[*iovd].load();
-  iovs->remove(*iovd);
-
+  iovds_.erase(it);
+  shmsById.erase(shm->id);
+  iovs->remove(iovd);
   return shm;
 }
 
@@ -280,24 +307,16 @@ Result<meta::Inode> IovTable::statIov(int iovd, const meta::UserInfo &ui) {
     return makeError(MetaCode::kNoPermission, "iov not for user");
   }
 
-  return meta::Inode{
-      meta::InodeId::iov(iovd),
-      meta::InodeData{meta::Symlink{linkPref / shm->path}, meta::Acl{ui.uid, ui.gid, meta::Permission(0400)}}};
+  return iovInode(iovd, *shm, ui);
 }
 
 Result<meta::Inode> IovTable::lookupIov(const char *key, const meta::UserInfo &ui) {
-  int iovd = -1;
-  {
-    std::shared_lock lock(iovdLock_);
-    auto it = iovds_.find(key);
-    if (it == iovds_.end()) {
-      return makeError(MetaCode::kNotFound, std::string("iov key not found ") + key);
-    } else {
-      iovd = it->second;
-    }
+  std::shared_lock lock(iovdLock_);
+  auto it = iovds_.find(key);
+  if (it == iovds_.end()) {
+    return MAKE_ERROR_F(MetaCode::kNotFound, "iov key not found {}", key);
   }
-
-  return statIov(iovd, ui);
+  return statIov(it->second, ui);
 }
 
 std::pair<std::shared_ptr<std::vector<meta::DirEntry>>, std::shared_ptr<std::vector<std::optional<meta::Inode>>>>

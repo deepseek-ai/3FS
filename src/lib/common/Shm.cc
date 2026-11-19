@@ -1,9 +1,10 @@
 #include "Shm.h"
 
 #include <fcntl.h>
-#include <folly/experimental/coro/BlockingWait.h>
+#include <folly/ScopeGuard.h>
 #include <numa.h>
 #include <sys/mman.h>
+#include <system_error>
 #include <unistd.h>
 
 namespace hf3fs::lib {
@@ -17,9 +18,8 @@ ShmBuf::ShmBuf(const Path &p, size_t sz, size_t bsz, int numa, meta::Uid u, int 
       ppid(pp),
       id(Uuid::random()),
       owner_(true),
-      numaNode_(numa),
-      memhs_((size + blockSize - 1) / blockSize) {
-  if (bsz < 0 || bsz > sz) {
+      numaNode_(numa) {
+  if (!sz || bsz > sz) {
     throw std::invalid_argument(fmt::format("invalid block size {} total bytes {}", bsz, sz));
   }
 
@@ -38,9 +38,8 @@ ShmBuf::ShmBuf(const Path &p, off_t o, size_t sz, size_t bsz, Uuid u)
       //      user(0),
       id(u),
       owner_(false),
-      numaNode_(-1),
-      memhs_((size + blockSize - 1) / blockSize) {
-  if (bsz < 0 || bsz > sz) {
+      numaNode_(-1) {
+  if (!sz || bsz > sz) {
     throw std::invalid_argument(fmt::format("invalid block size {} total bytes {}", bsz, sz));
   }
 
@@ -54,7 +53,7 @@ ShmBuf::ShmBuf(const Path &p, off_t o, size_t sz, size_t bsz, Uuid u)
 ShmBuf::~ShmBuf() {
   XLOGF(DBG, "calling dtor of shm {}", (void *)this);
 
-  folly::coro::blockingWait(deregisterForIO());
+  deregisterForIO();
 
   // if (owner_) {
   //   auto res = ftruncate(fd_, 0);
@@ -64,65 +63,30 @@ ShmBuf::~ShmBuf() {
   unmapBuf();
 }
 
-CoTask<void> ShmBuf::deregisterForIO() {
-  XLOGF(DBG, "regging {} memhs {}", regging_.load(), memhs_.size());
-
-  if (!regging_) {
-    co_return;
-  }
-
-  if (!memhs_[0].load()) {
-    co_await memhBaton_;
-  }
-
-  regging_ = false;
-
-  for (auto &memh : memhs_) {
-    memh.store(std::shared_ptr<storage::client::IOBuffer>());
-  }
-
-  co_return;
+void ShmBuf::deregisterForIO() {
+  memhs_.clear();
 }
 
-CoTask<void> ShmBuf::registerForIO(folly::Executor::KeepAlive<> exec,
-                                   storage::client::StorageClient &sc,
-                                   std::function<void()> &&recordMetrics) {
-  if (regging_) {
-    co_await memhBaton_;
-  }
-
-  regging_ = true;
-  memhBaton_.reset();
-
-  for (auto &memh : memhs_) {
-    memh.store(std::shared_ptr<storage::client::IOBuffer>());
-  }
-
-  auto f = [this, &sc, recordMetrics = std::move(recordMetrics)]() {
-    for (size_t i = 0; i < memhs_.size(); ++i) {
-      auto res = sc.registerIOBuffer(bufStart + blockSize * i, std::min(size - blockSize * i, blockSize));
-      if (!res) {
-        XLOGF(ERR,
-              "failed to register buffer @{} seg #{} with bytes {} block size {} code {} msg {}",
-              (void *)bufStart,
-              i,
-              size,
-              blockSize,
-              res.error().code(),
-              res.error().message());
-      } else {
-        memhs_[i].store(std::make_shared<storage::client::IOBuffer>(std::move(*res)));
-        recordMetrics();
-      }
+CoTryTask<void> ShmBuf::registerForIO(storage::client::StorageClient &sc, std::function<void()> recordMetrics) {
+  // Keep the handles local so every registered segment is deregistered on failure.
+  std::vector<storage::client::IOBuffer> handles;
+  handles.reserve(1 + (size - 1) / blockSize);
+  for (size_t off = 0; off < size;) {
+    const auto len = std::min(size - off, blockSize);
+    auto res = sc.registerIOBuffer(bufStart + off, len);
+    if (!res) {
+      co_return MAKE_ERROR_F(res.error().code(),
+                            "failed to register IOV segment at offset {} ({} bytes): {}",
+                            off,
+                            len,
+                            res.error());
     }
-
-    memhBaton_.post();
-  };
-  if (exec) {
-    exec.get()->add(std::move(f));
-  } else {
-    f();
+    handles.push_back(std::move(*res));
+    recordMetrics();
+    off += len;
   }
+  memhs_ = std::move(handles);
+  co_return Void{};
 }
 
 void ShmBuf::unmapBuf() {
@@ -137,39 +101,32 @@ void ShmBuf::unmapBuf() {
   }
 }
 
-CoTask<std::shared_ptr<storage::client::IOBuffer>> ShmBuf::memh(size_t off) {
+storage::client::IOBuffer *ShmBuf::memh(size_t off) {
   auto idx = off / blockSize;
-  if (regging_ && !memhs_[idx].load()) {
-    co_await memhBaton_;
-  }
-
-  co_return memhs_[idx].load();
+  return idx < memhs_.size() ? &memhs_[idx] : nullptr;
 }
 
 void ShmBuf::mapBuf() {
   auto fd = shm_open(path.c_str(), O_RDWR | (owner_ ? O_CREAT | O_EXCL : 0), 0666);
   if (fd < 0) {
-    auto err = errno;
-    throw std::runtime_error(fmt::format("failed to shm_open {} is owner {} errno {} euid {} uid {}",
-                                         path.native(),
-                                         owner_,
-                                         err,
-                                         geteuid(),
-                                         getuid()));
+    throw std::system_error(errno, std::generic_category(), "shm_open");
   }
 
   SCOPE_EXIT { close(fd); };
-
-  if (owner_) {
-    auto res = ftruncate(fd, size);
-    if (res < 0) {
-      throw std::runtime_error("failed to ftruncate");
+  SCOPE_FAIL {
+    if (owner_) {
+      shm_unlink(path.c_str());
     }
+  };
+
+  if (owner_ && ftruncate(fd, size) < 0) {
+    throw std::system_error(errno, std::generic_category(), "ftruncate");
   }
-  bufStart = (uint8_t *)mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
-  if (bufStart == MAP_FAILED) {
-    throw std::runtime_error("failed to mmap");
+  auto *buf = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
+  if (buf == MAP_FAILED) {
+    throw std::system_error(errno, std::generic_category(), "mmap");
   }
+  bufStart = static_cast<uint8_t *>(buf);
 
   XLOGF(DBG, "this {} owner {} buf start {} size {} off {}", (void *)this, owner_, (void *)bufStart, size, off);
 }
