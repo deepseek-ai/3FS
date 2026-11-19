@@ -252,9 +252,10 @@ class DataPlacementModel(object):
 
     def calc_peer_recovery_traffic(model, disk, peer):
       if self.qlinearize:
-        return po.quicksum(model.disk_in_same_group[disk,peer,group] for group in model.groups)
+        traffic = po.quicksum(model.disk_in_same_group[disk,peer,group] for group in model.groups)
       else:
-        return po.quicksum(calc_disk_in_same_group(model, disk, peer, group) for group in model.groups)
+        traffic = po.quicksum(calc_disk_in_same_group(model, disk, peer, group) for group in model.groups)
+      return traffic * self.recovery_traffic_factor / (self.group_size - 1)
 
     def peer_recovery_traffic_upper_bound(model, disk, peer):
       if self.balanced_incomplete_block_design:
