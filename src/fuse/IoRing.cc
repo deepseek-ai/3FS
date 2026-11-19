@@ -71,7 +71,7 @@ CoTask<void> IoRing::process(
     const storage::client::IoOptions &storageIo,
     UserConfig &userConfig,
     std::function<void(std::vector<std::shared_ptr<RcInode>> &, const IoArgs *, const IoSqe *, int)> &&lookupFiles,
-    std::function<void(std::vector<Result<lib::ShmBufForIO>> &, const IoArgs *, const IoSqe *, int)> &&lookupBufs) {
+    std::function<void(std::vector<Result<IoBufForIO>> &, const IoArgs *, const IoSqe *, int)> &&lookupBufs) {
   static monitor::LatencyRecorder overallLatency("usrbio.piov.overall", monitor::TagSet{{"mount_name", mountName}});
   static monitor::LatencyRecorder prepareLatency("usrbio.piov.prepare", monitor::TagSet{{"mount_name", mountName}});
   static monitor::LatencyRecorder submitLatency("usrbio.piov.submit", monitor::TagSet{{"mount_name", mountName}});
@@ -109,7 +109,7 @@ CoTask<void> IoRing::process(
       lookupFiles(inodes, ringSection, sqeSection, toProc - (int)inodes.size());
     }
 
-    std::vector<Result<lib::ShmBufForIO>> bufs;
+    std::vector<Result<IoBufForIO>> bufs;
     bufs.reserve(toProc);
     lookupBufs(bufs, ringSection, sqeSection + spt, std::min(toProc, entries - spt));
     if ((int)bufs.size() < toProc) {
@@ -148,11 +148,19 @@ CoTask<void> IoRing::process(
         continue;
       }
 
+#ifdef HF3FS_ENABLE_GDR
+      auto bufPtr = ioBufPtr(bufs[i].value());
+      auto memh =
+          co_await std::visit([&](auto &b) -> CoTryTask<storage::client::IOBuffer *> { return b.memh(args.ioLen); },
+                              bufs[i].value());
+#else
+      auto bufPtr = bufs[i]->ptr();
       auto memh = co_await bufs[i]->memh(args.ioLen);
+#endif
       if (!memh) {
         res[i] = -static_cast<ssize_t>(memh.error().code());
         continue;
-      } else if (!bufs[i]->ptr() || !*memh) {
+      } else if (!bufPtr || !*memh) {
         XLOGF(ERR, "{} is null when doing usrbio", *memh ? "buf ptr" : "memh");
         res[i] = -static_cast<ssize_t>(ClientAgentCode::kIovShmFail);
         continue;
@@ -168,9 +176,8 @@ CoTask<void> IoRing::process(
         truncateVers[i] = *beginWrite;
       }
 
-      auto addRes = forRead_
-                        ? ioExec.addRead(i, inodes[i]->inode, 0, args.fileOff, args.ioLen, bufs[i]->ptr(), **memh)
-                        : ioExec.addWrite(i, inodes[i]->inode, 0, args.fileOff, args.ioLen, bufs[i]->ptr(), **memh);
+      auto addRes = forRead_ ? ioExec.addRead(i, inodes[i]->inode, 0, args.fileOff, args.ioLen, bufPtr, **memh)
+                             : ioExec.addWrite(i, inodes[i]->inode, 0, args.fileOff, args.ioLen, bufPtr, **memh);
       if (!addRes) {
         res[i] = -static_cast<ssize_t>(addRes.error().code());
       }

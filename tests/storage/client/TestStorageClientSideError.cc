@@ -1,8 +1,11 @@
+#include <array>
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/logging/xlog.h>
+#include <limits>
 
 #include "client/mgmtd/ICommonMgmtdClient.h"
 #include "client/storage/StorageClient.h"
+#include "client/storage/StorageClientImpl.h"
 #include "common/net/Client.h"
 #include "tests/lib/UnitTestFabric.h"
 
@@ -47,6 +50,79 @@ class TestStorageClientSideError : public UnitTestFabric, public ::testing::Test
     ASSERT_TRUE(ok);
   }
 };
+
+TEST(StorageClientChecksumRequest, DeviceChecksumUsesServerCompute) {
+  auto prepared =
+      prepareWriteChecksum(ChecksumType::CRC32C, true, true, reinterpret_cast<const uint8_t *>(0x1000), 4096);
+
+  ASSERT_OK(prepared);
+  EXPECT_EQ(prepared->checksum, (ChecksumInfo{ChecksumType::CRC32C, 0}));
+  EXPECT_TRUE(prepared->computeOnServer);
+}
+
+TEST(StorageClientChecksumRequest, DeviceChecksumSetsRequestFeatureFlag) {
+  DebugOptions debug;
+
+  auto flags = buildWriteFeatureFlagsFromOptions(debug, true);
+  EXPECT_TRUE(BITFLAGS_CONTAIN(flags, FeatureFlags::SERVER_COMPUTE_CHECKSUM));
+
+  flags = buildWriteFeatureFlagsFromOptions(debug, false);
+  EXPECT_FALSE(BITFLAGS_CONTAIN(flags, FeatureFlags::SERVER_COMPUTE_CHECKSUM));
+}
+
+TEST(StorageClientChecksumRequest, HostChecksumIsMaterializedLocally) {
+  const std::array<uint8_t, 5> data{1, 3, 5, 7, 9};
+  auto prepared = prepareWriteChecksum(ChecksumType::CRC32C, true, false, data.data(), data.size());
+
+  ASSERT_OK(prepared);
+  EXPECT_EQ(prepared->checksum, ChecksumInfo::create(ChecksumType::CRC32C, data.data(), data.size()));
+  EXPECT_FALSE(prepared->computeOnServer);
+}
+
+TEST(StorageClientChecksumRequest, DisabledVerificationUsesNone) {
+  auto prepared =
+      prepareWriteChecksum(ChecksumType::NONE, false, true, reinterpret_cast<const uint8_t *>(0x1000), 4096);
+
+  ASSERT_OK(prepared);
+  EXPECT_EQ(prepared->checksum, (ChecksumInfo{ChecksumType::NONE, 0}));
+  EXPECT_FALSE(prepared->computeOnServer);
+}
+
+TEST(StorageClientChecksumRequest, ConfiguredNoneDisablesGpuChecksumVerification) {
+  auto prepared = prepareWriteChecksum(ChecksumType::NONE, true, true, reinterpret_cast<const uint8_t *>(0x1000), 4096);
+
+  ASSERT_OK(prepared);
+  EXPECT_EQ(prepared->checksum, (ChecksumInfo{ChecksumType::NONE, 0}));
+  EXPECT_FALSE(prepared->computeOnServer);
+
+  DebugOptions debug;
+  auto flags = buildWriteFeatureFlagsFromOptions(debug, prepared->computeOnServer);
+  EXPECT_FALSE(BITFLAGS_CONTAIN(flags, FeatureFlags::SERVER_COMPUTE_CHECKSUM));
+}
+
+TEST_F(TestStorageClientSideError, ZeroHostIOBufferRange) {
+  std::vector<uint8_t> data(64, 0xAB);
+  auto registered = storageClient_->registerIOBuffer(data.data(), data.size());
+  ASSERT_OK(registered);
+  auto ioBuffer = std::move(*registered);
+
+  ASSERT_OK(ioBuffer.zeroRange(8, 24));
+  for (size_t i = 0; i < data.size(); ++i) {
+    EXPECT_EQ(data[i], i >= 8 && i < 32 ? 0 : 0xAB);
+  }
+  ASSERT_OK(ioBuffer.zeroRange(data.size(), 0));
+  ASSERT_ERROR(ioBuffer.zeroRange(63, 2), StorageClientCode::kInvalidArg);
+  ASSERT_ERROR(ioBuffer.zeroRange(std::numeric_limits<size_t>::max(), 0), StorageClientCode::kInvalidArg);
+}
+
+TEST_F(TestStorageClientSideError, InvalidGpuRegistrationNeverReturnsHostBuffer) {
+  auto registered = storageClient_->registerGpuIOBuffer(reinterpret_cast<uint8_t *>(0x1000), 4096);
+  ASSERT_FALSE(registered);
+
+  std::array<uint8_t, 64> host{};
+  registered = storageClient_->registerGpuIOBuffer(host.data(), host.size());
+  ASSERT_FALSE(registered);
+}
 
 TEST_F(TestStorageClientSideError, GetReplicationChainError) {
   updateRoutingInfo([&](auto &routingInfo) {

@@ -80,5 +80,25 @@ TEST(TestCommonStruct, Normal) {
   });
 }
 
+TEST(TestCommonStruct, ServerComputeChecksumFlagRoundTripsAsUint32) {
+  WriteReq writeReq;
+  BITFLAGS_SET(writeReq.featureFlags, FeatureFlags::SERVER_COMPUTE_CHECKSUM);
+  ASSERT_EQ(writeReq.featureFlags, uint32_t{16});
+
+  auto serialized = serde::serialize(writeReq);
+  WriteReq deserializedWrite;
+  ASSERT_OK(serde::deserialize(deserializedWrite, serialized));
+  EXPECT_EQ(deserializedWrite.featureFlags, writeReq.featureFlags);
+  EXPECT_TRUE(BITFLAGS_CONTAIN(deserializedWrite.featureFlags, FeatureFlags::SERVER_COMPUTE_CHECKSUM));
+
+  UpdateReq updateReq;
+  updateReq.featureFlags = deserializedWrite.featureFlags;
+  serialized = serde::serialize(updateReq);
+  UpdateReq deserializedUpdate;
+  ASSERT_OK(serde::deserialize(deserializedUpdate, serialized));
+  EXPECT_EQ(deserializedUpdate.featureFlags, updateReq.featureFlags);
+  EXPECT_TRUE(BITFLAGS_CONTAIN(deserializedUpdate.featureFlags, FeatureFlags::SERVER_COMPUTE_CHECKSUM));
+}
+
 }  // namespace
 }  // namespace hf3fs::storage::test

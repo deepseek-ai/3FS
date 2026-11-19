@@ -1,7 +1,13 @@
 #include <boost/core/ignore_unused.hpp>
+#include <cstring>
+
+#ifdef HF3FS_ENABLE_GDR
+#include <cuda_runtime.h>
+#endif
 
 #include "StorageClientImpl.h"
 #include "StorageClientInMem.h"
+#include "common/cuda/CudaMemory.h"
 #include "common/monitor/ScopedMetricsWriter.h"
 #include "common/net/ib/RDMABuf.h"
 
@@ -13,6 +19,31 @@ static monitor::LatencyRecorder iobuf_reg_latency{"storage_client.iobuf_reg.late
 static monitor::DistributionRecorder iobuf_reg_size{"storage_client.iobuf_reg.size"};
 
 const StorageClient::Config StorageClient::kDefaultConfig;
+
+#ifdef HF3FS_ENABLE_GDR
+Result<Void> detail::zeroCudaDeviceRange(void *devicePtr, size_t length, int deviceId) {
+  auto guard = cuda::ScopedDevice::create(deviceId);
+  if (!guard) {
+    return makeError(
+        StorageClientCode::kRemoteIOError,
+        fmt::format("failed to select CUDA device {} while zeroing device memory: {}", deviceId, guard.error()));
+  }
+
+  auto cudaResult = cudaMemset(devicePtr, 0, length);
+  if (cudaResult != cudaSuccess) {
+    return makeError(StorageClientCode::kRemoteIOError,
+                     fmt::format("cudaMemset failed while zeroing device memory: {}", cudaGetErrorString(cudaResult)));
+  }
+
+  cudaResult = cudaDeviceSynchronize();
+  if (cudaResult != cudaSuccess) {
+    return makeError(
+        StorageClientCode::kRemoteIOError,
+        fmt::format("cudaDeviceSynchronize failed after zeroing device memory: {}", cudaGetErrorString(cudaResult)));
+  }
+  return Void{};
+}
+#endif
 
 std::shared_ptr<StorageClient> StorageClient::create(ClientId clientId,
                                                      const Config &config,
@@ -94,6 +125,57 @@ TruncateChunkOp StorageClient::createTruncateOp(ChainId chainId,
   return TruncateChunkOp(requestId, chainId, chunkId, chunkLen, chunkSize, onlyExtendChunk, userCtx);
 }
 
+Result<Void> IOBuffer::zeroRange(size_t offset, size_t length) const {
+  if (!rdmabuf_.valid()) {
+    return makeError(StorageClientCode::kInvalidArg, "cannot zero an invalid IOBuffer");
+  }
+  if (offset > size() || length > size() - offset) {
+    return makeError(
+        StorageClientCode::kInvalidArg,
+        fmt::format("IOBuffer zero range offset {} length {} exceeds buffer size {}", offset, length, size()));
+  }
+  if (length == 0) {
+    return Void{};
+  }
+
+  auto *ptr = dataAtOffset(offset);
+  if (ptr == nullptr) {
+    return makeError(StorageClientCode::kInvalidArg, "IOBuffer zero range has an invalid address");
+  }
+
+  if (!isDeviceMemory()) {
+    std::memset(ptr, 0, length);
+    return Void{};
+  }
+
+#ifdef HF3FS_ENABLE_GDR
+  return detail::zeroCudaDeviceRange(ptr, length, cudaDeviceId());
+#else
+  return makeError(StorageClientCode::kRemoteIOError,
+                   "cannot zero a device IOBuffer because CUDA/GDR support is disabled");
+#endif
+}
+
+Result<PreparedWriteChecksum> prepareWriteChecksum(ChecksumType targetType,
+                                                   bool verifyChecksum,
+                                                   bool deviceMemory,
+                                                   const uint8_t *data,
+                                                   size_t length) {
+  if (!verifyChecksum) {
+    return PreparedWriteChecksum{ChecksumInfo{ChecksumType::NONE, 0}, false};
+  }
+  if (targetType == ChecksumType::NONE) {
+    return PreparedWriteChecksum{ChecksumInfo{ChecksumType::NONE, 0}, false};
+  }
+  if (deviceMemory) {
+    return PreparedWriteChecksum{ChecksumInfo{targetType, 0}, true};
+  }
+  if (data == nullptr && length != 0) {
+    return makeError(StorageClientCode::kInvalidArg, "cannot checksum a null host buffer");
+  }
+  return PreparedWriteChecksum{ChecksumInfo::create(targetType, data, length), false};
+}
+
 Result<IOBuffer> StorageClient::registerIOBuffer(uint8_t *buf, size_t len) {
   monitor::ScopedLatencyWriter latencyWriter(iobuf_reg_latency);
   iobuf_reg_size.addSample(len);
@@ -107,6 +189,40 @@ Result<IOBuffer> StorageClient::registerIOBuffer(uint8_t *buf, size_t len) {
     iobuf_reg_failed_ops.addSample(1);
     return makeError(StorageClientCode::kMemoryError);
   }
+}
+
+Result<IOBuffer> StorageClient::registerGpuIOBuffer(uint8_t *gpuPtr, size_t len) {
+  (void)gpuPtr;
+  (void)len;
+  return makeError(StorageClientCode::kNotAvailable, "GPU IOBuffer registration requires an RDMA storage client");
+}
+
+Result<IOBuffer> StorageClientImpl::registerGpuIOBuffer(uint8_t *gpuPtr, size_t len) {
+  monitor::ScopedLatencyWriter latencyWriter(iobuf_reg_latency);
+  iobuf_reg_size.addSample(len);
+
+  if (gpuPtr == nullptr || len == 0) {
+    iobuf_reg_failed_ops.addSample(1);
+    return makeError(StorageClientCode::kInvalidArg, "GPU IOBuffer pointer and length must be non-zero");
+  }
+
+#ifdef HF3FS_ENABLE_GDR
+  auto gpuBuf = hf3fs::net::RDMABuf::createFromCudaBuffer(gpuPtr, len, -1);
+  if (gpuBuf) {
+    iobuf_reg_success_ops.addSample(1);
+    return IOBuffer{std::move(*gpuBuf)};
+  }
+
+  iobuf_reg_failed_ops.addSample(1);
+  auto code = gpuBuf.error().code() == StatusCode::kInvalidArg ? StorageClientCode::kInvalidArg
+                                                               : StorageClientCode::kMemoryError;
+  return makeError(
+      code,
+      fmt::format("failed to register CUDA device pointer {} for RDMA: {}", fmt::ptr(gpuPtr), gpuBuf.error()));
+#else
+  iobuf_reg_failed_ops.addSample(1);
+  return makeError(StorageClientCode::kNotAvailable, "GPU IOBuffer registration requires CUDA/GDR support");
+#endif
 }
 
 }  // namespace hf3fs::storage::client

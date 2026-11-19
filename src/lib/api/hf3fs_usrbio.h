@@ -68,6 +68,10 @@ int hf3fs_extract_mount_point(char *hf3fs_mount_point, int size, const char *pat
 // iov ptr itself should be allocated by caller, it could be on either stack or heap
 // the pointer hf3fs_mount_point will be copied into the corresponding field in hf3fs_iov
 // it should not be too long
+// numa: NUMA node hint for host memory allocation
+//   >= 0: allocate on specified NUMA node
+//   < 0: no NUMA binding (e.g., -1)
+// For device memory (GPU etc.), use hf3fs_iovcreate_device() instead.
 int hf3fs_iovcreate(struct hf3fs_iov *iov, const char *hf3fs_mount_point, size_t size, size_t block_size, int numa);
 int hf3fs_iovopen(struct hf3fs_iov *iov,
                   const uint8_t id[16],
@@ -75,6 +79,8 @@ int hf3fs_iovopen(struct hf3fs_iov *iov,
                   size_t size,
                   size_t block_size,
                   int numa);
+// GPU publication unlink failures are logged; the handle remains registered so
+// hf3fs_iovunlink() or hf3fs_iovdestroy() can retry cleanup.
 void hf3fs_iovunlink(struct hf3fs_iov *iov);
 // iov ptr itself will not be freed
 void hf3fs_iovdestroy(struct hf3fs_iov *iov);
@@ -84,6 +90,7 @@ void hf3fs_iovdestroy(struct hf3fs_iov *iov);
 // iov ptr itself should be allocated by caller
 // the wrapped iov cannot be destroyed by hf3fs_iovdestroy()
 // the underlying base ptr should not be unmapped when the iov (or its corresponding ior) is still being used
+// For device memory, use hf3fs_iovwrap_device() instead.
 int hf3fs_iovwrap(struct hf3fs_iov *iov,
                   void *base,
                   const uint8_t id[16],
@@ -91,6 +98,49 @@ int hf3fs_iovwrap(struct hf3fs_iov *iov,
                   size_t size,
                   size_t block_size,
                   int numa);
+
+// Device memory IOV creation (e.g., GPU via GDR)
+// device_id: accelerator device index (0, 1, 2, ...)
+// Returns -ENOTSUP if CUDA/GDR support or local CUDA IPC is unavailable;
+// this API never falls back to host memory.
+// A successful CUDA capability check does not guarantee RDMA registration;
+// successful FUSE publication is the final per-IOV registration result.
+// GDR v2 does not support block partitioning; block_size must be 0.
+int hf3fs_iovcreate_device(struct hf3fs_iov *iov,
+                           const char *hf3fs_mount_point,
+                           size_t size,
+                           size_t block_size,
+                           int device_id);
+
+#ifdef HF3FS_ENABLE_GDR
+// Open an existing device memory IOV by UUID (cross-process reopen)
+// The importer borrows the publisher's publication; destroy closes only the
+// importer's CUDA IPC mapping and does not unlink the publication.
+// Returns -ENOTSUP when local CUDA IPC is not available.
+// GDR v2 does not support block partitioning; block_size must be 0.
+// Only declared when HF3FS_ENABLE_GDR is defined at compile time.
+int hf3fs_iovopen_device(struct hf3fs_iov *iov,
+                         const uint8_t id[16],
+                         const char *hf3fs_mount_point,
+                         size_t size,
+                         size_t block_size,
+                         int device_id);
+
+// Wrap externally-allocated device memory as IOV
+// device_ptr may point to a subrange of a CUDA allocation and must remain valid
+// until the publication and all importers are gone. CUDA IPC shares the entire
+// underlying allocation even when only this subrange is published.
+// Returns -ENOTSUP when local CUDA IPC is not available.
+// GDR v2 does not support block partitioning; block_size must be 0.
+// Only declared when HF3FS_ENABLE_GDR is defined at compile time.
+int hf3fs_iovwrap_device(struct hf3fs_iov *iov,
+                         void *device_ptr,
+                         const uint8_t id[16],
+                         const char *hf3fs_mount_point,
+                         size_t size,
+                         size_t block_size,
+                         int device_id);
+#endif
 
 // calculate required memory size with wanted entries
 // the calculated size can be used to create the underlying iov
@@ -168,6 +218,23 @@ int hf3fs_wait_for_ios(const struct hf3fs_ior *ior,
 
 int hf3fs_hardlink(const char *target, const char *link_name);
 int hf3fs_punchhole(int fd, int n, const size_t *start, const size_t *end, size_t flags);
+
+enum hf3fs_mem_type {
+  HF3FS_MEM_HOST = 0,
+  HF3FS_MEM_DEVICE = 1,
+  HF3FS_MEM_MANAGED = 2,
+};
+
+// Reports application-local CUDA IPC/device capability only. It does not prove
+// that FUSE can import the allocation or register an RDMA MR; successful
+// create/wrap publication is the final per-IOV result.
+bool hf3fs_gdr_available(void);
+// Returns the number of locally visible CUDA devices; it does not probe FUSE RDMA registration.
+int hf3fs_gdr_device_count(void);
+enum hf3fs_mem_type hf3fs_iov_mem_type(const struct hf3fs_iov *iov);
+int hf3fs_iov_device_id(const struct hf3fs_iov *iov);
+int hf3fs_iovsync(const struct hf3fs_iov *iov, int direction);
+
 #ifdef __cplusplus
 }
 #endif

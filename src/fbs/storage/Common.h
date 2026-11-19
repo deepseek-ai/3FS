@@ -75,6 +75,7 @@ enum class FeatureFlags : uint32_t {
   BYPASS_RDMAXMIT = 2,
   SEND_DATA_INLINE = 4,
   ALLOW_READ_UNCOMMITTED = 8,
+  SERVER_COMPUTE_CHECKSUM = 16,
 };
 
 constexpr auto kAIOAlignSize = 4096ul;
