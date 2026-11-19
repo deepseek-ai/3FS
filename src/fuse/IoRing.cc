@@ -148,7 +148,7 @@ CoTask<void> IoRing::process(
         continue;
       }
 
-      auto memh = co_await bufs[i]->memh(args.ioLen);
+      auto memh = bufs[i]->memh(args.ioLen);
       if (!memh) {
         res[i] = -static_cast<ssize_t>(memh.error().code());
         continue;

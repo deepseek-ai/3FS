@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <folly/ScopeGuard.h>
 #include <semaphore.h>
+#include <system_error>
 
 #include "IovTable.h"
 #include "UserConfig.h"
@@ -113,8 +115,8 @@ class IoRing : public std::enable_shared_from_this<IoRing> {
              (void *)buf,
              size);
     auto sem = (sem_t *)(sqeSection + entries);
-    if (owner) {
-      sem_init(sem, 1, 0);
+    if (owner && sem_init(sem, 1, 0) < 0) {
+      throw std::system_error(errno, std::generic_category(), "sem_init");
     }
     cqeSem.reset(sem);
   }
@@ -241,6 +243,7 @@ struct IoRingTable {
     }
 
     auto idx = *idxRes;
+    SCOPE_FAIL { ioRings->dealloc(idx); };
 
     auto ior = std::make_shared<
         IoRing>(std::move(shm), name, ui, forRead, buf, size, ioDepth, attrs.priority, attrs.timeout, attrs.flags);

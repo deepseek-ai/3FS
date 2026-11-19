@@ -21,14 +21,13 @@ struct ShmBuf {
   ShmBuf(const Path &p, off_t o, size_t sz, size_t bsz, Uuid u);
   ~ShmBuf();
 
-  CoTask<void> registerForIO(folly::Executor::KeepAlive<> exec,
-                             storage::client::StorageClient &sc,
-                             std::function<void()> &&recordMetrics);
-  CoTask<std::shared_ptr<storage::client::IOBuffer>> memh(size_t off);
+  // Register before publishing the buffer. I/O keeps the ShmBuf alive while it uses a handle.
+  CoTryTask<void> registerForIO(storage::client::StorageClient &sc, std::function<void()> recordMetrics);
+  storage::client::IOBuffer *memh(size_t off);
 
   bool checkId(const Uuid &uid) const { return id == uid; }
 
-  CoTask<void> deregisterForIO();
+  void deregisterForIO();
   void unmapBuf();
   bool maybeUnlinkShm() {
     if (owner_) {
@@ -70,9 +69,7 @@ struct ShmBuf {
   //  int fd_;
 
   // for client agent
-  std::vector<folly::atomic_shared_ptr<storage::client::IOBuffer>> memhs_;
-  folly::coro::Baton memhBaton_;
-  std::atomic<bool> regging_;
+  std::vector<storage::client::IOBuffer> memhs_;
 };
 
 class ShmBufForIO {
@@ -84,13 +81,13 @@ class ShmBufForIO {
     XLOGF(DBG, "buf start {} off {} ptr {}", (void *)buf_->bufStart, off_, (void *)(buf_->bufStart + off_));
     return buf_->bufStart + off_;
   }
-  CoTryTask<storage::client::IOBuffer *> memh(size_t len) const {
+  Result<storage::client::IOBuffer *> memh(size_t len) const {
     XLOGF(DBG, "shm buf for io off {} buf ptr {}", off_, (void *)buf_.get());
     XLOGF(DBG, "shm block size {}", buf_->blockSize);
     if (len && off_ / buf_->blockSize != (off_ + len - 1) / buf_->blockSize) {
-      co_return makeError(StatusCode::kInvalidArg);
+      return makeError(StatusCode::kInvalidArg);
     }
-    co_return (co_await buf_->memh(off_)).get();
+    return buf_->memh(off_);
   }
 
  private:
