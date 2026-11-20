@@ -89,6 +89,33 @@ monitor::CountRecorder acceptedFailed("common.ib.accept_failed");
 
 monitor::LatencyRecorder connectLatency("common.ib.connect_latency");
 monitor::LatencyRecorder acceptLatency("common.ib.accept_latency");
+
+// The verbs API cannot report the inline data limit. Devices whose kernel driver has a fixed limit try it first:
+// Intel irdma 216, 101 or 48 depending on the generation (101 on the E810, 48 on the X722;
+// drivers/infiniband/hw/irdma/ig3rdma_hw.h, user.h, i40iw_hw.h), Alibaba erdma 96
+// (drivers/infiniband/hw/erdma/erdma_verbs.h). Other devices start at the size asked for, and any refused size steps
+// down by kInlineDataStep until one is accepted. libfabric's verbs provider also probes the limit
+// (vrb_find_max_inline()).
+struct KnownInlineLimit {
+  uint32_t vendorId;
+  uint32_t maxInline;
+};
+constexpr KnownInlineLimit kKnownInlineLimits[] = {{0x8086, 216}, {0x8086, 101}, {0x8086, 48}, {0x1ded, 96}};
+constexpr uint32_t kInlineDataStep = 16;
+
+// Inline size to request: on the first try, size capped at the vendor's first known limit; after a refusal, the
+// vendor's next smaller known limit, else one step smaller.
+uint32_t inlineDataToRequest(uint32_t vendorId, uint32_t size, bool refused) {
+  for (const auto &known : kKnownInlineLimits) {
+    if (known.vendorId == vendorId && (!refused || known.maxInline < size)) {
+      return std::min(known.maxInline, size);
+    }
+  }
+  if (refused) {
+    size = size > kInlineDataStep ? size - kInlineDataStep : 0;
+  }
+  return size;
+}
 }  // namespace
 
 /* IBConnectService */
@@ -577,6 +604,11 @@ int IBSocket::qpCreate() {
     return -1;
   }
 
+  const uint32_t vendorId = device()->attr().vendor_id;
+  uint32_t inlineSize = device()->inlineDataRequest();
+  if (inlineSize == UINT32_MAX) {
+    inlineSize = inlineDataToRequest(vendorId, kBFMaxInlineSend, false);
+  }
   ibv_qp_init_attr attr;
   memset(&attr, 0, sizeof(attr));
   attr.qp_context = nullptr;
@@ -587,14 +619,28 @@ int IBSocket::qpCreate() {
   attr.cap.max_recv_wr = connectConfig_.qpMaxRecvWR();
   attr.cap.max_send_sge = connectConfig_.max_sge;
   attr.cap.max_recv_sge = 1;
-  attr.cap.max_inline_data = 0;
+  attr.cap.max_inline_data = inlineSize;
   attr.qp_type = IBV_QPT_RC;
   attr.sq_sig_all = 0;
 
   qp_.reset(ibv_create_qp(device()->pd(), &attr));
+  // A refused inline size fails with EINVAL; any other failure is reported below with its errno.
+  while (UNLIKELY(!qp_) && errno == EINVAL && inlineSize > 0) {
+    uint32_t next = inlineDataToRequest(vendorId, inlineSize, true);
+    XLOGF(DBG, "IBSocket {} ibv_create_qp refused {} bytes of inline data, trying {}", describe(), inlineSize, next);
+    inlineSize = next;
+    attr.cap.max_inline_data = inlineSize;
+    qp_.reset(ibv_create_qp(device()->pd(), &attr));
+  }
   if (UNLIKELY(!qp_)) {
     XLOGF(ERR, "IBSocket {} failed to create QP, errno {}", describe(), errno);
     return -1;
+  }
+  device()->setInlineDataRequest(inlineSize);
+  // ibv_create_qp() writes the granted inline data size back into attr.
+  maxInlineData_ = attr.cap.max_inline_data;
+  if (vendorId == kMellanoxVendorId) {
+    maxInlineData_ = std::min(maxInlineData_, kBFMaxInlineSend);
   }
 
   return initBufs();

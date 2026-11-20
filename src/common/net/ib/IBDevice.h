@@ -136,6 +136,11 @@ class IBDevice : public std::enable_shared_from_this<IBDevice> {
   ibv_mr *regMemory(void *addr, size_t length, int access) const;
   int deregMemory(ibv_mr *mr) const;
 
+  // The inline size the last QP on this device was created with (UINT32_MAX: none yet). Later QPs start there, so a
+  // device that refuses the first size steps down once, not for every connection.
+  uint32_t inlineDataRequest() const { return inlineDataRequest_.load(std::memory_order_relaxed); }
+  void setInlineDataRequest(uint32_t size) const { inlineDataRequest_.store(size, std::memory_order_relaxed); }
+
  private:
   friend class IBManager;
   class BackgroundRunner;
@@ -167,6 +172,7 @@ class IBDevice : public std::enable_shared_from_this<IBDevice> {
   std::unique_ptr<ibv_pd, Deleter> pd_;
   ibv_device_attr attr_;
   std::map<uint8_t, Port> ports_;
+  mutable std::atomic<uint32_t> inlineDataRequest_ = UINT32_MAX;
 };
 
 class IBPort {
