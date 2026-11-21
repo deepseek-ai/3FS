@@ -1,0 +1,83 @@
+diff --git a/folly/experimental/StampedPtr.h b/folly/experimental/StampedPtr.h
+index 668649e..e19ec12 100644
+--- a/folly/experimental/StampedPtr.h
++++ b/folly/experimental/StampedPtr.h
+@@ -85,8 +85,15 @@ struct StampedPtr {
+     // to us, which is difficult to prove).  Signed right-shift of a
+     // negative number is implementation-defined in C++ (not undefined!),
+     // but actually does the right thing on all the platforms I can find.
++#if defined(__aarch64__)
++    // arm64 user space spans the full 48-bit range (bit 47 may be set), so
++    // sign extension would corrupt valid pointers: use a logical shift.
++    auto extended = raw >> kInternalStampBits;
++    return reinterpret_cast<T*>(static_cast<uintptr_t>(extended));
++#else
+     auto extended = static_cast<int64_t>(raw) >> kInternalStampBits;
+     return reinterpret_cast<T*>(static_cast<intptr_t>(extended));
++#endif
+   }
+ 
+   static uint16_t unpackStamp(uint64_t raw) {
+diff --git a/folly/hash/Checksum.cpp b/folly/hash/Checksum.cpp
+index 5d13482..94159e5 100644
+--- a/folly/hash/Checksum.cpp
++++ b/folly/hash/Checksum.cpp
+@@ -132,11 +132,17 @@ uint32_t crc32_sw(
+ } // namespace detail
+ 
+ uint32_t crc32c(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
++#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
++  // ARMv8 CRC32 instructions. crc32c_hw_supported() stays false here because
++  // crc32c_combine() keys off it and its hardware combiner is x86-only.
++  return detail::crc32c_hw(data, nbytes, startingChecksum);
++#else
+   if (detail::crc32c_hw_supported()) {
+     return detail::crc32c_hw(data, nbytes, startingChecksum);
+   } else {
+     return detail::crc32c_sw(data, nbytes, startingChecksum);
+   }
++#endif
+ }
+ 
+ uint32_t crc32(const uint8_t* data, size_t nbytes, uint32_t startingChecksum) {
+diff --git a/folly/hash/detail/Crc32cDetail.cpp b/folly/hash/detail/Crc32cDetail.cpp
+index ada6ac2..bc6e6f8 100644
+--- a/folly/hash/detail/Crc32cDetail.cpp
++++ b/folly/hash/detail/Crc32cDetail.cpp
+@@ -38,6 +38,11 @@
+ #include <folly/CppAttributes.h>
+ #include <folly/hash/detail/ChecksumDetail.h>
+ 
++#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
++#include <arm_acle.h>
++#include <cstring>
++#endif
++
+ namespace folly {
+ namespace detail {
+ 
+@@ -285,6 +290,24 @@ uint32_t crc32c_hw(const uint8_t* buf, size_t len, uint32_t crc) {
+   return (uint32_t)crc0;
+ }
+ 
++#elif defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
++
++uint32_t crc32c_hw(const uint8_t* buf, size_t len, uint32_t crc) {
++  while (len && (reinterpret_cast<uintptr_t>(buf) & 7)) {
++    crc = __crc32cb(crc, *buf++);
++    --len;
++  }
++  for (; len >= 8; len -= 8, buf += 8) {
++    uint64_t v;
++    std::memcpy(&v, buf, sizeof(v));
++    crc = __crc32cd(crc, v);
++  }
++  while (len--) {
++    crc = __crc32cb(crc, *buf++);
++  }
++  return crc;
++}
++
+ #else
+ 
+ uint32_t crc32c_hw(
