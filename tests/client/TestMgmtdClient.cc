@@ -144,7 +144,7 @@ TEST_F(MgmtdClientTest, testWhenNoPrimary) {
   };
 
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses({ada, adb, adc});
+  config.set_mgmtd_server_addresses({to_named(ada), to_named(adb), to_named(adc)});
   config.set_enable_auto_refresh(false);
   config.set_enable_auto_heartbeat(false);
   MgmtdClient client("", std::make_unique<StubFactory>(), config);
@@ -158,7 +158,7 @@ TEST_F(MgmtdClientTest, testWhenNoPrimary) {
 
 TEST_F(MgmtdClientTest, testInvalidAddress) {
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses({ada, ade});
+  config.set_mgmtd_server_addresses({to_named(ada), to_named(ade)});
   MgmtdClient client("", nullptr, config);
 
   folly::coro::blockingWait([&]() -> CoTask<void> {
@@ -169,7 +169,7 @@ TEST_F(MgmtdClientTest, testInvalidAddress) {
 
 TEST_F(MgmtdClientTest, testAddressTypeMismatch) {
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses({ada, adf});
+  config.set_mgmtd_server_addresses({to_named(ada), to_named(adf)});
   config.set_network_type(net::Address::TCP);
   MgmtdClient client("", nullptr, config);
 
@@ -195,7 +195,7 @@ TEST_F(MgmtdClientTest, testWhenLastIsPrimary) {
   };
 
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses({ada, adb, adc});
+  config.set_mgmtd_server_addresses({to_named(ada), to_named(adb), to_named(adc)});
   config.set_enable_auto_refresh(false);
   config.set_enable_auto_heartbeat(false);
   MgmtdClient client("", std::make_unique<StubFactory>(), config);
@@ -229,7 +229,7 @@ TEST_F(MgmtdClientTest, testWhenPrimaryNotInConfig) {
   };
 
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses({ada, adb, adc});
+  config.set_mgmtd_server_addresses({to_named(ada), to_named(adb), to_named(adc)});
   config.set_enable_auto_refresh(false);
   config.set_enable_auto_heartbeat(false);
   MgmtdClient client("", std::make_unique<StubFactory>(), config);
@@ -272,7 +272,7 @@ TEST_F(MgmtdClientTest, testWhenGetPrimaryLoop) {
   };
 
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses(addresses);
+  config.set_mgmtd_server_addresses(to_named(addresses));
   config.set_enable_auto_refresh(false);
   config.set_enable_auto_heartbeat(false);
   MgmtdClient client("", std::make_unique<StubFactory>(addresses), config);
@@ -321,7 +321,7 @@ TEST_F(MgmtdClientTest, testRetryOnRefreshFail) {
   };
 
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses(addresses);
+  config.set_mgmtd_server_addresses(to_named(addresses));
   config.set_enable_auto_refresh(false);
   config.set_enable_auto_heartbeat(false);
   MgmtdClient client("", std::make_unique<StubFactory>(), config);
@@ -356,7 +356,7 @@ TEST_F(MgmtdClientTest, testRefreshRoutingInfoCallback) {
   };
 
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses(addresses);
+  config.set_mgmtd_server_addresses(to_named(addresses));
   config.set_enable_auto_refresh(false);
   config.set_enable_auto_heartbeat(false);
   MgmtdClient client("", std::make_unique<StubFactory>(), config);
@@ -400,7 +400,7 @@ TEST_F(MgmtdClientTest, testRetryAllAvailableAddresses) {
   };
 
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses({adj});
+  config.set_mgmtd_server_addresses({to_named(adj)});
   config.set_enable_auto_refresh(false);
   config.set_enable_auto_heartbeat(false);
   config.set_network_type(net::Address::TCP);
@@ -462,7 +462,7 @@ TEST_F(MgmtdClientTest, testRetryEndWhenNoPrimary) {
   };
 
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses({adj});
+  config.set_mgmtd_server_addresses({to_named(adj)});
   config.set_enable_auto_refresh(false);
   config.set_enable_auto_heartbeat(false);
   config.set_network_type(net::Address::TCP);
@@ -522,7 +522,7 @@ TEST_F(MgmtdClientTest, testRetryUnknownAddrs) {
   };
 
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses({adj, add});
+  config.set_mgmtd_server_addresses({to_named(adj), to_named(add)});
   config.set_enable_auto_refresh(false);
   config.set_enable_auto_heartbeat(false);
   config.set_network_type(net::Address::TCP);
@@ -562,7 +562,6 @@ TEST_F(MgmtdClientTest, testRetryUnknownAddrs) {
 }
 
 TEST_F(MgmtdClientTest, testSetGetConfigViaInvoke) {
-  std::vector<net::Address> addresses = {ada};
   struct StubFactory : public stubs::IStubFactory<mgmtd::IMgmtdServiceStub> {
     std::map<flat::NodeType, flat::ConfigInfo> configs;
     std::unique_ptr<mgmtd::IMgmtdServiceStub> create(net::Address) {
@@ -585,7 +584,7 @@ TEST_F(MgmtdClientTest, testSetGetConfigViaInvoke) {
   };
 
   MgmtdClient::Config config;
-  config.set_mgmtd_server_addresses(addresses);
+  config.set_mgmtd_server_addresses({to_named(ada)});
   config.set_enable_auto_refresh(false);
   config.set_enable_auto_heartbeat(false);
   MgmtdClient client("", std::make_unique<StubFactory>(), config);

@@ -9,12 +9,15 @@
 #include <folly/experimental/coro/Promise.h>
 #include <folly/experimental/coro/Sleep.h>
 #include <folly/logging/xlog.h>
+#include <iterator>
 #include <memory>
 #include <scn/scn.h>
 
 #include "common/app/ApplicationBase.h"
 #include "common/utils/BackgroundRunner.h"
 #include "common/utils/LogCommands.h"
+#include "common/utils/Result.h"
+#include "common/utils/Status.h"
 #include "core/utils/ServiceOperation.h"
 #include "core/utils/runOp.h"
 
@@ -461,7 +464,18 @@ struct MgmtdClient::Impl {
     if (serverAddrs.empty()) {
       return makeError(StatusCode::kInvalidConfig, "Empty mgmtdServers");
     }
-    for (auto addr : serverAddrs) {
+    std::vector<net::Address> resolved;
+    for (const auto &addr : serverAddrs) {
+      auto res = addr.resolve(std::back_inserter(resolved));
+      if (res.hasError()) {
+        XLOG(WARN, "resolve mgmtd address: {}", res.error().describe());
+      }
+    }
+    if (resolved.empty()) {
+      return makeError(StatusCode::kInvalidConfig, "No resolved mgmtdServers");
+    }
+
+    for (auto addr : resolved) {
       if (addr == net::Address(0))
         return makeError(StatusCode::kInvalidConfig, "Invalid MGMTD address: " + addr.toString());
       if (config_.network_type() && addr.type != *config_.network_type()) {

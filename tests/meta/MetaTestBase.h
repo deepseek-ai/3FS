@@ -371,7 +371,7 @@ class MockCluster {
     CONFIG_OBJ(mock_mgmtd, mgmtd::MockMgmtd::Config);
     CONFIG_OBJ(mgmtd_client, client::MgmtdClientForServer::Config, [](client::MgmtdClientForServer::Config &cfg) {
       cfg.set_enable_auto_heartbeat(false);  // currently heartbeat is not needed in meta test
-      cfg.set_mgmtd_server_addresses({net::Address::from("TCP://127.0.0.1:8000").value()});  // just a fake TCP address.
+      cfg.set_mgmtd_server_addresses({net::NamedAddress::from("TCP://127.0.0.1:8000").value()});  // just a fake TCP address.
     });
 
     CONFIG_OBJ_ARRAY(chain_tables, ChainTableConfig, 64, [](std::array<ChainTableConfig, 64> &cfg) {
