@@ -31,6 +31,13 @@ static constexpr std::string_view kMetadataVersionKey = "\xff/metadataVersion";
 using Versionstamp = std::array<uint8_t, 10>;
 static_assert(sizeof(Versionstamp) == 10);
 
+enum class Priority : uint8_t {
+  MIN = 0,
+  LOW = 1,
+  HIGH = 2,
+  MAX = 3,
+};
+
 class IReadOnlyTransaction {
  public:
   virtual ~IReadOnlyTransaction() = default;
@@ -83,6 +90,8 @@ class IReadOnlyTransaction {
 
   virtual CoTryTask<void> cancel() = 0;
   virtual void reset() = 0;
+
+  virtual Result<Void> enableStaleRead() = 0;
 };
 
 class IReadWriteTransaction : public IReadOnlyTransaction {
@@ -109,6 +118,8 @@ class IReadWriteTransaction : public IReadOnlyTransaction {
 
   virtual CoTryTask<void> commit() = 0;
   virtual int64_t getCommittedVersion() = 0;
+
+  virtual Result<Void> setPriority(Priority priority) = 0;
 };
 
 struct TransactionHelper {
