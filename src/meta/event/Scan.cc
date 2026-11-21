@@ -79,15 +79,13 @@ MetaScan::MetaScan(Options options, std::shared_ptr<kv::IKVEngine> kvEngine)
   if (options_.threads < 0 || options_.coroutines < 0) {
     throw std::runtime_error("Invalid options, thread < 0 or coroutines < 0");
   }
-  if (!kvEngine && options_.fdb_cluster_file.empty()) {
-    throw std::runtime_error("Should set kvEngine or fdb cluster file");
+  if (!kvEngine) {
+    throw std::runtime_error("kvEngine is required");
   }
   if (!options_.logging.empty()) {
     XLOGF(INFO, "Setup log: {}", options_.logging);
     logging::initOrDie(options_.logging);
   }
-
-  createKVEngine();
 }
 
 MetaScan::~MetaScan() {
@@ -98,24 +96,6 @@ MetaScan::~MetaScan() {
     scanDirEntryTask_->cancel.requestCancellation();
   }
   exec_.stop();
-  if (fdbNetwork_) {
-    kv::fdb::DB::stopNetwork();
-    fdbNetwork_->join();
-  }
-}
-
-void MetaScan::createKVEngine() {
-  if (kvEngine_) {
-    return;
-  }
-
-  kv::fdb::DB::selectAPIVersion(FDB_API_VERSION);
-  auto error = kv::fdb::DB::setupNetwork();
-  if (error) {
-    throw std::runtime_error(fmt::format("Failed to setup fdb network, error {}", kv::fdb::DB::errorMsg(error)));
-  }
-  fdbNetwork_ = std::jthread([&]() { kv::fdb::DB::runNetwork(); });
-  kvEngine_ = std::make_shared<kv::FDBKVEngine>(kv::fdb::DB(options_.fdb_cluster_file, true /* readonly */));
 }
 
 std::vector<Inode> MetaScan::getInodes() {

@@ -16,7 +16,6 @@ namespace {
 auto getParser() {
   argparse::ArgumentParser parser("remove-chunks");
   parser.add_argument("-n", "--num-inodes-perfile").default_value(uint32_t{10'000'000}).scan<'u', uint32_t>();
-  parser.add_argument("-f", "--fdb-cluster-file").default_value(std::string{"./fdb.cluster"});
   parser.add_argument("-i", "--inode-dir").default_value(std::string{"inodes2"});
   parser.add_argument("-o", "--orphaned-path").default_value(std::string{"orphaned"});
   parser.add_argument("-r", "--do-remove").default_value(false).implicit_value(true);
@@ -30,11 +29,11 @@ CoTryTask<Dispatcher::OutputTable> removeChunks(IEnv &ienv,
   auto &env = dynamic_cast<AdminEnv &>(ienv);
   ENSURE_USAGE(args.empty());
   ENSURE_USAGE(env.mgmtdClientGetter);
+  ENSURE_USAGE(env.kvEngineGetter);
   Dispatcher::OutputTable table;
 
   // dump latest inodes
 
-  const auto &fdbClusterFile = parser.get<std::string>("fdb-cluster-file");
   const auto &numInodesPerFile = parser.get<uint32_t>("num-inodes-perfile");
   const auto &inodeDir = parser.get<std::string>("inode-dir");
   const auto &parquetFormat = parser.get<bool>("parquet-format");
@@ -44,7 +43,7 @@ CoTryTask<Dispatcher::OutputTable> removeChunks(IEnv &ienv,
     co_return makeError(StatusCode::kInvalidArg);
   }
 
-  auto dumpRes = co_await dumpInodesFromFdb(fdbClusterFile, numInodesPerFile, inodeDir, parquetFormat);
+  auto dumpRes = co_await dumpInodesFromFdb(env.kvEngineGetter(), numInodesPerFile, inodeDir, parquetFormat);
   if (!dumpRes) co_return makeError(dumpRes.error());
 
   // load the inode dump
