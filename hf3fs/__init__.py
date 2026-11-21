@@ -15,9 +15,16 @@ try:
 except:
     __version__ = "debug"
 
-DEFAULT_CLIENT = th.local()
-DEFAULT_CLIENT.client = None
-DEFAULT_CLIENT.clients = {}
+
+class _DefaultClient(th.local):
+    # threading.local attributes must be initialized per thread, otherwise threads other
+    # than the importing one see no attribute at all.
+    def __init__(self):
+        self.client = None
+        self.clients = {}
+
+
+DEFAULT_CLIENT = _DefaultClient()
 
 #@attrs.define
 @dataclass
