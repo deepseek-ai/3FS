@@ -52,6 +52,8 @@ class CMakeBuild(build_ext):
             "-DOVERRIDE_CXX_NEW_DELETE=OFF",
             "-DSAVE_ALLOCATE_SIZE=OFF",
             "-DFOLLY_DISABLE_LIBUNWIND=ON",
+            # CMake requires a shuffle method; the Python client does not depend on it.
+            f"-DSHUFFLE_METHOD={os.environ.get('SHUFFLE_METHOD', 'g++11')}",
         ]
         build_args = []
         # Adding CMake arguments set as environment variable
