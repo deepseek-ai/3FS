@@ -289,14 +289,29 @@ class DataPlacementModel(object):
       raise ValueError(f"no solver specified")
 
   def get_peer_traffic(self, instance) -> Dict[Tuple[int,int], int]:
+    disks = list(instance.disks)
+    pair_counts: Dict[Tuple[int, int], float] = {}
+    for group in instance.groups:
+      active = []
+      for disk in disks:
+        val = po.value(instance.disk_used_by_group[disk, group])
+        if val:
+          active.append((disk, val))
+      for i in range(len(active)):
+        disk, val_d = active[i]
+        for j in range(i + 1, len(active)):
+          peer, val_p = active[j]
+          key = (disk, peer)
+          pair_counts[key] = pair_counts.get(key, 0.0) + val_d * val_p
+
+    scale = self.recovery_traffic_factor / (self.group_size - 1)
     peer_traffic_map = {}
-    for disk in instance.disks:
-      for peer in instance.disks:
-        if disk == peer: continue
-        peer_traffic_map[(disk, peer)] = sum(
-          po.value(instance.disk_used_by_group[disk,group]) *
-          po.value(instance.disk_used_by_group[peer,group])
-          for group in instance.groups) * self.recovery_traffic_factor / (self.group_size - 1)
+    for i, disk in enumerate(disks):
+      for j in range(i + 1, len(disks)):
+        peer = disks[j]
+        traffic = pair_counts.get((disk, peer), 0.0) * scale
+        peer_traffic_map[(disk, peer)] = traffic
+        peer_traffic_map[(peer, disk)] = traffic
     return peer_traffic_map
 
   def get_incidence_matrix(self, instance) -> Dict[Tuple[int, int], bool]:
