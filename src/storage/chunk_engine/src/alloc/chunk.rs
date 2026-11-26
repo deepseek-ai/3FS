@@ -92,12 +92,22 @@ impl Chunk {
         offset: u32,
         checksum: u32,
         is_syncing: bool,
+        truncate: bool,
         allow_to_allocate: bool,
         allocators: &Allocators,
         metrics: &Metrics,
     ) -> Result<Chunk> {
         // 1. allocate new chunk.
-        let new_len = std::cmp::max(self.meta.len, offset + data.len() as u32);
+        let is_shrinking = truncate && data.is_empty() && offset < self.meta.len;
+        let new_len = if is_shrinking {
+            // Keep reporting shrinking truncates through the existing counter.
+            metrics
+                .safe_write_truncate_shorten
+                .fetch_add(1, Ordering::AcqRel);
+            offset
+        } else {
+            std::cmp::max(self.meta.len, offset + data.len() as u32)
+        };
         let begin = std::time::Instant::now();
         let mut new_chunk = allocators.allocate(Size::from(new_len), allow_to_allocate)?;
         let begin2 = std::time::Instant::now();
@@ -109,12 +119,14 @@ impl Chunk {
         metrics.copy_on_write_times.fetch_add(1, Ordering::AcqRel);
 
         // 2. write data.
-        let skip_read = is_syncing || (offset == 0 && data.len() >= self.meta.len as usize);
+        let skip_read =
+            !is_shrinking && (is_syncing || (offset == 0 && data.len() >= self.meta.len as usize));
         let checksum = Self::BUFFER.with(|v| {
             let mut vec = v.borrow_mut();
-            if !skip_read {
+            if !skip_read && new_len != 0 {
                 // aligned read.
-                let len = self.meta.len.next_multiple_of(ALIGN_SIZE.into());
+                let retained_len = if is_shrinking { new_len } else { self.meta.len };
+                let len = retained_len.next_multiple_of(ALIGN_SIZE.into());
                 let begin = std::time::Instant::now();
                 self.pread(&mut vec[..len as usize], 0)?;
                 let latency = std::time::Instant::now().duration_since(begin).as_micros() as _;
@@ -136,12 +148,16 @@ impl Chunk {
                 let latency = std::time::Instant::now().duration_since(begin).as_micros() as _;
                 metrics.pwrite_times.fetch_add(1, Ordering::AcqRel);
                 metrics.pwrite_latency.fetch_add(latency, Ordering::AcqRel);
-            } else {
-                if self.meta.len < offset {
-                    vec[self.meta.len as usize..offset as usize].fill(0);
-                }
-                vec[offset as usize..][..data.len()].copy_from_slice(data);
+            } else if new_len != 0 {
                 let len = new_len.next_multiple_of(ALIGN_SIZE.into());
+                if is_shrinking {
+                    vec[new_len as usize..len as usize].fill(0);
+                } else {
+                    if self.meta.len < offset {
+                        vec[self.meta.len as usize..offset as usize].fill(0);
+                    }
+                    vec[offset as usize..][..data.len()].copy_from_slice(data);
+                }
                 let begin = std::time::Instant::now();
                 new_chunk.pwrite(&vec[..len as usize], 0)?;
                 let latency = std::time::Instant::now().duration_since(begin).as_micros() as _;
@@ -182,19 +198,9 @@ impl Chunk {
         metrics: &Metrics,
     ) -> Result<()> {
         if truncate && offset < self.meta.len {
-            metrics
-                .safe_write_truncate_shorten
-                .fetch_add(1, Ordering::AcqRel);
-            metrics.checksum_recalculate.fetch_add(1, Ordering::AcqRel);
-            return Self::BUFFER.with(|v| {
-                // aligned read.
-                let mut vec = v.borrow_mut();
-                let len = offset.next_multiple_of(ALIGN_SIZE.into());
-                self.pread(&mut vec[..len as usize], 0)?;
-                self.meta.len = offset;
-                self.meta.checksum = crc32c::crc32c(&vec[..offset as usize]);
-                Result::Ok(())
-            });
+            return Err(Error::InvalidArg(
+                "shrinking truncate requires copy-on-write".into(),
+            ));
         }
 
         if is_aligned_len(self.meta.len)
