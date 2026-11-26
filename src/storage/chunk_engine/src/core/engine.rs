@@ -57,14 +57,23 @@ impl Engine {
 
         if !uncommitted_chunks.is_empty() {
             // resume writing chunks in memory.
-            for (chunk_id, meta, _) in &uncommitted_chunks {
+            for pending in &uncommitted_chunks {
+                let chunk_id = &pending.chunk_id;
+                let meta = &pending.meta;
                 let old_chunk = engine.get(chunk_id)?;
 
                 let prefix: Bytes = chunk_id[..engine.prefix_len].into();
                 let mut writing_list = engine.writing_list.entry(prefix).or_default();
                 let allocator = engine.allocators.select_by_pos(meta.pos)?;
                 let chunk = allocator.reference(meta.clone(), old_chunk.is_none());
-                writing_list.insert(chunk_id.clone(), WritingHolder { chunk, abort: true });
+                writing_list.insert(
+                    chunk_id.clone(),
+                    WritingHolder {
+                        chunk,
+                        abort: true,
+                        is_remove: pending.is_remove,
+                    },
+                );
             }
             meta_store.vacate_uncommitted_positions(uncommitted_chunks)?;
         }
@@ -445,33 +454,38 @@ impl Engine {
 
         let prefix: Bytes = chunk_id[..self.prefix_len].into();
         let mut writing_list = self.writing_list.entry(prefix).or_default();
-        match writing_list.entry(chunk_id.into()) {
-            std::collections::hash_map::Entry::Occupied(mut occupied_entry)
-                if occupied_entry.get().abort =>
-            {
-                occupied_entry.insert(WritingHolder {
-                    chunk: new_chunk.clone(),
-                    abort: false,
-                });
-            }
-            std::collections::hash_map::Entry::Occupied(occupied_entry) => {
+        let entry = writing_list.entry(chunk_id.into());
+        let replaces_remove = if let std::collections::hash_map::Entry::Occupied(entry) = &entry {
+            let holder = entry.get();
+            if !holder.abort {
                 return Err(Error::InvalidArg(format!(
                     "chunk {:?} is in writing ({:?})",
                     chunk_id,
-                    occupied_entry.get().chunk.meta(),
+                    holder.chunk.meta(),
                 )));
             }
-            std::collections::hash_map::Entry::Vacant(vacant_entry) => {
-                vacant_entry.insert(WritingHolder {
-                    chunk: new_chunk.clone(),
-                    abort: false,
-                });
-            }
+            holder.is_remove
+        } else {
+            false
+        };
+
+        // Publish changes to remove intent only after the journal put succeeds.
+        let persist_before_publish = req.is_remove || replaces_remove;
+        if persist_before_publish {
+            self.meta_store
+                .persist_writing_chunk(chunk_id, new_chunk.meta(), req.is_remove)?;
         }
+        entry.insert_entry(WritingHolder {
+            chunk: new_chunk.clone(),
+            abort: false,
+            is_remove: req.is_remove,
+        });
         drop(writing_list);
 
-        self.meta_store
-            .persist_writing_chunk(chunk_id, new_chunk.meta())?;
+        if !persist_before_publish {
+            self.meta_store
+                .persist_writing_chunk(chunk_id, new_chunk.meta(), false)?;
+        }
 
         Ok(WritingChunk {
             chunk_id: chunk_id.into(),
@@ -556,7 +570,7 @@ impl Engine {
                     )?,
                     None => self
                         .meta_store
-                        .remove_writing_chunk(&chunk.chunk_id, sync)?,
+                        .remove_writing_chunk_mut(&chunk.chunk_id, &mut write_batch),
                 }
             } else {
                 match entries.get_mut(&chunk.chunk_id).unwrap().get() {
@@ -618,7 +632,7 @@ impl Engine {
                 chunk,
                 list: self.writing_list.clone(),
                 prefix_len: self.prefix_len as _,
-                is_remove: false,
+                is_remove: holder.is_remove,
                 commit_succ: false,
             });
             uncommitted_chunks.push((chunk_id.clone(), holder.chunk.meta().clone()));
@@ -1677,6 +1691,93 @@ mod tests {
         engine.handle_uncommitted_chunks(&[], 2).unwrap();
         let chunk = engine.get(chunk_id).unwrap().unwrap();
         assert_eq!(chunk.meta().len as usize, bytes.len() * 2);
+    }
+
+    fn check_uncommitted_remove_recovery(reopen: bool) {
+        use derse::Serialize;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            prefix_len: 1,
+        };
+        let engine = Engine::open(&config).unwrap();
+        config.create = false;
+
+        let existing: &[u8] = b"p/existing";
+        let missing: &[u8] = b"p/missing";
+        let empty_write: &[u8] = b"p/empty";
+        let data = b"kept until commit";
+        engine
+            .write(existing, data, 0, crc32c::crc32c(data))
+            .unwrap();
+
+        for id in [existing, missing, empty_write] {
+            let mut req = UpdateReq {
+                is_remove: true,
+                update_ver: 2,
+                ..Default::default()
+            };
+            drop(engine.update_chunk(id, &mut req).unwrap());
+        }
+
+        // A retry can replace an aborted removal with an ordinary zero-length write.
+        let chunk = engine
+            .update_chunk(empty_write, &mut UpdateReq::default())
+            .unwrap();
+        {
+            let legacy_bytes: derse::DownwardBytes = chunk.meta().serialize().unwrap();
+            let key = MetaKey::writing_chunk_key(empty_write);
+            let mut journal = engine.meta_store.iterator();
+            journal.seek(&key).unwrap();
+            assert_eq!(journal.key(), Some(key.as_ref()));
+            assert_eq!(journal.value(), Some(legacy_bytes.as_slice()));
+        }
+        drop(chunk);
+
+        let engine = if reopen {
+            drop(engine);
+            Engine::open(&config).unwrap()
+        } else {
+            engine
+        };
+        assert_eq!(engine.get(existing).unwrap().unwrap().meta().chunk_ver, 1);
+        assert!(engine.get(missing).unwrap().is_none());
+        assert!(engine.get(empty_write).unwrap().is_none());
+        assert_eq!(engine.query_uncommitted_chunks(b"p").unwrap().len(), 3);
+
+        let recovered = engine.handle_uncommitted_chunks(b"p", 7).unwrap();
+        assert_eq!(recovered.len(), 3);
+        assert!(recovered.iter().all(|(_, meta)| meta.chain_ver == 7));
+        assert!(engine.get(existing).unwrap().is_none());
+        assert!(engine.get(missing).unwrap().is_none());
+        assert!(engine.query_uncommitted_chunks(b"p").unwrap().is_empty());
+        assert_eq!(engine.used_size().position_count, 1);
+        drop(engine);
+
+        let engine = Engine::open(&config).unwrap();
+        assert!(engine.handle_uncommitted_chunks(b"p", 8).unwrap().is_empty());
+        let chunks = engine.query_chunks(b"p", b"p", u64::MAX).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].0.as_slice(), empty_write);
+        assert_eq!(chunks[0].1.len, 0);
+        assert_eq!(chunks[0].1.chain_ver, 7);
+        assert!(!chunks[0].1.uncommitted);
+        assert_eq!(
+            engine.meta_store.query_used_size(b"p").unwrap(),
+            u64::from(CHUNK_SIZE_SMALL)
+        );
+    }
+
+    #[test]
+    fn test_engine_recovers_aborted_uncommitted_removes() {
+        check_uncommitted_remove_recovery(false);
+    }
+
+    #[test]
+    fn test_engine_recovers_uncommitted_removes_after_reopen() {
+        check_uncommitted_remove_recovery(true);
     }
 
     #[test]
