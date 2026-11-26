@@ -237,8 +237,13 @@ impl Engine {
         let mut entry = self.meta_cache.entry_by_ref(chunk_id);
         match entry.get() {
             Some(chunk) if Arc::ptr_eq(chunk, &old_chunk) => {
-                self.meta_store
-                    .move_chunk(chunk_id, old_chunk.meta(), new_chunk.meta(), true)?;
+                self.meta_store.move_chunk(
+                    chunk_id,
+                    old_chunk.meta(),
+                    new_chunk.meta(),
+                    false,
+                    true,
+                )?;
                 let new_chunk = Arc::new(new_chunk);
                 entry.insert(new_chunk.clone());
                 Ok(Some(new_chunk))
@@ -502,8 +507,13 @@ impl Engine {
         let mut entry = self.meta_cache.entry_by_ref(chunk_id);
         match self.get_with_entry(chunk_id, &mut entry)? {
             Some(old_chunk) => {
-                self.meta_store
-                    .move_chunk(chunk_id, old_chunk.meta(), new_chunk.meta(), sync)?;
+                self.meta_store.move_chunk(
+                    chunk_id,
+                    old_chunk.meta(),
+                    new_chunk.meta(),
+                    true,
+                    sync,
+                )?;
             }
             None => {
                 self.meta_store
@@ -554,6 +564,7 @@ impl Engine {
                         &chunk.chunk_id,
                         old_chunk.meta(),
                         chunk.meta(),
+                        true,
                         &mut write_batch,
                     )?,
                     None => self.meta_store.add_chunk_mut(
@@ -1701,5 +1712,155 @@ mod tests {
 
         let _ = get_thread.join().unwrap();
         let _ = commit_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_move_chunk_preserves_pending_writing_chunk_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            ..Default::default()
+        };
+        let engine = Engine::open(&config).unwrap();
+
+        // Case 1: in-place append (v2.pos == v1.pos) followed by compaction move_chunk + crash.
+        let chunk_id = b"chunk01";
+        let v1_bytes = b"hello world!";
+        let mut req1 = UpdateReq {
+            length: v1_bytes.len() as _,
+            data: v1_bytes.as_ptr() as _,
+            without_checksum: true,
+            ..Default::default()
+        };
+        let v1 = engine.update(chunk_id, &mut req1).unwrap();
+        assert_eq!(v1.meta().len as usize, v1_bytes.len());
+
+        let v2_bytes = b"second-write-payload!";
+        let mut req2 = UpdateReq {
+            length: v2_bytes.len() as _,
+            data: v2_bytes.as_ptr() as _,
+            offset: v1_bytes.len() as _,
+            without_checksum: true,
+            ..Default::default()
+        };
+        let v2_writing = engine.update_chunk(chunk_id, &mut req2).unwrap();
+        let expected_v2_payload = [v1_bytes.as_slice(), v2_bytes.as_slice()].concat();
+        assert_eq!(v2_writing.meta().pos, v1.meta().pos);
+        assert_eq!(v2_writing.meta().len as usize, expected_v2_payload.len());
+
+        // Background compaction relocates committed v1 while v2 is still staged/uncommitted.
+        let moved = engine.move_chunk(chunk_id).unwrap();
+        assert!(moved.is_some());
+        assert_eq!(moved.unwrap().meta().len as usize, v1_bytes.len());
+
+        // Timestamp index must remain intact after compaction relocation.
+        let by_ts = engine
+            .query_chunks_by_timestamp(&[], 0, u64::MAX, 100)
+            .unwrap();
+        assert!(by_ts.iter().any(|(id, _)| id.as_ref() == chunk_id));
+
+        // Case 2: COW overwrite (v2.pos != v1.pos) followed by compaction move_chunk + crash.
+        let cow_chunk_id = b"chunk02";
+        let cow_v1 = b"initial-cow-v1";
+        let mut cow_req1 = UpdateReq {
+            length: cow_v1.len() as _,
+            data: cow_v1.as_ptr() as _,
+            without_checksum: true,
+            ..Default::default()
+        };
+        let cow_c1 = engine.update(cow_chunk_id, &mut cow_req1).unwrap();
+
+        let cow_v2 = b"overwritten-cow-v2-data!";
+        let mut cow_req2 = UpdateReq {
+            length: cow_v2.len() as _,
+            data: cow_v2.as_ptr() as _,
+            offset: 0,
+            without_checksum: true,
+            ..Default::default()
+        };
+        let cow_v2_writing = engine.update_chunk(cow_chunk_id, &mut cow_req2).unwrap();
+        assert_ne!(cow_v2_writing.meta().pos, cow_c1.meta().pos);
+
+        let cow_moved = engine.move_chunk(cow_chunk_id).unwrap();
+        assert!(cow_moved.is_some());
+
+        // Case 3: normal commit after move_chunk must still clear writing_chunk_key.
+        let committed_id = b"chunk03";
+        let c3_v1 = b"commit-after-move-v1";
+        let mut c3_req1 = UpdateReq {
+            length: c3_v1.len() as _,
+            data: c3_v1.as_ptr() as _,
+            without_checksum: true,
+            ..Default::default()
+        };
+        engine.update(committed_id, &mut c3_req1).unwrap();
+        let c3_v2 = b"commit-after-move-v2!";
+        let mut c3_req2 = UpdateReq {
+            length: c3_v2.len() as _,
+            data: c3_v2.as_ptr() as _,
+            offset: 0,
+            without_checksum: true,
+            ..Default::default()
+        };
+        let c3_writing = engine.update_chunk(committed_id, &mut c3_req2).unwrap();
+        assert!(engine.move_chunk(committed_id).unwrap().is_some());
+        engine.commit_chunk(c3_writing, true).unwrap();
+
+        // Simulate crash before chunk01/chunk02 v2 commits locally, then reopen and recover.
+        drop(v2_writing);
+        drop(cow_v2_writing);
+        drop(engine);
+
+        let reopen_cfg = EngineConfig {
+            path: dir.path().into(),
+            create: false,
+            ..Default::default()
+        };
+        let engine = Engine::open(&reopen_cfg).unwrap();
+        let uncommitted = engine.query_uncommitted_chunks(&[]).unwrap();
+        assert_eq!(
+            uncommitted.len(),
+            2,
+            "pending v2 journals were erased by move_chunk!"
+        );
+
+        engine.handle_uncommitted_chunks(&[], 2).unwrap();
+
+        let recovered1 = engine.get(chunk_id).unwrap().unwrap();
+        assert_eq!(recovered1.meta().len as usize, expected_v2_payload.len());
+        let mut buf1 = vec![0u8; expected_v2_payload.len()];
+        recovered1.pread(&mut buf1, 0).unwrap();
+        assert_eq!(buf1, expected_v2_payload);
+        assert_eq!(recovered1.meta().checksum, crc32c::crc32c(&buf1));
+
+        let recovered2 = engine.get(cow_chunk_id).unwrap().unwrap();
+        assert_eq!(recovered2.meta().len as usize, cow_v2.len());
+        let mut buf2 = vec![0u8; cow_v2.len()];
+        recovered2.pread(&mut buf2, 0).unwrap();
+        assert_eq!(buf2, cow_v2);
+        assert_eq!(recovered2.meta().checksum, crc32c::crc32c(&buf2));
+
+        let recovered3 = engine.get(committed_id).unwrap().unwrap();
+        let mut buf3 = vec![0u8; c3_v2.len()];
+        recovered3.pread(&mut buf3, 0).unwrap();
+        assert_eq!(buf3, c3_v2);
+
+        // Second reopen verifies RocksDB metadata & group bitmaps remain fully consistent.
+        drop(recovered1);
+        drop(recovered2);
+        drop(recovered3);
+        drop(engine);
+
+        let engine = Engine::open(&reopen_cfg).unwrap();
+        assert!(engine.query_uncommitted_chunks(&[]).unwrap().is_empty());
+        assert_eq!(
+            engine.get(chunk_id).unwrap().unwrap().meta().len as usize,
+            expected_v2_payload.len()
+        );
+        assert_eq!(
+            engine.get(cow_chunk_id).unwrap().unwrap().meta().len as usize,
+            cow_v2.len()
+        );
     }
 }

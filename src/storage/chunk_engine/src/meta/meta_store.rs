@@ -195,10 +195,17 @@ impl MetaStore {
         chunk_id: &[u8],
         old_meta: &ChunkMeta,
         new_meta: &ChunkMeta,
+        remove_writing_chunk: bool,
         sync: bool,
     ) -> Result<()> {
         let mut write_batch = RocksDB::new_write_batch();
-        self.move_chunk_mut(chunk_id, old_meta, new_meta, &mut write_batch)?;
+        self.move_chunk_mut(
+            chunk_id,
+            old_meta,
+            new_meta,
+            remove_writing_chunk,
+            &mut write_batch,
+        )?;
         self.write(write_batch, sync)
     }
 
@@ -207,6 +214,7 @@ impl MetaStore {
         chunk_id: &[u8],
         old_meta: &ChunkMeta,
         new_meta: &ChunkMeta,
+        remove_writing_chunk: bool,
         write_batch: &mut rocksdb::WriteBatch,
     ) -> Result<()> {
         // 1. change chunk meta.
@@ -257,15 +265,19 @@ impl MetaStore {
 
         // 5. update timestamp->chunk map.
         self.check_chunk_id(chunk_id)?;
-        let timestamp_key =
-            MetaKey::timestamp_key(new_meta.timestamp, chunk_id, self.config.prefix_len);
-        write_batch.put(timestamp_key, []);
-        let timestamp_key =
-            MetaKey::timestamp_key(old_meta.timestamp, chunk_id, self.config.prefix_len);
-        write_batch.delete(timestamp_key);
+        if old_meta.timestamp != new_meta.timestamp {
+            let timestamp_key =
+                MetaKey::timestamp_key(new_meta.timestamp, chunk_id, self.config.prefix_len);
+            write_batch.put(timestamp_key, []);
+            let timestamp_key =
+                MetaKey::timestamp_key(old_meta.timestamp, chunk_id, self.config.prefix_len);
+            write_batch.delete(timestamp_key);
+        }
 
-        // 6. remove writing chunk log.
-        self.remove_writing_chunk_mut(chunk_id, write_batch);
+        // 6. remove writing chunk log when committing an uncommitted write.
+        if remove_writing_chunk {
+            self.remove_writing_chunk_mut(chunk_id, write_batch);
+        }
 
         Ok(())
     }
