@@ -1218,31 +1218,20 @@ void hf3fs_symlink(fuse_req_t req, const char *link, fuse_ino_t fparent, const c
                                pid,
                                userInfo,
                                &d.client->tpg().bgThreadPool().randomPick(),
-                               *d.storageClient);
+                               *d.storageClient,
+                               d.iors,
+                               d.fuseRemountPref ? *d.fuseRemountPref : d.fuseMountpoint);
       if (res.hasError()) {
         handle_error(req, res);
       } else {
-        auto &[inode, ior] = *res;
-        if (ior) {
-          auto res2 = d.iors.addIoRing(d.fuseRemountPref.value_or(d.fuseMountpoint),
-                                       res->second,
-                                       name,
-                                       userInfo,
-                                       ior->forRead,
-                                       ior->bufStart,
-                                       ior->size,
-                                       ior->ioDepth,
-                                       *ior->iora);
-          if (!res2) {
-            handle_error(req, res);
-          }
-          // record the ior index for later removal
-          res->second->iorIndex = *res2;
-        }
-        //        add_entry(inode, &e);
-        fillLinuxStat(e.attr, inode);
+        fillLinuxStat(e.attr, *res);
         e.ino = e.attr.st_ino;
-        fuse_reply_entry(req, &e);
+        if (fuse_reply_entry(req, &e) != 0) {
+          auto removed = d.iovs.rmIov(name, userInfo);
+          if (removed && (*removed)->isIoRing) {
+            d.iors.rmIoRing((*removed)->iorIndex);
+          }
+        }
       }
     } else if (*dname == "set-conf") {
       auto res = d.userConfig.setConfig(name, link, userInfo);

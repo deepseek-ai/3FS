@@ -7,16 +7,20 @@
 #include "lib/common/Shm.h"
 
 namespace hf3fs::fuse {
+struct IoRingTable;
+
 class IovTable {
  public:
   IovTable() = default;
   void init(const Path &mount, int cap);
-  Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> addIov(const char *key,
-                                                                      const Path &shmPath,
-                                                                      pid_t pid,
-                                                                      const meta::UserInfo &ui,
-                                                                      folly::Executor::KeepAlive<> exec,
-                                                                      storage::client::StorageClient &sc);
+  Result<meta::Inode> addIov(const char *key,
+                            const Path &shmPath,
+                            pid_t pid,
+                            const meta::UserInfo &ui,
+                            folly::Executor::KeepAlive<> exec,
+                            storage::client::StorageClient &sc,
+                            IoRingTable &rings,
+                            const Path &ringMount);
   Result<std::shared_ptr<lib::ShmBuf>> rmIov(const char *key, const meta::UserInfo &ui);
   Result<meta::Inode> lookupIov(const char *key, const meta::UserInfo &ui);
   std::optional<int> iovDesc(meta::InodeId iid);
