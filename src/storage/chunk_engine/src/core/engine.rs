@@ -388,11 +388,12 @@ impl Engine {
         }
 
         // 4. do update.
+        // A shrink needs a new slot so a later append cannot overwrite a pinned version.
         let mut new_chunk = match old_chunk {
             Some(old_chunk) if req.is_remove => old_chunk.as_ref().clone(),
             Some(old_chunk)
                 if req.is_syncing
-                    || (req.length > 0 && req.offset < old_chunk.meta().len)
+                    || ((req.is_truncate || req.length > 0) && req.offset < old_chunk.meta().len)
                     || req.offset + req.length > old_chunk.capacity() =>
             {
                 old_chunk.copy_on_write(
@@ -400,6 +401,7 @@ impl Engine {
                     req.offset,
                     req.checksum,
                     req.is_syncing,
+                    req.is_truncate,
                     self.allow_to_allocate.load(Ordering::Acquire),
                     &self.allocators,
                     &self.metrics,
@@ -1279,6 +1281,88 @@ mod tests {
             format!("{:?}", chunk.as_ref()),
             format!("{:?}", chunk.meta())
         );
+    }
+
+    #[test]
+    fn test_engine_truncate_shrink_preserves_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let cases = [
+            (8192, 4096usize),
+            (5000, 100),
+            (12, 4),
+            (12, 0),
+            (usize::from(CHUNK_SIZE_SMALL) + 1, 4097),
+        ];
+        for (old_len, new_len) in cases {
+            let chunk_id = &new_len.to_le_bytes();
+            let original = vec![0xa5; old_len];
+            engine
+                .write(chunk_id, &original, 0, crc32c::crc32c(&original))
+                .unwrap();
+            let v1 = engine.get(chunk_id).unwrap().unwrap();
+
+            let v2 = engine.truncate(chunk_id, new_len as u32).unwrap();
+            assert_chunk_data(&v1, &original);
+            let aligned_len = new_len.next_multiple_of(ALIGN_SIZE.into());
+            let mut truncated = vec![0; aligned_len];
+            v2.pread(&mut truncated, 0).unwrap();
+
+            let appended = b"append";
+            let v3 = engine
+                .write(chunk_id, appended, new_len as u32, crc32c::crc32c(appended))
+                .unwrap();
+            assert_chunk_data(&v1, &original);
+            assert_chunk_data(&v2, &original[..new_len]);
+            assert_eq!(&truncated[..new_len], &original[..new_len]);
+            assert!(truncated[new_len..].iter().all(|&byte| byte == 0));
+            assert_ne!(v2.meta().pos, v1.meta().pos);
+            assert_eq!(v2.capacity(), u32::from(CHUNK_SIZE_SMALL));
+
+            let mut expected = original[..new_len].to_vec();
+            expected.extend_from_slice(appended);
+            assert_chunk_data(&v3, &expected);
+        }
+    }
+
+    #[test]
+    fn test_engine_truncate_extend_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        for (old_len, new_len) in [(4096, 8192usize), (12, 100)] {
+            let chunk_id = &new_len.to_le_bytes();
+            let mut expected = vec![0xa5; old_len];
+            let v1 = engine
+                .write(chunk_id, &expected, 0, crc32c::crc32c(&expected))
+                .unwrap();
+
+            let v2 = engine.truncate(chunk_id, new_len as u32).unwrap();
+            assert_eq!(v1.meta().pos, v2.meta().pos);
+            assert_chunk_data(&v1, &expected);
+            expected.resize(new_len, 0);
+            assert_chunk_data(&v2, &expected);
+        }
+    }
+
+    #[track_caller]
+    fn assert_chunk_data(chunk: &Chunk, expected: &[u8]) {
+        assert_eq!(chunk.meta().len as usize, expected.len());
+        let mut actual = vec![0; expected.len()];
+        chunk.pread(&mut actual, 0).unwrap();
+        assert_eq!(actual.as_slice(), expected);
+        assert_eq!(chunk.meta().checksum, crc32c::crc32c(&actual));
     }
 
     #[test]
