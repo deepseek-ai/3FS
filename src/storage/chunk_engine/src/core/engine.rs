@@ -1992,6 +1992,58 @@ mod tests {
     }
 
     #[test]
+    fn test_move_chunk_preserves_etag() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let chunk_id = b"etag-relocation";
+        let data = b"etag payload";
+        let mut req = UpdateReq {
+            length: data.len() as _,
+            data: data.as_ptr() as _,
+            checksum: crc32c::crc32c(data),
+            desired_tag: b"my-client-tag",
+            ..Default::default()
+        };
+        let writing = engine.update_chunk(chunk_id, &mut req).unwrap();
+        engine.commit_chunk(writing, false).unwrap();
+        assert_eq!(
+            engine
+                .get(chunk_id)
+                .unwrap()
+                .unwrap()
+                .meta()
+                .etag
+                .as_slice(),
+            b"my-client-tag".as_slice()
+        );
+
+        // Compaction relocation copies the chunk into a new slot; it must not
+        // drop the client-visible etag, otherwise CAS writers would fail.
+        let moved = engine.move_chunk(chunk_id).unwrap().unwrap();
+        assert_eq!(
+            moved.meta().etag.as_slice(),
+            b"my-client-tag".as_slice(),
+            "compaction relocation must preserve the client-visible etag"
+        );
+        assert_eq!(
+            engine
+                .get(chunk_id)
+                .unwrap()
+                .unwrap()
+                .meta()
+                .etag
+                .as_slice(),
+            b"my-client-tag".as_slice()
+        );
+    }
+
+    #[test]
     fn test_move_chunk_preserves_pending_writing_chunk_journal() {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {

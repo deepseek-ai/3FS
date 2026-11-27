@@ -67,10 +67,11 @@ impl Chunk {
         let mut new_chunk = self.allocator.allocate(true)?;
 
         // 2. copy meta.
+        // Relocation must keep the client-visible metadata (etag, versions,
+        // timestamps); only the physical position changes.
         new_chunk.meta = ChunkMeta {
             pos: new_chunk.meta.pos,
-            etag: Default::default(),
-            ..self.meta
+            ..self.meta.clone()
         };
 
         // 3. copy data.
