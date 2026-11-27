@@ -2,6 +2,7 @@
 #include <folly/Random.h>
 #include <folly/experimental/TestUtil.h>
 #include <folly/logging/xlog.h>
+#include <fstream>
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
 
