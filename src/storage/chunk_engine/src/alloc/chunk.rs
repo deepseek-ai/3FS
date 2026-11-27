@@ -124,9 +124,10 @@ impl Chunk {
         let checksum = Self::BUFFER.with(|v| {
             let mut vec = v.borrow_mut();
             if !skip_read && new_len != 0 {
-                // aligned read.
-                let retained_len = if is_shrinking { new_len } else { self.meta.len };
-                let len = retained_len.next_multiple_of(ALIGN_SIZE.into());
+                // Read the whole old chunk before merging or truncating it. Even a
+                // shrinking truncate only keeps a prefix, but the stored checksum
+                // covers the full chunk, so verification needs every byte.
+                let len = self.meta.len.next_multiple_of(ALIGN_SIZE.into());
                 let begin = std::time::Instant::now();
                 self.pread(&mut vec[..len as usize], 0)?;
                 let latency = std::time::Instant::now().duration_since(begin).as_micros() as _;
@@ -139,6 +140,17 @@ impl Chunk {
                 metrics
                     .copy_on_write_read_latency
                     .fetch_add(latency, Ordering::AcqRel);
+
+                // Verify old chunk data integrity before merging. Otherwise a
+                // pre-existing on-disk corruption would be silently baked into
+                // the replacement chunk with a freshly computed checksum.
+                let old_crc32c = crc32c::crc32c(&vec[..self.meta.len as usize]);
+                if old_crc32c != self.meta.checksum {
+                    return Err(Error::ChecksumMismatch(format!(
+                        "copy_on_write: old chunk checksum mismatch: calculated={:08X}, stored={:08X}",
+                        old_crc32c, self.meta.checksum
+                    )));
+                }
             }
 
             // aligned write.

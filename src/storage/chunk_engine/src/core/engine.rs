@@ -1379,6 +1379,98 @@ mod tests {
         assert_eq!(chunk.meta().checksum, crc32c::crc32c(&actual));
     }
 
+    /// Overwrite the whole on-disk slot of `chunk` behind the engine's back.
+    fn corrupt_chunk_slot(chunk: &Chunk) {
+        let mut buf = create_aligned_buf(CHUNK_SIZE_SMALL);
+        buf.fill(0xAA);
+        let FdAndOffset { fd, offset } = chunk.fd_and_offset();
+        let written = unsafe {
+            libc::pwrite(
+                fd,
+                buf.as_ptr() as *const libc::c_void,
+                buf.len(),
+                offset as libc::off_t,
+            )
+        };
+        assert_eq!(
+            written as usize,
+            buf.len(),
+            "failed to corrupt chunk slot: {:?}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    #[test]
+    fn test_engine_copy_on_write_detects_corrupted_old_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let chunk_id = b"cow-corrupt";
+        let data = vec![0xA5u8; 4096];
+        let checksum = crc32c::crc32c(&data);
+        engine.write(chunk_id, &data, 0, checksum).unwrap();
+
+        let chunk = engine.get(chunk_id).unwrap().unwrap();
+        corrupt_chunk_slot(&chunk);
+
+        // A partial overwrite merges the old chunk data into a replacement.
+        // It must fail instead of silently persisting the corrupted bytes.
+        let new_data = b"overwrite";
+        let mut req = UpdateReq {
+            length: new_data.len() as _,
+            offset: 0,
+            data: new_data.as_ptr() as _,
+            checksum: crc32c::crc32c(new_data),
+            ..Default::default()
+        };
+        let err = engine.update_chunk(chunk_id, &mut req).unwrap_err();
+        assert!(
+            matches!(err, Error::ChecksumMismatch(_)),
+            "expected ChecksumMismatch, got {err:?}"
+        );
+
+        // The committed metadata must stay untouched after the rejected write.
+        let meta = engine.get(chunk_id).unwrap().unwrap().meta().clone();
+        assert_eq!(meta.len as usize, data.len());
+        assert_eq!(meta.checksum, checksum);
+    }
+
+    #[test]
+    fn test_engine_truncate_detects_corrupted_old_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let chunk_id = b"truncate-corrupt";
+        let data = vec![0x5Au8; 8192];
+        let checksum = crc32c::crc32c(&data);
+        engine.write(chunk_id, &data, 0, checksum).unwrap();
+
+        let chunk = engine.get(chunk_id).unwrap().unwrap();
+        corrupt_chunk_slot(&chunk);
+
+        // Shrinking truncate also copies old chunk bytes into a new slot; it
+        // must verify the stored checksum before doing so.
+        let err = engine.truncate(chunk_id, 5000).unwrap_err();
+        assert!(
+            matches!(err, Error::ChecksumMismatch(_)),
+            "expected ChecksumMismatch, got {err:?}"
+        );
+
+        let meta = engine.get(chunk_id).unwrap().unwrap().meta().clone();
+        assert_eq!(meta.len as usize, data.len());
+        assert_eq!(meta.checksum, checksum);
+    }
+
     #[test]
     fn test_engine_checksum() {
         let dir = tempfile::tempdir().unwrap();
