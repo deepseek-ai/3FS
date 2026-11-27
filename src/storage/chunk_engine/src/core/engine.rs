@@ -8,6 +8,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only fault injection, scoped to the calling test thread so tests
+    /// that share the engine code cannot observe each other's failures.
+    static FAIL_NEXT_PERSIST_WRITING_CHUNK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct EngineConfig {
     pub path: PathBuf,
@@ -457,7 +464,7 @@ impl Engine {
         let prefix: Bytes = chunk_id[..self.prefix_len].into();
         let mut writing_list = self.writing_list.entry(prefix).or_default();
         let entry = writing_list.entry(chunk_id.into());
-        let replaces_remove = if let std::collections::hash_map::Entry::Occupied(entry) = &entry {
+        if let std::collections::hash_map::Entry::Occupied(entry) = &entry {
             let holder = entry.get();
             if !holder.abort {
                 return Err(Error::InvalidArg(format!(
@@ -466,28 +473,17 @@ impl Engine {
                     holder.chunk.meta(),
                 )));
             }
-            holder.is_remove
-        } else {
-            false
-        };
-
-        // Publish changes to remove intent only after the journal put succeeds.
-        let persist_before_publish = req.is_remove || replaces_remove;
-        if persist_before_publish {
-            self.meta_store
-                .persist_writing_chunk(chunk_id, new_chunk.meta(), req.is_remove)?;
         }
+
+        // Persist the journal before publishing the holder. If the journal
+        // put fails, the chunk must not be left permanently "in writing".
+        self.persist_writing_chunk_for_update(chunk_id, new_chunk.meta(), req.is_remove)?;
         entry.insert_entry(WritingHolder {
             chunk: new_chunk.clone(),
             abort: false,
             is_remove: req.is_remove,
         });
         drop(writing_list);
-
-        if !persist_before_publish {
-            self.meta_store
-                .persist_writing_chunk(chunk_id, new_chunk.meta(), false)?;
-        }
 
         Ok(WritingChunk {
             chunk_id: chunk_id.into(),
@@ -497,6 +493,22 @@ impl Engine {
             is_remove: req.is_remove,
             commit_succ: false,
         })
+    }
+
+    fn persist_writing_chunk_for_update(
+        &self,
+        chunk_id: &[u8],
+        chunk_meta: &ChunkMeta,
+        is_remove: bool,
+    ) -> Result<()> {
+        #[cfg(test)]
+        if FAIL_NEXT_PERSIST_WRITING_CHUNK.with(|flag| flag.replace(false)) {
+            return Err(Error::RocksDBError(
+                "injected writing chunk persist failure".into(),
+            ));
+        }
+        self.meta_store
+            .persist_writing_chunk(chunk_id, chunk_meta, is_remove)
     }
 
     pub fn commit_chunk(&self, mut chunk: WritingChunk, sync: bool) -> Result<ChunkArc> {
@@ -1728,6 +1740,47 @@ mod tests {
             .entry(Default::default())
             .or_default()
             .is_empty());
+    }
+
+    #[test]
+    fn test_engine_update_failure_does_not_leave_stuck_writing_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let chunk_id = b"stuck-chunk";
+        let data = b"payload";
+        let mut req = UpdateReq {
+            length: data.len() as _,
+            data: data.as_ptr() as _,
+            without_checksum: true,
+            ..Default::default()
+        };
+
+        FAIL_NEXT_PERSIST_WRITING_CHUNK.with(|flag| flag.set(true));
+        let err = engine.update_chunk(chunk_id, &mut req).unwrap_err();
+        assert!(
+            matches!(err, Error::RocksDBError(_)),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            engine
+                .writing_list
+                .entry(Default::default())
+                .or_default()
+                .is_empty(),
+            "failed journal persist must not publish a writing holder"
+        );
+        assert!(engine.query_uncommitted_chunks(&[]).unwrap().is_empty());
+
+        // The chunk must remain writable immediately after the failed persist.
+        let chunk = engine.update_chunk(chunk_id, &mut req).unwrap();
+        engine.commit_chunk(chunk, false).unwrap();
+        assert!(engine.get(chunk_id).unwrap().is_some());
     }
 
     #[test]
