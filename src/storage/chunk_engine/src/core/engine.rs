@@ -313,6 +313,15 @@ impl Engine {
                 chunk_id, self.prefix_len
             )));
         }
+        if req.is_syncing && req.offset != 0 {
+            // A syncing write replaces the whole chunk: the caller-provided
+            // checksum covers the full payload, and copy_on_write persists it
+            // without reading the bytes before `offset`.
+            return Err(Error::InvalidArg(format!(
+                "chunk id {:?} syncing chunk must start from offset 0",
+                chunk_id
+            )));
+        }
 
         // 1. prepare update info.
         let data = if req.length != 0 {
@@ -1469,6 +1478,49 @@ mod tests {
         let meta = engine.get(chunk_id).unwrap().unwrap().meta().clone();
         assert_eq!(meta.len as usize, data.len());
         assert_eq!(meta.checksum, checksum);
+    }
+
+    #[test]
+    fn test_engine_rejects_syncing_write_with_nonzero_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let chunk_id = b"syncing-offset";
+        let data = b"hi!";
+        let mut req = UpdateReq {
+            is_syncing: true,
+            offset: 1,
+            length: data.len() as _,
+            data: data.as_ptr() as _,
+            without_checksum: true,
+            ..Default::default()
+        };
+        let err = engine.update_chunk(chunk_id, &mut req).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidArg(_)),
+            "syncing writes must start at offset 0, got {err:?}"
+        );
+
+        // Offset 0 remains supported for syncing writes.
+        let mut req = UpdateReq {
+            is_syncing: true,
+            offset: 0,
+            length: data.len() as _,
+            data: data.as_ptr() as _,
+            without_checksum: true,
+            ..Default::default()
+        };
+        let chunk = engine.update_chunk(chunk_id, &mut req).unwrap();
+        engine.commit_chunk(chunk, false).unwrap();
+        let chunk = engine.get(chunk_id).unwrap().unwrap();
+        let mut buf = vec![0u8; data.len()];
+        chunk.pread(&mut buf, 0).unwrap();
+        assert_eq!(buf.as_slice(), data);
     }
 
     #[test]
