@@ -83,6 +83,8 @@ impl MetaStore {
 
         for _ in 0..max_count {
             if !it.valid() {
+                // An invalid iterator can mean an I/O or merge error as well as EOF.
+                it.status()?;
                 break;
             }
 
@@ -101,6 +103,8 @@ impl MetaStore {
 
             it.next();
         }
+        // The final `next()` may have failed after the loop limit was reached.
+        it.status()?;
 
         Ok(out)
     }
@@ -120,6 +124,8 @@ impl MetaStore {
 
         for _ in 0..max_count {
             if !it.valid() {
+                // An invalid iterator can mean an I/O or merge error as well as EOF.
+                it.status()?;
                 break;
             }
 
@@ -140,6 +146,8 @@ impl MetaStore {
 
             it.next();
         }
+        // The final `next()` may have failed after the loop limit was reached.
+        it.status()?;
 
         Ok(out)
     }
@@ -475,6 +483,8 @@ impl MetaStore {
 
         loop {
             if !it.valid() {
+                // An invalid iterator can mean an I/O or merge error as well as EOF.
+                it.status()?;
                 break;
             }
 
@@ -917,5 +927,35 @@ mod tests {
         let meta_store = MetaStore::open(&config).unwrap();
         let size = meta_store.query_used_size(&[]).unwrap();
         assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn test_query_uncommitted_chunks_propagates_iterator_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MetaStoreConfig {
+            rocksdb: RocksDBConfig {
+                path: dir.path().into(),
+                create: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let meta_store = MetaStore::open(&config).unwrap();
+
+        meta_store
+            .persist_writing_chunk(b"a", &ChunkMeta::default(), false)
+            .unwrap();
+
+        // MetaMergeOp has no merge support for writing-chunk keys. RocksDB only
+        // reports this corruption while the iterator advances past the valid
+        // entry, which is exactly the case the scan loops must not swallow.
+        let mut write_batch = RocksDB::new_write_batch();
+        write_batch.merge(MetaKey::writing_chunk_key(b"b"), &[][..]);
+        meta_store.write(write_batch, false).unwrap();
+
+        assert!(matches!(
+            meta_store.query_uncommitted_chunks(&[]),
+            Err(Error::RocksDBError(_))
+        ));
     }
 }
