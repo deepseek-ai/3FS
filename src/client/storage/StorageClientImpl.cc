@@ -1,10 +1,12 @@
 #include "StorageClientImpl.h"
 
 #include <boost/core/ignore_unused.hpp>
+#include <cstdint>
 #include <folly/Random.h>
 #include <folly/experimental/coro/Collect.h>
 #include <folly/experimental/coro/Sleep.h>
 #include <folly/experimental/symbolizer/Symbolizer.h>
+#include <limits>
 #include <memory>
 #include <random>
 
@@ -653,6 +655,14 @@ uint32_t buildFeatureFlagsFromOptions(const DebugOptions &debugOptions) {
   return featureFlags;
 }
 
+uint32_t buildWriteFeatureFlagsFromOptions(const DebugOptions &debugOptions, bool computeChecksumOnServer) {
+  auto featureFlags = buildFeatureFlagsFromOptions(debugOptions);
+  if (computeChecksumOnServer) {
+    BITFLAGS_SET(featureFlags, hf3fs::storage::FeatureFlags::SERVER_COMPUTE_CHECKSUM);
+  }
+  return featureFlags;
+}
+
 template <typename Op, typename BatchReq, typename Options>
 BatchReq buildBatchRequest(const ClientRequestContext &requestCtx,
                            const ClientId &clientId,
@@ -678,6 +688,7 @@ typename hf3fs::storage::BatchReadReq buildBatchRequest(const ClientRequestConte
   std::vector<hf3fs::storage::ReadIO> payloads;
   payloads.reserve(ops.size());
   size_t requestedBytes = 0;
+  bool hasGpuBuffer = false;  // Track if any IO uses GPU buffer
   auto requestTagSet = monitor::instanceTagSet("batchRead");
   auto tagged_bytes_per_operation = bytes_per_operation.getRecorderWithTag(requestTagSet);
 
@@ -687,14 +698,19 @@ typename hf3fs::storage::BatchReadReq buildBatchRequest(const ClientRequestConte
   for (auto &op : ops) {
     hf3fs::storage::GlobalKey key{op->routingTarget.getVersionedChainId(), op->chunkId};
 
-    size_t offset = op->data - op->buffer->data();
-    auto iobuf = op->buffer->subrange(offset, op->length);
+    auto offset = op->buffer->offsetOf(op->data, op->length);
+    XLOGF_IF(DFATAL, !offset, "Read IO data range was not validated before request build");
+    auto remoteBuf = op->buffer->subrangeRemote(offset.value_or(0), op->length);
 
     requestedBytes += op->length;
     tagged_bytes_per_operation->addSample(op->length);
 
+    if (op->buffer && op->buffer->isDeviceMemory()) {
+      hasGpuBuffer = true;
+    }
+
     op->requestId = requestId;
-    payloads.push_back({op->offset, op->length, std::move(key), iobuf.toRemoteBuf()});
+    payloads.push_back({op->offset, op->length, std::move(key), remoteBuf});
   }
 
   bytes_per_request.addSample(requestedBytes, requestTagSet);
@@ -703,7 +719,8 @@ typename hf3fs::storage::BatchReadReq buildBatchRequest(const ClientRequestConte
   auto checksumType = options.verifyChecksum() ? config.chunk_checksum_type() : ChecksumType::NONE;
   uint32_t featureFlags = buildFeatureFlagsFromOptions(options.debug());
 
-  if (requestedBytes < requestCtx.clientConfig.max_inline_read_bytes()) {
+  // Do not use inline data for GPU buffers - cannot memcpy to GPU memory
+  if (requestedBytes < requestCtx.clientConfig.max_inline_read_bytes() && !hasGpuBuffer) {
     BITFLAGS_SET(featureFlags, hf3fs::storage::FeatureFlags::SEND_DATA_INLINE);
   }
 
@@ -889,9 +906,12 @@ CoTryTask<Rsp> StorageClientImpl::callMessengerMethod(StorageMessenger &messenge
 template <typename IO>
 std::vector<IO *> validateDataRange(const std::vector<IO *> &ios, bool checkOverlappingBuffers) {
   std::vector<IO *> sortedIOs(begin(ios), end(ios));
+  auto addrOf = [](const uint8_t *ptr) { return reinterpret_cast<uintptr_t>(ptr); };
 
   if (checkOverlappingBuffers) {
-    std::sort(begin(sortedIOs), end(sortedIOs), [](const IO *a, const IO *b) { return a->data < b->data; });
+    std::sort(begin(sortedIOs), end(sortedIOs), [addrOf](const IO *a, const IO *b) {
+      return addrOf(a->data) < addrOf(b->data);
+    });
   }
 
   std::vector<IO *> validIOs;
@@ -928,7 +948,17 @@ std::vector<IO *> validateDataRange(const std::vector<IO *> &ios, bool checkOver
       return {};
     }
 
-    if (checkOverlappingBuffers && lastIO != nullptr && io->data < lastIO->dataEnd()) {
+    if (checkOverlappingBuffers && lastIO != nullptr) {
+      auto lastStart = addrOf(lastIO->data);
+      auto lastEnd = lastStart > std::numeric_limits<uintptr_t>::max() - lastIO->length
+                         ? std::numeric_limits<uintptr_t>::max()
+                         : lastStart + lastIO->length;
+      if (addrOf(io->data) >= lastEnd) {
+        validIOs.push_back(io);
+        lastIO = io;
+        continue;
+      }
+
       XLOGF(ERR,
             "#{}/{} User data overlaps: current data starts at {}, length {}; "
             "last data starts at {}, ends at {}, length {}",
@@ -937,7 +967,7 @@ std::vector<IO *> validateDataRange(const std::vector<IO *> &ios, bool checkOver
             fmt::ptr(io->data),
             io->length,
             fmt::ptr(lastIO->data),
-            fmt::ptr(lastIO->dataEnd()),
+            fmt::ptr(reinterpret_cast<const void *>(lastEnd)),
             lastIO->length);
       setErrorCodeOfOps(sortedIOs, StorageClientCode::kInvalidArg);
       return {};
@@ -965,11 +995,22 @@ std::vector<ReadIO *> splitReadIOs(StorageClientImpl &client,
       uint32_t ioLen = std::min(ioEnd - offset, length);
       assert(ioLen > 0);
 
+      auto parentDataOffset = parentIO->buffer->offsetOf(parentIO->data, parentIO->length);
+      XLOGF_IF(DFATAL, !parentDataOffset, "Parent read IO data range was not validated before split");
+      auto childDelta = static_cast<size_t>(offset - parentIO->offset);
+      auto childOffset = parentDataOffset.value_or(0);
+      XLOGF_IF(DFATAL,
+               childDelta > std::numeric_limits<size_t>::max() - childOffset,
+               "Split read IO data offset overflow");
+      childOffset = childDelta > std::numeric_limits<size_t>::max() - childOffset ? std::numeric_limits<size_t>::max()
+                                                                                  : childOffset + childDelta;
+      auto childData = parentIO->buffer->dataAtOffset(childOffset);
+
       parentIO->splittedIOs.push_back(client.createReadIO(parentIO->routingTarget.chainId,
                                                           parentIO->chunkId,
                                                           offset,
                                                           ioLen,
-                                                          parentIO->data + (offset - parentIO->offset),
+                                                          childData,
                                                           parentIO->buffer));
 
       XLOGF(DBG5,
@@ -1583,7 +1624,7 @@ CoTryTask<void> StorageClientImpl::batchReadWithRetry(ClientRequestContext &requ
   const bool splitLargeIOs = maxIOBytes > 0;
   std::vector<ReadIO *> splittedIOs;
 
-  auto sendOps = [ this, &requestCtx, &userInfo, &options ](const std::vector<ReadIO *> &ops) -> auto{
+  auto sendOps = [this, &requestCtx, &userInfo, &options](const std::vector<ReadIO *> &ops) -> auto {
     return batchReadWithoutRetry(requestCtx, ops, userInfo, options);
   };
 
@@ -1712,6 +1753,13 @@ CoTryTask<void> StorageClientImpl::batchReadWithoutRetry(ClientRequestContext &r
 
       auto inlinebuf = &response->inlinebuf.data[0];
       for (auto readIO : batchIOs) {
+        // Skip CPU memcpy for GPU memory buffers - this should not happen
+        // because inline data is disabled for GPU buffers, but check anyway
+        if (readIO->buffer && readIO->buffer->isDeviceMemory()) {
+          XLOGF(ERR, "BUG: Inline data received for GPU buffer - cannot memcpy to GPU memory");
+          setErrorCodeOfOp(readIO, StorageClientCode::kInvalidArg);
+          continue;
+        }
         std::memcpy(readIO->data, inlinebuf, readIO->resultLen());
         inlinebuf += readIO->resultLen();
       }
@@ -1720,6 +1768,11 @@ CoTryTask<void> StorageClientImpl::batchReadWithoutRetry(ClientRequestContext &r
     if (options.verifyChecksum()) {
       for (auto readIO : batchIOs) {
         if (readIO->result.lengthInfo && *readIO->result.lengthInfo > 0) {
+          // Skip CPU checksum verification for GPU memory - server checksum is trusted
+          if (readIO->buffer && readIO->buffer->isDeviceMemory()) {
+            XLOGF(DBG, "Skipping CPU checksum verification for GPU buffer");
+            continue;
+          }
           auto checksum = ChecksumInfo::create(readIO->result.checksum.type, readIO->data, *readIO->result.lengthInfo);
           if (FAULT_INJECTION_POINT(requestCtx.debugFlags.injectClientError(),
                                     true,
@@ -1773,7 +1826,7 @@ CoTryTask<void> StorageClientImpl::batchWriteWithRetry(ClientRequestContext &req
                                                        const flat::UserInfo &userInfo,
                                                        const WriteOptions &options,
                                                        std::vector<WriteIO *> &failedIOs) {
-  auto sendOps = [ this, &requestCtx, userInfo, options ](const std::vector<WriteIO *> &ops) -> auto{
+  auto sendOps = [this, &requestCtx, userInfo, options](const std::vector<WriteIO *> &ops) -> auto {
     return batchWriteWithoutRetry(requestCtx, ops, userInfo, options);
   };
 
@@ -1868,34 +1921,51 @@ CoTryTask<void> StorageClientImpl::sendWriteRequest(ClientRequestContext &reques
                                             hf3fs::storage::ChainVer(writeIO->routingTarget.chainVer)};
   hf3fs::storage::GlobalKey key{vChainId, hf3fs::storage::ChunkId(writeIO->chunkId)};
 
-  size_t offset = writeIO->data - writeIO->buffer->data();
-  auto iobuf = writeIO->buffer->subrange(offset, writeIO->length);
+  auto offset = writeIO->buffer->offsetOf(writeIO->data, writeIO->length);
+  XLOGF_IF(DFATAL, !offset, "Write IO data range was not validated before request build");
+  auto remoteBuf = writeIO->buffer->subrangeRemote(offset.value_or(0), writeIO->length);
 
   bytes_per_operation.addSample(writeIO->length, requestCtx.requestTagSet);
   bytes_per_request.addSample(writeIO->length, requestCtx.requestTagSet);
   ops_per_request.addSample(1, requestCtx.requestTagSet);
 
-  if (options.verifyChecksum()) {
+  // Check if buffer is GPU memory - skip CPU operations if so
+  bool isGpuBuffer = writeIO->buffer && writeIO->buffer->isDeviceMemory();
+
+  auto preparedChecksum = prepareWriteChecksum(config_.chunk_checksum_type(),
+                                               options.verifyChecksum(),
+                                               isGpuBuffer,
+                                               writeIO->data,
+                                               writeIO->length);
+  if (UNLIKELY(!preparedChecksum)) {
+    XLOGF(ERR, "Failed to prepare write checksum: {}", preparedChecksum.error());
+    setErrorCodeOfOp(writeIO, preparedChecksum.error().code());
+    co_return Void{};
+  }
+  writeIO->checksum = preparedChecksum->checksum;
+
+  if (options.verifyChecksum() && !isGpuBuffer && writeIO->length != 0) {
     writeIO->checksum = FAULT_INJECTION_POINT(
         requestCtx.debugFlags.injectClientError(),
         ChecksumInfo::create(config_.chunk_checksum_type(), writeIO->data, std::max(writeIO->length / 2, 1U)),
-        ChecksumInfo::create(config_.chunk_checksum_type(), writeIO->data, writeIO->length));
+        writeIO->checksum);
   }
 
   hf3fs::storage::RequestId requestId(writeIO->requestId);
   hf3fs::storage::MessageTag tag{clientId_, requestId, writeIO->routingTarget.channel};
-  uint32_t featureFlags = buildFeatureFlagsFromOptions(options.debug());
+  uint32_t featureFlags = buildWriteFeatureFlagsFromOptions(options.debug(), preparedChecksum->computeOnServer);
 
   hf3fs::storage::UpdateIO payload{writeIO->offset,
                                    writeIO->length,
                                    writeIO->chunkSize,
                                    key,
-                                   iobuf.toRemoteBuf(),
+                                   remoteBuf,
                                    hf3fs::storage::ChunkVer(0) /*updateVer*/,
                                    UpdateType::WRITE,
                                    writeIO->checksum};
 
-  if (writeIO->length <= requestCtx.clientConfig.max_inline_write_bytes()) {
+  // Do not use inline data for GPU buffers - cannot memcpy from GPU memory
+  if (writeIO->length <= requestCtx.clientConfig.max_inline_write_bytes() && !isGpuBuffer) {
     payload.inlinebuf.data.assign(writeIO->data, writeIO->data + writeIO->length);
     BITFLAGS_SET(featureFlags, hf3fs::storage::FeatureFlags::SEND_DATA_INLINE);
   }
@@ -2035,7 +2105,7 @@ CoTryTask<void> StorageClientImpl::queryLastChunk(std::span<QueryLastChunkOp> op
   std::vector<QueryLastChunkOp *> failedIOVec;
   if (failedOps == nullptr) failedOps = &failedIOVec;
 
-  auto sendOps = [ this, &requestCtx, userInfo, options ](const std::vector<QueryLastChunkOp *> &ops) -> auto{
+  auto sendOps = [this, &requestCtx, userInfo, options](const std::vector<QueryLastChunkOp *> &ops) -> auto {
     return queryLastChunkWithoutRetry(requestCtx, ops, userInfo, options);
   };
 
@@ -2138,7 +2208,7 @@ CoTryTask<void> StorageClientImpl::removeChunks(std::span<RemoveChunksOp> ops,
   std::vector<RemoveChunksOp *> failedIOVec;
   if (failedOps == nullptr) failedOps = &failedIOVec;
 
-  auto sendOps = [ this, &requestCtx, userInfo, options ](const std::vector<RemoveChunksOp *> &ops) -> auto{
+  auto sendOps = [this, &requestCtx, userInfo, options](const std::vector<RemoveChunksOp *> &ops) -> auto {
     return removeChunksWithoutRetry(requestCtx, ops, userInfo, options);
   };
 
@@ -2269,7 +2339,7 @@ CoTryTask<void> StorageClientImpl::truncateChunks(std::span<TruncateChunkOp> ops
   std::vector<TruncateChunkOp *> failedIOVec;
   if (failedOps == nullptr) failedOps = &failedIOVec;
 
-  auto sendOps = [ this, &requestCtx, userInfo, options ](const std::vector<TruncateChunkOp *> &ops) -> auto{
+  auto sendOps = [this, &requestCtx, userInfo, options](const std::vector<TruncateChunkOp *> &ops) -> auto {
     return truncateChunksWithoutRetry(requestCtx, ops, userInfo, options);
   };
 

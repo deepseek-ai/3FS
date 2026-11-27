@@ -1,9 +1,10 @@
 #include <cstdint>
 #include <fcntl.h>
 #include <fmt/format.h>
-#include <folly/logging/xlog.h>
 #include <folly/ScopeGuard.h>
+#include <folly/logging/xlog.h>
 #include <iostream>
+#include <limits>
 #include <numa.h>
 #include <sys/stat.h>
 
@@ -11,6 +12,7 @@
 #include "common/utils/Duration.h"
 #include "common/utils/Path.h"
 #include "fuse/IoRing.h"
+#include "lib/api/UsrbIoGdrInternal.h"
 #include "lib/api/fuse.h"
 #include "lib/api/hf3fs.h"
 #include "lib/api/hf3fs_usrbio.h"
@@ -30,6 +32,25 @@ struct Hf3fsLibAliveness {
 };
 
 static Hf3fsLibAliveness alive;
+
+extern "C" int hf3fs_ensure_iov_mount_fd_internal(const char *hf3fs_mount_point) {
+  if (!hf3fs_mount_point || !*hf3fs_mount_point) {
+    return -EINVAL;
+  }
+
+  std::lock_guard lock(alive.mtx);
+  if (alive.mountFds.contains(hf3fs_mount_point)) {
+    return 0;
+  }
+
+  auto fd = open(fmt::format("{}/3fs-virt/iovs", hf3fs_mount_point).c_str(), O_DIRECTORY);
+  if (fd < 0) {
+    return -errno;
+  }
+  alive.mountFds.emplace(hf3fs_mount_point, fd);
+  XLOGF(INFO, "fd {} for mount {}", fd, hf3fs_mount_point);
+  return 0;
+}
 
 bool hf3fs_is_hf3fs(int fd) {
   uint32_t magic = 0;
@@ -117,7 +138,7 @@ int hf3fs_iovcreate_general(struct hf3fs_iov *iov,
                             int priority = 0,
                             int timeout = 0,
                             uint64_t flags = 0) {
-  if (!iov) {
+  if (!iov || !hf3fs_mount_point || !*hf3fs_mount_point) {
     return -EINVAL;
   }
 
@@ -152,6 +173,11 @@ int hf3fs_iovcreate_general(struct hf3fs_iov *iov,
                           is_io_ring && priority != 0 ? fmt::format(".p{}", priority < 0 ? 'h' : 'l') : std::string(),
                           is_io_ring ? fmt::format(".t{}", timeout) : std::string(),
                           is_io_ring && flags != 0 ? fmt::format(".f{:b}", flags) : std::string());
+  auto aliveResult = hf3fs_ensure_iov_mount_fd_internal(hf3fs_mount_point);
+  if (aliveResult != 0) {
+    XLOGF(ERR, "failed to hold iovs directory for mount '{}': {}", hf3fs_mount_point, strerror(-aliveResult));
+    return aliveResult;
+  }
   auto lres = symlink(target.c_str(), link.c_str());
   if (lres < 0) {
     XLOGF(ERR, "failed to register iov '{}' to hf3fs '{}'", target, link);
@@ -171,13 +197,6 @@ int hf3fs_iovcreate_general(struct hf3fs_iov *iov,
   iov->numa = numa;
 
   succ = true;
-
-  std::lock_guard lock(alive.mtx);
-  if (alive.mountFds.find(hf3fs_mount_point) == alive.mountFds.end()) {
-    auto fd = open(fmt::format("{}/3fs-virt/iovs", hf3fs_mount_point).c_str(), O_DIRECTORY);
-    alive.mountFds[hf3fs_mount_point] = fd;
-    XLOGF(INFO, "fd {} for mount {}", fd, hf3fs_mount_point);
-  }
 
   return 0;
 }
@@ -222,7 +241,28 @@ void hf3fs_iovdestroy_general(struct hf3fs_iov *iov,
 }
 
 int hf3fs_iovcreate(struct hf3fs_iov *iov, const char *hf3fs_mount_point, size_t size, size_t block_size, int numa) {
+  // numa < 0 means "don't bind to any NUMA node" (original semantics)
+  // For device memory, use hf3fs_iovcreate_device() instead
   return hf3fs_iovcreate_general(iov, hf3fs_mount_point, size, block_size, numa, false, true, 0);
+}
+
+int hf3fs_iovcreate_device(struct hf3fs_iov *iov,
+                           const char *hf3fs_mount_point,
+                           size_t size,
+                           size_t block_size,
+                           int device_id) {
+  if (block_size != 0) {
+    XLOGF(ERR, "device iov does not support block_size: {}", block_size);
+    return -EINVAL;
+  }
+#ifdef HF3FS_ENABLE_GDR
+  if (hf3fs_gdr_available()) {
+    XLOGF(DBG, "Using GDR path for device {}", device_id);
+    return hf3fs_iovcreate_gpu_internal(iov, hf3fs_mount_point, size, block_size, device_id);
+  }
+#endif
+  XLOGF(DBG, "CUDA/GDR is unavailable for device {}", device_id);
+  return -ENOTSUP;
 }
 
 int hf3fs_iovopen(struct hf3fs_iov *iov,
@@ -231,6 +271,10 @@ int hf3fs_iovopen(struct hf3fs_iov *iov,
                   size_t size,
                   size_t block_size,
                   int numa) {
+  // numa < 0 means "don't bind to any NUMA node" (original semantics)
+  // For device memory, use hf3fs_iovopen_device() instead
+
+  // Host memory path
   hf3fs::Uuid uuid;
   memcpy(uuid.data, id, sizeof(uuid.data));
 
@@ -282,12 +326,55 @@ int hf3fs_iovopen(struct hf3fs_iov *iov,
   return 0;
 }
 
+// Only compiled when HF3FS_ENABLE_GDR — matches header guard.
+#ifdef HF3FS_ENABLE_GDR
+int hf3fs_iovopen_device(struct hf3fs_iov *iov,
+                         const uint8_t id[16],
+                         const char *hf3fs_mount_point,
+                         size_t size,
+                         size_t block_size,
+                         int device_id) {
+  if (block_size != 0) {
+    XLOGF(ERR, "device iov does not support block_size: {}", block_size);
+    return -EINVAL;
+  }
+  if (hf3fs_gdr_available()) {
+    XLOGF(DBG, "Using GDR path for iovopen_device, device {}", device_id);
+    return hf3fs_iovopen_gpu_internal(iov, id, hf3fs_mount_point, size, block_size, device_id);
+  }
+  return -ENOTSUP;
+}
+#endif
+
 void hf3fs_iovunlink(struct hf3fs_iov *iov) {
+  if (!iov || !iov->iovh) {
+    return;
+  }
+
+#ifdef HF3FS_ENABLE_GDR
+  if (hf3fs_iov_is_gpu_internal(iov)) {
+    auto result = hf3fs_iovunlink_gpu_internal(iov);
+    if (result != 0) {
+      XLOGF(ERR, "failed to unlink GPU iov publication: {}", strerror(-result));
+    }
+    return;
+  }
+#endif
+
   auto *shm = static_cast<hf3fs::lib::ShmBuf *>(iov->iovh);
   shm->maybeUnlinkShm();
 }
 
-void hf3fs_iovdestroy(struct hf3fs_iov *iov) { hf3fs_iovdestroy_general(iov, false, true, 0); }
+void hf3fs_iovdestroy(struct hf3fs_iov *iov) {
+#ifdef HF3FS_ENABLE_GDR
+  if (iov && hf3fs_iov_is_gpu_internal(iov)) {
+    hf3fs_iovdestroy_gpu_internal(iov);
+    return;
+  }
+#endif
+
+  hf3fs_iovdestroy_general(iov, false, true, 0);
+}
 
 size_t hf3fs_ior_size(int entries) { return hf3fs::fuse::IoRing::bytesRequired(entries); }
 
@@ -302,6 +389,10 @@ int hf3fs_iovwrap(struct hf3fs_iov *iov,
     return -EINVAL;
   }
 
+  // numa < 0 means "don't bind to any NUMA node" (original semantics)
+  // For device memory, use hf3fs_iovwrap_device() instead
+
+  // Host memory path
   if (strlen(hf3fs_mount_point) >= sizeof(iov->mount_point)) {
     XLOGF(ERR, "mount point too long '{}'", hf3fs_mount_point);
     return -EINVAL;
@@ -323,6 +414,27 @@ int hf3fs_iovwrap(struct hf3fs_iov *iov,
 
   return 0;
 }
+
+// Only compiled when HF3FS_ENABLE_GDR — matches header guard.
+#ifdef HF3FS_ENABLE_GDR
+int hf3fs_iovwrap_device(struct hf3fs_iov *iov,
+                         void *device_ptr,
+                         const uint8_t id[16],
+                         const char *hf3fs_mount_point,
+                         size_t size,
+                         size_t block_size,
+                         int device_id) {
+  if (block_size != 0) {
+    XLOGF(ERR, "device iov does not support block_size: {}", block_size);
+    return -EINVAL;
+  }
+  if (hf3fs_gdr_available()) {
+    XLOGF(DBG, "Using GDR path for iovwrap_device, device {}", device_id);
+    return hf3fs_iovwrap_gpu_internal(iov, device_ptr, id, hf3fs_mount_point, size, block_size, device_id);
+  }
+  return -ENOTSUP;
+}
+#endif
 
 struct Hf3fsIorHandle {
   std::unique_ptr<hf3fs::fuse::IoRing> ior;
@@ -621,10 +733,23 @@ int hf3fs_prep_io(const struct hf3fs_ior *ior,
                   size_t off,
                   uint64_t len,
                   const void *userdata) {
-  auto p = (uint8_t *)ptr;
-  auto afd = abs(fd);
-  if (!ior || !ior->iorh || read != ior->for_read || !iov || len <= 0 || !iov->base || p < iov->base ||
-      p + len > iov->base + iov->size || afd >= (int)regfds.size()) {
+  if (!ior || !ior->iorh || read != ior->for_read || !iov || !ptr || !iov->base || len == 0 ||
+      fd == std::numeric_limits<int>::min()) {
+    return -EINVAL;
+  }
+
+  auto base = reinterpret_cast<uintptr_t>(iov->base);
+  auto address = reinterpret_cast<uintptr_t>(ptr);
+  if (iov->size > std::numeric_limits<uintptr_t>::max() - base || address < base) {
+    return -EINVAL;
+  }
+  auto bufferOffset = address - base;
+  if (bufferOffset > iov->size || len > iov->size - bufferOffset) {
+    return -EINVAL;
+  }
+
+  auto afd = fd < 0 ? -fd : fd;
+  if (afd >= (int)regfds.size()) {
     return -EINVAL;
   }
 
@@ -648,7 +773,7 @@ int hf3fs_prep_io(const struct hf3fs_ior *ior,
 
   auto &args = ring.ringSection[*idx];
   memcpy(args.bufId, iov->id, sizeof(iov->id));
-  args.bufOff = p - iov->base;
+  args.bufOff = static_cast<size_t>(bufferOffset);
   args.fileIid = regfd->iid.u64();
   args.fileOff = off;
   args.ioLen = len;
@@ -803,5 +928,42 @@ int hf3fs_punchhole(int fd, int n, const size_t *start, const size_t *end, size_
   if (res != 0) {
     return errno;
   }
+  return 0;
+}
+
+enum hf3fs_mem_type hf3fs_iov_mem_type(const struct hf3fs_iov *iov) {
+  if (!iov) {
+    return HF3FS_MEM_HOST;
+  }
+#ifdef HF3FS_ENABLE_GDR
+  if (hf3fs_iov_is_gpu_internal(iov)) {
+    return HF3FS_MEM_DEVICE;
+  }
+#endif
+  return HF3FS_MEM_HOST;
+}
+
+int hf3fs_iov_device_id(const struct hf3fs_iov *iov) {
+  if (!iov) {
+    return -1;
+  }
+#ifdef HF3FS_ENABLE_GDR
+  if (hf3fs_iov_is_gpu_internal(iov)) {
+    return hf3fs_iov_gpu_device_internal(iov);
+  }
+#endif
+  return -1;
+}
+
+int hf3fs_iovsync(const struct hf3fs_iov *iov, int direction) {
+  if (!iov) {
+    return -EINVAL;
+  }
+#ifdef HF3FS_ENABLE_GDR
+  if (hf3fs_iov_is_gpu_internal(iov)) {
+    return hf3fs_iovsync_gpu_internal(iov, direction);
+  }
+#endif
+  (void)direction;
   return 0;
 }

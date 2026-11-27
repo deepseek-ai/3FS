@@ -1,5 +1,6 @@
 #include "FuseClients.h"
 
+#include <cstring>
 #include <folly/Random.h>
 #include <folly/ScopeGuard.h>
 #include <folly/executors/IOThreadPoolExecutor.h>
@@ -44,6 +45,23 @@ Result<Void> establishClientSession(client::IMgmtdClientForClient &mgmtdClient) 
   }());
 }
 }  // namespace
+
+void detail::lookupIovBuffers(const IovTable &iovs,
+                              std::vector<Result<IoBufForIO>> &output,
+                              meta::Uid requester,
+                              const IoArgs *args,
+                              const IoSqe *sqes,
+                              int count) {
+  std::vector<IovLookupRequest> requests;
+  requests.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    const auto &arg = args[sqes[i].index];
+    Uuid id;
+    memcpy(id.data, arg.bufId, sizeof(id.data));
+    requests.push_back(IovLookupRequest{id, arg.bufOff, arg.ioLen});
+  }
+  iovs.lookupBufs(output, requests, requester);
+}
 
 FuseClients::~FuseClients() { stop(); }
 
@@ -213,6 +231,9 @@ void FuseClients::stop() {
     client->stopAndJoin();
     client.reset();
   }
+#ifdef HF3FS_ENABLE_GDR
+  iovs.clearGpuIovs();
+#endif
 }
 
 CoTask<void> FuseClients::ioRingWorker(int i, int ths) {
@@ -293,44 +314,12 @@ CoTask<void> FuseClients::ioRingWorker(int i, int ths) {
                 ins.push_back(it == inodes.end() ? (std::shared_ptr<RcInode>()) : it->second);
               }
             };
-        auto lookupBufs =
-            [this](std::vector<Result<lib::ShmBufForIO>> &bufs, const IoArgs *args, const IoSqe *sqe, int sqec) {
-              auto lastId = Uuid::zero();
-              std::shared_ptr<lib::ShmBuf> lastShm;
-
-              std::lock_guard lock(iovs.shmLock);
-              for (int i = 0; i < sqec; ++i) {
-                auto &arg = args[sqe[i].index];
-                Uuid id;
-                memcpy(id.data, arg.bufId, sizeof(id.data));
-
-                std::shared_ptr<lib::ShmBuf> shm;
-                if (i && id == lastId) {
-                  shm = lastShm;
-                } else {
-                  auto it = iovs.shmsById.find(id);
-                  if (it == iovs.shmsById.end()) {
-                    bufs.emplace_back(makeError(StatusCode::kInvalidArg, "buf id not found"));
-                    continue;
-                  }
-
-                  auto iovd = it->second;
-                  shm = iovs.iovs->table[iovd].load();
-                  if (!shm) {
-                    bufs.emplace_back(makeError(StatusCode::kInvalidArg, "buf id not found"));
-                    continue;
-                  } else if (shm->size < arg.bufOff + arg.ioLen) {
-                    bufs.emplace_back(makeError(StatusCode::kInvalidArg, "invalid buf off and/or io len"));
-                    continue;
-                  }
-
-                  lastId = id;
-                  lastShm = shm;
-                }
-
-                bufs.emplace_back(lib::ShmBufForIO(std::move(shm), arg.bufOff));
-              }
-            };
+        auto lookupBufs = [this, requester = job.ior->userInfo().uid](std::vector<Result<IoBufForIO>> &bufs,
+                                                                      const IoArgs *args,
+                                                                      const IoSqe *sqe,
+                                                                      int sqec) {
+          detail::lookupIovBuffers(iovs, bufs, requester, args, sqe, sqec);
+        };
 
         co_await job.ior->process(job.sqeProcTail,
                                   job.toProc,

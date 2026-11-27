@@ -16,6 +16,8 @@ namespace hf3fs::storage::client {
 
 class ClientRequestContext;
 
+uint32_t buildWriteFeatureFlagsFromOptions(const DebugOptions &debugOptions, bool computeChecksumOnServer);
+
 class StorageClientImpl : public StorageClient {
  public:
   StorageClientImpl(const ClientId &clientId, const Config &config, hf3fs::client::ICommonMgmtdClient &mgmtdClient);
@@ -26,6 +28,8 @@ class StorageClientImpl : public StorageClient {
 
   hf3fs::client::ICommonMgmtdClient &getMgmtdClient() override { return mgmtdClient_; }
   void stop() override;
+
+  Result<IOBuffer> registerGpuIOBuffer(uint8_t *gpuPtr, size_t len) override;
 
   CoTryTask<void> batchRead(std::span<ReadIO> readIOs,
                             const flat::UserInfo &userInfo,
