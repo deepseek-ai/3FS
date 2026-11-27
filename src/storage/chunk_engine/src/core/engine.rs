@@ -713,18 +713,94 @@ impl Engine {
         Ok(chunks)
     }
 
+    fn chunk_id_in_range(chunk_id: &[u8], begin: &[u8], end: &[u8]) -> bool {
+        if chunk_id < begin {
+            return false;
+        }
+        // Matches MetaStore::query_chunks_from_iterator's inverted-key order:
+        // MetaKey::chunk_meta_key(chunk_id) > MetaKey::chunk_meta_key(end).
+        for (&a, &b) in chunk_id.iter().zip(end.iter()) {
+            if a != b {
+                return a < b;
+            }
+        }
+        chunk_id.len() > end.len()
+    }
+
+    fn collect_aborted_uncommitted_in_range(
+        &self,
+        begin: &[u8],
+        end: &[u8],
+    ) -> Result<HashMap<Bytes, ChunkMeta>> {
+        let mut aborted = HashMap::new();
+        let mut visit = |map: &HashMap<Bytes, WritingHolder>| -> Result<()> {
+            for (chunk_id, holder) in map.iter() {
+                if !Self::chunk_id_in_range(chunk_id, begin, end) {
+                    continue;
+                }
+                if !holder.abort {
+                    return Err(Error::InvalidArg(format!(
+                        "chunk {:?} is in writing ({:?})",
+                        chunk_id,
+                        holder.chunk.meta(),
+                    )));
+                }
+                aborted.insert(chunk_id.clone(), holder.chunk.meta().clone());
+            }
+            Ok(())
+        };
+
+        if begin.len() >= self.prefix_len
+            && end.len() >= self.prefix_len
+            && begin[..self.prefix_len] == end[..self.prefix_len]
+        {
+            if let Some(map) = self.writing_list.get(&begin[..self.prefix_len]) {
+                visit(&map)?;
+            }
+        } else {
+            for entry in self.writing_list.iter() {
+                visit(entry.value())?;
+            }
+        }
+        Ok(aborted)
+    }
+
     pub fn batch_remove(
         &self,
         begin: impl AsRef<[u8]>,
         end: impl AsRef<[u8]>,
         max_count: u64,
     ) -> Result<u64> {
+        if max_count == 0 {
+            return Ok(0);
+        }
+
+        let begin = begin.as_ref();
+        let end = end.as_ref();
+        let aborted_uncommitted = self.collect_aborted_uncommitted_in_range(begin, end)?;
+
         let mut chunk_ids = self
             .meta_store
             .query_chunks(begin, end, max_count)?
             .into_iter()
             .map(|(chunk_id, _)| chunk_id)
             .collect::<Vec<Bytes>>();
+
+        if !aborted_uncommitted.is_empty() && (chunk_ids.len() as u64) < max_count {
+            let mut uncommitted_only = aborted_uncommitted
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<Bytes>>();
+            for chunk_id in &chunk_ids {
+                uncommitted_only.remove(chunk_id);
+            }
+            for chunk_id in uncommitted_only {
+                if chunk_ids.len() as u64 >= max_count {
+                    break;
+                }
+                chunk_ids.push(chunk_id);
+            }
+        }
 
         const BATCH_SIZE: usize = 4096;
         for batch in chunk_ids.chunks_mut(BATCH_SIZE) {
@@ -740,7 +816,11 @@ impl Engine {
                             .remove_mut(chunk_id, chunk.meta(), &mut write_batch)?;
                     }
                     None => {
-                        // The chunk has been deleted by another thread. Still count it as a successfully deleted one.
+                        if aborted_uncommitted.contains_key(chunk_id) {
+                            self.meta_store
+                                .remove_writing_chunk_mut(chunk_id, &mut write_batch);
+                        }
+                        // Otherwise, the chunk has been deleted by another thread. Still count it as a successfully deleted one.
                     }
                 }
                 entries.push(entry);
@@ -750,6 +830,28 @@ impl Engine {
 
             for mut entry in entries {
                 entry.remove();
+            }
+
+            if !aborted_uncommitted.is_empty() {
+                for chunk_id in batch.iter() {
+                    let Some(expected_meta) = aborted_uncommitted.get(chunk_id) else {
+                        continue;
+                    };
+                    let prefix = &chunk_id[..self.prefix_len];
+                    let mut should_prune = false;
+                    if let Some(mut map) = self.writing_list.get_mut(prefix) {
+                        if matches!(
+                            map.get(chunk_id),
+                            Some(holder) if holder.abort && holder.chunk.meta() == expected_meta
+                        ) {
+                            map.remove(chunk_id);
+                            should_prune = map.is_empty();
+                        }
+                    }
+                    if should_prune {
+                        self.writing_list.remove_if(prefix, |_, m| m.is_empty());
+                    }
+                }
             }
         }
 
@@ -2243,5 +2345,213 @@ mod tests {
             engine.get(cow_chunk_id).unwrap().unwrap().meta().len as usize,
             cow_v2.len()
         );
+    }
+
+    fn check_batch_remove_cleans_uncommitted_chunks(reopen_before_remove: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            prefix_len: 1,
+        };
+        let engine = Engine::open(&config).unwrap();
+        config.create = false;
+
+        let committed_only: &[u8] = b"p/01_committed_only";
+        let committed_pending_write: &[u8] = b"p/02_committed_pending_write";
+        let committed_pending_remove: &[u8] = b"p/03_committed_pending_remove";
+        let uncommitted_only: &[u8] = b"p/04_uncommitted_only";
+        let uncommitted_remove_missing: &[u8] = b"p/05_uncommitted_remove_missing";
+        let sibling_committed: &[u8] = b"q/01_committed";
+        let sibling_uncommitted: &[u8] = b"q/02_uncommitted";
+
+        let payload = b"initial-committed-data";
+        let payload_crc = crc32c::crc32c(payload);
+        for id in [
+            committed_only,
+            committed_pending_write,
+            committed_pending_remove,
+            sibling_committed,
+        ] {
+            engine.write(id, payload, 0, payload_crc).unwrap();
+        }
+
+        // Aborted CoW overwrite on a committed chunk (allocates a second slot).
+        let overwrite = b"overwritten-uncommitted-data";
+        let mut req = UpdateReq {
+            length: overwrite.len() as _,
+            data: overwrite.as_ptr() as _,
+            checksum: crc32c::crc32c(overwrite),
+            ..Default::default()
+        };
+        drop(engine.update_chunk(committed_pending_write, &mut req).unwrap());
+
+        // Aborted remove on a committed chunk.
+        let mut req = UpdateReq {
+            is_remove: true,
+            update_ver: 2,
+            ..Default::default()
+        };
+        drop(engine.update_chunk(committed_pending_remove, &mut req).unwrap());
+
+        // Aborted write on an uncommitted-only chunk (never committed).
+        let fresh = b"fresh-uncommitted-payload";
+        let mut req = UpdateReq {
+            length: fresh.len() as _,
+            data: fresh.as_ptr() as _,
+            checksum: crc32c::crc32c(fresh),
+            ..Default::default()
+        };
+        drop(engine.update_chunk(uncommitted_only, &mut req).unwrap());
+
+        // Aborted remove on a non-existent chunk (allocates a placeholder slot).
+        let mut req = UpdateReq {
+            is_remove: true,
+            update_ver: 2,
+            ..Default::default()
+        };
+        drop(
+            engine
+                .update_chunk(uncommitted_remove_missing, &mut req)
+                .unwrap(),
+        );
+
+        // Uncommitted write on an unrelated sibling prefix.
+        let sibling_data = b"sibling-uncommitted";
+        let mut req = UpdateReq {
+            length: sibling_data.len() as _,
+            data: sibling_data.as_ptr() as _,
+            checksum: crc32c::crc32c(sibling_data),
+            ..Default::default()
+        };
+        drop(engine.update_chunk(sibling_uncommitted, &mut req).unwrap());
+
+        let engine = if reopen_before_remove {
+            drop(engine);
+            Engine::open(&config).unwrap()
+        } else {
+            engine
+        };
+
+        assert_eq!(engine.query_uncommitted_chunks(b"p").unwrap().len(), 4);
+        assert_eq!(engine.query_uncommitted_chunks(b"q").unwrap().len(), 1);
+
+        let removed = engine.batch_remove(b"p", b"p", u64::MAX).unwrap();
+        assert_eq!(removed, 5);
+        assert!(engine.query_chunks(b"p", b"p", u64::MAX).unwrap().is_empty());
+        assert!(engine.query_uncommitted_chunks(b"p").unwrap().is_empty());
+        assert!(engine.query_all_chunks(b"p").unwrap().is_empty());
+        assert_eq!(engine.meta_store.query_used_size(b"p").unwrap(), 0);
+        // Only sibling_committed and sibling_uncommitted should remain allocated.
+        let used = engine.used_size();
+        assert_eq!(used.allocated_size - used.reserved_size, CHUNK_SIZE_SMALL * 2);
+        assert_eq!(
+            used.position_count,
+            if reopen_before_remove { 1 } else { 2 }
+        );
+        assert!(engine.handle_uncommitted_chunks(b"p", 9).unwrap().is_empty());
+
+        // Reopen and verify no removed uncommitted chunks survive in RocksDB or resurrect.
+        drop(engine);
+        let engine = Engine::open(&config).unwrap();
+        assert!(engine.query_uncommitted_chunks(b"p").unwrap().is_empty());
+        assert!(engine.handle_uncommitted_chunks(b"p", 10).unwrap().is_empty());
+        assert!(engine.query_chunks(b"p", b"p", u64::MAX).unwrap().is_empty());
+        assert_eq!(engine.meta_store.query_used_size(b"p").unwrap(), 0);
+
+        // Sibling prefix must be completely untouched (committed + uncommitted).
+        assert_chunk_data(
+            &engine.get(sibling_committed).unwrap().unwrap(),
+            payload,
+        );
+        let q_uncommitted = engine.query_uncommitted_chunks(b"q").unwrap();
+        assert_eq!(q_uncommitted.len(), 1);
+        assert_eq!(q_uncommitted[0].0.as_ref(), sibling_uncommitted);
+        engine.handle_uncommitted_chunks(b"q", 11).unwrap();
+        assert_chunk_data(
+            &engine.get(sibling_uncommitted).unwrap().unwrap(),
+            sibling_data,
+        );
+    }
+
+    #[test]
+    fn test_batch_remove_cleans_aborted_uncommitted_chunks() {
+        check_batch_remove_cleans_uncommitted_chunks(false);
+    }
+
+    #[test]
+    fn test_batch_remove_cleans_reopened_uncommitted_chunks() {
+        check_batch_remove_cleans_uncommitted_chunks(true);
+    }
+
+    #[test]
+    fn test_batch_remove_rejects_active_writing_chunk_and_respects_max_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            prefix_len: 1,
+        })
+        .unwrap();
+
+        let p_committed: &[u8] = b"p/committed";
+        let p_active: &[u8] = b"p/active";
+        let q_active: &[u8] = b"q/active";
+        let data = b"payload";
+        let crc = crc32c::crc32c(data);
+
+        engine.write(p_committed, data, 0, crc).unwrap();
+
+        let mut req_p = UpdateReq {
+            length: data.len() as _,
+            data: data.as_ptr() as _,
+            checksum: crc,
+            ..Default::default()
+        };
+        let active_p = engine.update_chunk(p_active, &mut req_p).unwrap();
+
+        let mut req_q = UpdateReq {
+            length: data.len() as _,
+            data: data.as_ptr() as _,
+            checksum: crc,
+            ..Default::default()
+        };
+        let active_q = engine.update_chunk(q_active, &mut req_q).unwrap();
+
+        // Active in-flight write in range must be rejected without mutating state.
+        assert!(matches!(
+            engine.batch_remove(b"p", b"p", u64::MAX),
+            Err(Error::InvalidArg(_))
+        ));
+        assert!(engine.get(p_committed).unwrap().is_some());
+
+        // max_count == 0 is a no-op.
+        assert_eq!(engine.batch_remove(b"p", b"p", 0).unwrap(), 0);
+
+        // Abort active_p (must not panic on drop), while keeping active_q alive.
+        drop(active_p);
+
+        // Paginated removal with max_count == 1 must remove both chunks in two calls
+        // without being blocked by the active write in sibling prefix b"q".
+        assert_eq!(engine.batch_remove(b"p", b"p", 1).unwrap(), 1);
+        assert_eq!(engine.batch_remove(b"p", b"p", 1).unwrap(), 1);
+        assert_eq!(engine.batch_remove(b"p", b"p", 1).unwrap(), 0);
+        assert!(engine.query_all_chunks(b"p").unwrap().is_empty());
+
+        // Sibling active write must still commit cleanly.
+        let committed_q = engine.commit_chunk(active_q, true).unwrap();
+        assert_chunk_data(&committed_q, data);
+
+        // Multi-prefix range ([], []) also cleans aborted uncommitted chunks across prefixes.
+        let mut req_r = UpdateReq {
+            length: data.len() as _,
+            data: data.as_ptr() as _,
+            checksum: crc,
+            ..Default::default()
+        };
+        drop(engine.update_chunk(b"r/uncommitted", &mut req_r).unwrap());
+        assert_eq!(engine.batch_remove([], [], u64::MAX).unwrap(), 2);
+        assert!(engine.query_uncommitted_chunks(b"r").unwrap().is_empty());
+        assert!(engine.query_all_chunks(b"q").unwrap().is_empty());
     }
 }
