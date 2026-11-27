@@ -464,7 +464,7 @@ impl Engine {
         new_chunk.update_meta(req.deref());
 
         let prefix: Bytes = chunk_id[..self.prefix_len].into();
-        let mut writing_list = self.writing_list.entry(prefix).or_default();
+        let mut writing_list = self.writing_list.entry(prefix.clone()).or_default();
         let entry = writing_list.entry(chunk_id.into());
         let replaces_remove = if let std::collections::hash_map::Entry::Occupied(entry) = &entry {
             let holder = entry.get();
@@ -486,17 +486,41 @@ impl Engine {
             self.meta_store
                 .persist_writing_chunk(chunk_id, new_chunk.meta(), req.is_remove)?;
         }
-        entry.insert_entry(WritingHolder {
+        let new_holder = WritingHolder {
             chunk: new_chunk.clone(),
             abort: false,
             is_remove: req.is_remove,
-        });
+        };
+        let prev_holder = match entry {
+            std::collections::hash_map::Entry::Occupied(mut occupied) => {
+                Some(occupied.insert(new_holder))
+            }
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                vacant.insert(new_holder);
+                None
+            }
+        };
         drop(writing_list);
 
         if !persist_before_publish {
-            self.meta_store
-                .persist_writing_chunk(chunk_id, new_chunk.meta(), false)?;
+            if let Err(err) =
+                self.meta_store
+                    .persist_writing_chunk(chunk_id, new_chunk.meta(), false)
+            {
+                if let Some(mut writing_list) = self.writing_list.get_mut(&prefix) {
+                    match prev_holder {
+                        Some(prev) => {
+                            writing_list.insert(chunk_id.into(), prev);
+                        }
+                        None => {
+                            writing_list.remove(chunk_id);
+                        }
+                    }
+                }
+                return Err(err);
+            }
         }
+        drop(prev_holder);
 
         Ok(WritingChunk {
             chunk_id: chunk_id.into(),
@@ -2243,5 +2267,124 @@ mod tests {
             engine.get(cow_chunk_id).unwrap().unwrap().meta().len as usize,
             cow_v2.len()
         );
+    }
+
+    #[test]
+    fn test_update_chunk_rolls_back_writing_list_on_journal_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            prefix_len: 1,
+        };
+        let engine = Engine::open(&config).unwrap();
+
+        // Seed an aborted uncommitted write for `retry_id` so we verify both
+        // fresh-entry rollback and prior-aborted-holder restoration.
+        let retry_id: &[u8] = b"p/retry";
+        let first_payload = b"first-persisted-uncommitted";
+        let mut first_req = UpdateReq {
+            length: first_payload.len() as _,
+            data: first_payload.as_ptr() as _,
+            checksum: crc32c::crc32c(first_payload),
+            ..Default::default()
+        };
+        let first_writing = engine.update_chunk(retry_id, &mut first_req).unwrap();
+        let first_meta = first_writing.meta().clone();
+        drop(first_writing);
+
+        // Open a read-only MetaStore view over the same directory to trigger a
+        // deterministic RocksDB write error inside persist_writing_chunk while
+        // sharing the live allocators, meta_cache, and writing_list.
+        let ro_meta_store = Arc::new(
+            MetaStore::open(&MetaStoreConfig {
+                rocksdb: RocksDBConfig {
+                    path: dir.path().join("meta"),
+                    create: false,
+                    read_only: true,
+                },
+                prefix_len: config.prefix_len,
+            })
+            .unwrap(),
+        );
+        let mut ro_engine = engine.clone();
+        ro_engine.meta_store = ro_meta_store;
+
+        let pos_count_before = engine.used_size().position_count;
+
+        // 1. Fresh chunk: persist_writing_chunk failure must remove the entry
+        // from writing_list and release the newly allocated slot.
+        let fresh_id: &[u8] = b"p/fresh";
+        let fresh_payload = b"fresh-failed-journal";
+        let mut fresh_req = UpdateReq {
+            length: fresh_payload.len() as _,
+            data: fresh_payload.as_ptr() as _,
+            checksum: crc32c::crc32c(fresh_payload),
+            ..Default::default()
+        };
+        assert!(matches!(
+            ro_engine.update_chunk(fresh_id, &mut fresh_req),
+            Err(Error::RocksDBError(_))
+        ));
+        assert_eq!(engine.used_size().position_count, pos_count_before);
+        assert!(
+            engine
+                .query_uncommitted_chunks(b"p")
+                .unwrap()
+                .iter()
+                .all(|(id, _)| id.as_ref() != fresh_id),
+            "failed write must not remain in writing_list"
+        );
+
+        // A retry on the writable engine must not be permanently blocked with
+        // "chunk ... is in writing".
+        let mut fresh_retry = UpdateReq {
+            length: fresh_payload.len() as _,
+            data: fresh_payload.as_ptr() as _,
+            checksum: crc32c::crc32c(fresh_payload),
+            ..Default::default()
+        };
+        let committed_fresh = engine
+            .commit_chunk(engine.update_chunk(fresh_id, &mut fresh_retry).unwrap(), true)
+            .unwrap();
+        assert_chunk_data(&committed_fresh, fresh_payload);
+
+        // 2. Replacing an aborted uncommitted chunk: persist_writing_chunk
+        // failure must restore the prior aborted holder (matching RocksDB) and
+        // release the failed replacement's slot instead of wedging the chunk.
+        let pos_count_after_fresh = engine.used_size().position_count;
+        let second_payload = b"second-failed-journal-payload";
+        let mut second_req = UpdateReq {
+            length: second_payload.len() as _,
+            data: second_payload.as_ptr() as _,
+            checksum: crc32c::crc32c(second_payload),
+            ..Default::default()
+        };
+        assert!(matches!(
+            ro_engine.update_chunk(retry_id, &mut second_req),
+            Err(Error::RocksDBError(_))
+        ));
+        assert_eq!(engine.used_size().position_count, pos_count_after_fresh);
+        let uncommitted = engine.query_uncommitted_chunks(b"p").unwrap();
+        assert_eq!(uncommitted.len(), 1);
+        assert_eq!(uncommitted[0].0.as_ref(), retry_id);
+        assert_eq!(uncommitted[0].1, first_meta);
+
+        // Verify the restored holder is still marked aborted (can be retried)
+        // and recovers the persisted first_payload cleanly.
+        assert!(
+            engine
+                .writing_list
+                .get(b"p".as_slice())
+                .unwrap()
+                .get(retry_id)
+                .unwrap()
+                .abort,
+            "restored holder must remain aborted so subsequent retries are not wedged"
+        );
+        let recovered = engine.handle_uncommitted_chunks(b"p", 5).unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].0.as_ref(), retry_id);
+        assert_chunk_data(&engine.get(retry_id).unwrap().unwrap(), first_payload);
     }
 }
