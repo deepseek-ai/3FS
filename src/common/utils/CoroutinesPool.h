@@ -158,7 +158,10 @@ class CoroutinesPool : public CoroutinesPoolBase {
         XLOGF(ERR, "a coroutine in pool {} is stopped (exception: {})", fmt::ptr(this), result.exception().what());
         break;
       }
-      co_await handler(std::move(*result));
+      auto res = co_await co_awaitTry(handler(std::move(*result)));
+      if (UNLIKELY(res.hasException())) {
+        XLOGF(ERR, "a job in pool {} is dropped (exception: {})", fmt::ptr(this), res.exception().what());
+      }
     }
   }
 
