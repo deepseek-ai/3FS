@@ -15,7 +15,16 @@ pub struct MetaStore {
     config: MetaStoreConfig,
 }
 
+pub struct UncommittedChunk {
+    pub chunk_id: Bytes,
+    pub meta: ChunkMeta,
+    pub is_remove: bool,
+    occupied: bool,
+}
+
 impl MetaStore {
+    const WRITING_REMOVE_MARKER: u8 = 1;
+
     thread_local! {
         static BYTES: RefCell<DownwardBytes> = RefCell::new(DownwardBytes::with_capacity(Size::MB.into()));
     }
@@ -357,9 +366,21 @@ impl MetaStore {
         Ok(())
     }
 
-    pub fn persist_writing_chunk(&self, chunk_id: &[u8], chunk_meta: &ChunkMeta) -> Result<()> {
+    pub fn persist_writing_chunk(
+        &self,
+        chunk_id: &[u8],
+        chunk_meta: &ChunkMeta,
+        is_remove: bool,
+    ) -> Result<()> {
         let chunk_meta_key = MetaKey::writing_chunk_key(chunk_id);
         Self::with_tls_bytes(|bytes| {
+            // DownwardBytes prepends, so write the optional trailer first. This keeps
+            // the original length-prefixed ChunkMeta bytes intact in the journal.
+            if is_remove {
+                Self::WRITING_REMOVE_MARKER
+                    .serialize_to(bytes)
+                    .map_err(Error::SerializationError)?;
+            }
             chunk_meta
                 .serialize_to(bytes)
                 .map_err(Error::SerializationError)?;
@@ -376,38 +397,34 @@ impl MetaStore {
         write_batch.delete(MetaKey::writing_chunk_key(chunk_id));
     }
 
-    pub fn occupy_uncommitted_positions(&mut self) -> Result<Vec<(Bytes, ChunkMeta, bool)>> {
+    pub fn occupy_uncommitted_positions(&mut self) -> Result<Vec<UncommittedChunk>> {
         let mut prefix_len = 0;
         std::mem::swap(&mut self.config.prefix_len, &mut prefix_len);
-        let list = self.query_uncommitted_chunks(&[])?;
+        let uncommitted_chunks = self.query_uncommitted_chunks(&[]);
         std::mem::swap(&mut self.config.prefix_len, &mut prefix_len);
+        let mut uncommitted_chunks = uncommitted_chunks?;
 
-        let mut uncommitted_chunks = vec![];
         let mut write_batch = RocksDB::new_write_batch();
         let mut count = 0;
-        for (chunk_id, writing_meta) in list {
-            let pos = writing_meta.pos;
-            match self.get_chunk_meta(&chunk_id)? {
-                Some(meta) if meta.pos == writing_meta.pos => {
-                    uncommitted_chunks.push((chunk_id, writing_meta, false));
-                }
-                _ => {
-                    uncommitted_chunks.push((chunk_id.clone(), writing_meta, true));
-
-                    count += 1;
-                    let pos_to_chunk_key = MetaKey::pos_to_chunk_key(pos);
-                    write_batch.put(pos_to_chunk_key, chunk_id);
-
-                    let group_bits_key = MetaKey::group_bits_key(pos.group_id());
-                    Self::with_tls_bytes(|bytes| {
-                        MergeState::acquire(pos.index())
-                            .serialize_to(bytes)
-                            .map_err(Error::SerializationError)?;
-                        write_batch.merge(group_bits_key, &bytes[..]);
-                        Ok(())
-                    })?;
-                }
+        for pending in &mut uncommitted_chunks {
+            let pos = pending.meta.pos;
+            if matches!(self.get_chunk_meta(&pending.chunk_id)?, Some(meta) if meta.pos == pos) {
+                continue;
             }
+
+            pending.occupied = true;
+            count += 1;
+            let pos_to_chunk_key = MetaKey::pos_to_chunk_key(pos);
+            write_batch.put(pos_to_chunk_key, pending.chunk_id.as_slice());
+
+            let group_bits_key = MetaKey::group_bits_key(pos.group_id());
+            Self::with_tls_bytes(|bytes| {
+                MergeState::acquire(pos.index())
+                    .serialize_to(bytes)
+                    .map_err(Error::SerializationError)?;
+                write_batch.merge(group_bits_key, &bytes[..]);
+                Ok(())
+            })?;
         }
         if !uncommitted_chunks.is_empty() {
             self.write(write_batch, true)?;
@@ -416,24 +433,22 @@ impl MetaStore {
         Ok(uncommitted_chunks)
     }
 
-    pub fn vacate_uncommitted_positions(
-        &self,
-        uncommitted_chunks: Vec<(Bytes, ChunkMeta, bool)>,
-    ) -> Result<()> {
+    pub fn vacate_uncommitted_positions(&self, uncommitted_chunks: Vec<UncommittedChunk>) -> Result<()> {
         let mut write_batch = RocksDB::new_write_batch();
         let mut count = 0;
-        for (_, chunk_meta, occupied) in uncommitted_chunks {
-            if !occupied {
+        for pending in uncommitted_chunks {
+            if !pending.occupied {
                 continue;
             }
 
             count += 1;
-            let pos_to_chunk_key = MetaKey::pos_to_chunk_key(chunk_meta.pos);
+            let pos = pending.meta.pos;
+            let pos_to_chunk_key = MetaKey::pos_to_chunk_key(pos);
             write_batch.delete(pos_to_chunk_key);
 
-            let group_bits_key = MetaKey::group_bits_key(chunk_meta.pos.group_id());
+            let group_bits_key = MetaKey::group_bits_key(pos.group_id());
             Self::with_tls_bytes(|bytes| {
-                MergeState::release(chunk_meta.pos.index())
+                MergeState::release(pos.index())
                     .serialize_to(bytes)
                     .map_err(Error::SerializationError)?;
                 write_batch.merge(group_bits_key, &bytes[..]);
@@ -445,11 +460,11 @@ impl MetaStore {
         Ok(())
     }
 
-    fn query_uncommitted_chunks(&self, prefix: &[u8]) -> Result<Vec<(Bytes, ChunkMeta)>> {
+    fn query_uncommitted_chunks(&self, prefix: &[u8]) -> Result<Vec<UncommittedChunk>> {
         self.check_prefix(prefix)?;
 
         let mut it = self.iterator();
-        let mut out = Vec::<(Bytes, ChunkMeta)>::with_capacity(4096);
+        let mut out = Vec::with_capacity(4096);
 
         let end_key = MetaKey::writing_chunk_key(prefix);
         it.seek(&end_key)?;
@@ -469,9 +484,25 @@ impl MetaStore {
 
             let chunk_id = MetaKey::parse_writing_chunk_key(it.key().unwrap())?;
             if prefix <= chunk_id.as_ref() {
-                let chunk_meta = ChunkMeta::deserialize(it.value().unwrap())
-                    .map_err(Error::SerializationError)?;
-                out.push((chunk_id, chunk_meta))
+                let mut value = it.value().unwrap();
+                let meta =
+                    ChunkMeta::deserialize_from(&mut value).map_err(Error::SerializationError)?;
+                let is_remove = match value {
+                    [] => false,
+                    [Self::WRITING_REMOVE_MARKER] => true,
+                    _ => {
+                        return Err(Error::MetaError(format!(
+                            "invalid writing chunk trailer for {:?}: {:?}",
+                            chunk_id, value
+                        )));
+                    }
+                };
+                out.push(UncommittedChunk {
+                    chunk_id,
+                    meta,
+                    is_remove,
+                    occupied: false,
+                });
             } else {
                 break;
             }

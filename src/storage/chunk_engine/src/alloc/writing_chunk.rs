@@ -5,6 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 pub struct WritingHolder {
     pub chunk: Chunk,
     pub abort: bool,
+    pub is_remove: bool,
 }
 
 pub type WritingList = DashMap<Bytes, HashMap<Bytes, WritingHolder>>;
