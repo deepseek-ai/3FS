@@ -2244,4 +2244,188 @@ mod tests {
             cow_v2.len()
         );
     }
+
+    #[test]
+    fn test_syncing_shrink_allocates_target_size_and_zero_pads_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        // Poison the thread-local Chunk::BUFFER with bytes from an unrelated chunk.
+        let large_size = 256 * 1024usize;
+        let donor = vec![0xABu8; large_size - 17];
+        engine
+            .write(b"donor", &donor, 0, crc32c::crc32c(&donor))
+            .unwrap();
+
+        let big_payload = vec![0x55u8; large_size];
+        let big_crc = crc32c::crc32c(&big_payload);
+        let old_small = engine.write(b"sync-shrink-small", &big_payload, 0, big_crc).unwrap();
+        let old_empty = engine.write(b"sync-shrink-empty", &big_payload, 0, big_crc).unwrap();
+        assert_eq!(old_small.capacity(), large_size as u32);
+        assert_eq!(old_empty.capacity(), large_size as u32);
+        let used_before = engine.meta_store.query_used_size(&[]).unwrap();
+
+        // Syncing replacement with a small unaligned payload must allocate the
+        // target size class (64 KiB, not 256 KiB) and zero-pad the aligned tail.
+        let tiny = b"tiny";
+        let mut req = UpdateReq {
+            is_syncing: true,
+            update_ver: 5,
+            offset: 0,
+            length: tiny.len() as _,
+            data: tiny.as_ptr() as _,
+            checksum: crc32c::crc32c(tiny),
+            ..Default::default()
+        };
+        let synced_small = engine.update(b"sync-shrink-small", &mut req).unwrap();
+        assert_eq!(synced_small.capacity(), u32::from(CHUNK_SIZE_SMALL));
+        assert_eq!(synced_small.meta().len as usize, tiny.len());
+        assert_eq!(synced_small.meta().checksum, crc32c::crc32c(tiny));
+        let mut aligned = create_aligned_buf(ALIGN_SIZE);
+        aligned.fill(0xEE);
+        synced_small.pread(&mut aligned, 0).unwrap();
+        assert_eq!(&aligned[..tiny.len()], tiny);
+        assert!(
+            aligned[tiny.len()..].iter().all(|&b| b == 0),
+            "syncing write leaked stale thread-local buffer bytes into aligned tail"
+        );
+
+        // Syncing replacement with an empty payload must allocate 64 KiB and
+        // must not flush stale buffer bytes to disk.
+        engine.metrics.pwrite_times.swap(0, Ordering::AcqRel);
+        let mut empty_req = UpdateReq {
+            is_syncing: true,
+            update_ver: 5,
+            offset: 0,
+            length: 0,
+            checksum: 0,
+            ..Default::default()
+        };
+        let synced_empty = engine.update(b"sync-shrink-empty", &mut empty_req).unwrap();
+        assert_eq!(synced_empty.capacity(), u32::from(CHUNK_SIZE_SMALL));
+        assert_eq!(synced_empty.meta().len, 0);
+        assert_eq!(synced_empty.meta().checksum, 0);
+        assert_eq!(
+            engine.metrics.pwrite_times.load(Ordering::Acquire),
+            0,
+            "zero-length syncing write should not issue disk pwrite"
+        );
+
+        let expected_reclaimed = 2 * (large_size as u64 - u64::from(CHUNK_SIZE_SMALL));
+        assert_eq!(
+            engine.meta_store.query_used_size(&[]).unwrap(),
+            used_before - expected_reclaimed
+        );
+
+        // Disabling new group allocation must not fail a syncing shrink from an
+        // unallocated/full larger size class when a 64 KiB slot is available.
+        let huge = vec![0x77u8; usize::from(CHUNK_SIZE_NORMAL)];
+        let old_huge = engine
+            .write(b"sync-shrink-no-space", &huge, 0, crc32c::crc32c(&huge))
+            .unwrap();
+        assert_eq!(old_huge.capacity(), u32::from(CHUNK_SIZE_NORMAL));
+        // Exhaust remaining slots in the 512 KiB group so allocating another
+        // 512 KiB chunk would fail once allow_to_allocate is false.
+        let mut fillers = Vec::new();
+        for _ in 0..(GroupState::TOTAL_BITS - 1) {
+            fillers.push(
+                engine
+                    .allocators
+                    .allocate(CHUNK_SIZE_NORMAL, true)
+                    .unwrap(),
+            );
+        }
+        engine.set_allow_to_allocate(false);
+
+        let ok_data = b"ok";
+        let mut shrink_req = UpdateReq {
+            is_syncing: true,
+            update_ver: 9,
+            offset: 0,
+            length: ok_data.len() as _,
+            data: ok_data.as_ptr() as _,
+            checksum: crc32c::crc32c(ok_data),
+            ..Default::default()
+        };
+        let synced_ok = engine
+            .update(b"sync-shrink-no-space", &mut shrink_req)
+            .unwrap();
+        assert_eq!(synced_ok.capacity(), u32::from(CHUNK_SIZE_SMALL));
+        assert_chunk_data(&synced_ok, ok_data);
+        drop(fillers);
+    }
+
+    #[test]
+    fn test_unaligned_writes_zero_pad_aligned_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(&EngineConfig {
+            path: dir.path().into(),
+            create: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        // Populate thread-local Chunk::BUFFER with non-zero bytes from another chunk.
+        let donor = vec![0xCDu8; 8190];
+        engine
+            .write(b"donor", &donor, 0, crc32c::crc32c(&donor))
+            .unwrap();
+
+        let assert_aligned_tail_zero = |chunk: &Chunk, expected: &[u8]| {
+            assert_chunk_data(chunk, expected);
+            let aligned_len = expected.len().next_multiple_of(ALIGN_SIZE.into());
+            let mut buf = create_aligned_buf(Size::from(aligned_len));
+            buf.fill(0xEE);
+            chunk.pread(&mut buf[..aligned_len], 0).unwrap();
+            assert_eq!(&buf[..expected.len()], expected);
+            assert!(
+                buf[expected.len()..aligned_len].iter().all(|&b| b == 0),
+                "stale thread-local buffer bytes leaked into aligned tail"
+            );
+        };
+
+        // 1. Fresh chunk (safe_write indirect append).
+        let c1 = engine
+            .write(b"tail", b"abc", 0, crc32c::crc32c(b"abc"))
+            .unwrap();
+        assert_aligned_tail_zero(&c1, b"abc");
+
+        // Re-poison Chunk::BUFFER before each path.
+        engine
+            .write(b"donor2", &donor, 0, crc32c::crc32c(&donor))
+            .unwrap();
+
+        // 2. In-place indirect append (safe_write).
+        let c2 = engine
+            .write(b"tail", b"def", 3, crc32c::crc32c(b"def"))
+            .unwrap();
+        assert_aligned_tail_zero(&c2, b"abcdef");
+
+        engine
+            .write(b"donor3", &donor, 0, crc32c::crc32c(&donor))
+            .unwrap();
+
+        // 3. Full overwrite via copy_on_write (skip_read = true).
+        let full = b"0123456789";
+        let c3 = engine
+            .write(b"tail", full, 0, crc32c::crc32c(full))
+            .unwrap();
+        assert_aligned_tail_zero(&c3, full);
+
+        engine
+            .write(b"donor4", &donor, 0, crc32c::crc32c(&donor))
+            .unwrap();
+
+        // 4. Partial overwrite extending chunk via copy_on_write (skip_read = false).
+        let ext = b"XXXXXXXXXX";
+        let c4 = engine
+            .write(b"tail", ext, 4, crc32c::crc32c(ext))
+            .unwrap();
+        assert_aligned_tail_zero(&c4, b"0123XXXXXXXXXX");
+    }
 }
