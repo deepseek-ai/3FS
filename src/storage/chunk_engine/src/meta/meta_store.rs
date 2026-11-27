@@ -116,6 +116,8 @@ impl MetaStore {
         end: u64,
         max_count: u64,
     ) -> Result<Vec<Bytes>> {
+        self.check_prefix(prefix)?;
+
         let mut it = self.iterator();
         let mut out = Vec::<Bytes>::with_capacity(4096);
 
@@ -596,9 +598,6 @@ impl MetaStore {
         }
 
         let mut map = HashMap::<Bytes, u64>::new();
-        if prefix_len == 0 {
-            map.insert(Bytes::new(), 0);
-        }
         let mut it = self.iterator();
         it.iterate(MetaKey::chunk_meta_key_prefix(), |key, value| {
             let mut chunk_id = MetaKey::parse_chunk_meta_key(key);
@@ -612,6 +611,10 @@ impl MetaStore {
         })?;
 
         let mut write_batch = RocksDB::new_write_batch();
+        write_batch.delete_range(
+            &[MetaKey::USED_SIZE_KEY_PREFIX],
+            &[MetaKey::USED_SIZE_KEY_PREFIX + 1],
+        );
         write_batch.put(
             MetaKey::used_size_prefix_len_key(),
             (prefix_len as u32).to_le_bytes(),
@@ -957,5 +960,113 @@ mod tests {
             meta_store.query_uncommitted_chunks(&[]),
             Err(Error::RocksDBError(_))
         ));
+    }
+
+    #[test]
+    fn test_update_used_size_clears_stale_prefix_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = MetaStoreConfig {
+            rocksdb: RocksDBConfig {
+                path: dir.path().into(),
+                create: true,
+                ..Default::default()
+            },
+            prefix_len: 1,
+        };
+
+        let chunk_a = b"a/1";
+        let chunk_b = b"b/1";
+        let meta_a = ChunkMeta {
+            pos: Position::new(GroupId::new(CHUNK_SIZE_SMALL, 0, 0), 0),
+            ..Default::default()
+        };
+        let meta_b = ChunkMeta {
+            pos: Position::new(GroupId::new(CHUNK_SIZE_NORMAL, 0, 0), 0),
+            ..Default::default()
+        };
+
+        {
+            let meta_store = MetaStore::open(&config).unwrap();
+            meta_store.add_chunk(chunk_a, &meta_a, true).unwrap();
+            meta_store.add_chunk(chunk_b, &meta_b, true).unwrap();
+            assert_eq!(meta_store.query_used_size(b"a").unwrap(), CHUNK_SIZE_SMALL);
+            assert_eq!(meta_store.query_used_size(b"b").unwrap(), CHUNK_SIZE_NORMAL);
+        }
+
+        // Switch to prefix_len = 0 and remove chunk_a while prefix_len == 0.
+        config.rocksdb.create = false;
+        config.prefix_len = 0;
+        {
+            let meta_store = MetaStore::open(&config).unwrap();
+            assert_eq!(
+                meta_store.query_used_size(&[]).unwrap(),
+                CHUNK_SIZE_SMALL + CHUNK_SIZE_NORMAL
+            );
+            meta_store.remove(chunk_a, &meta_a, true).unwrap();
+            assert_eq!(meta_store.query_used_size(&[]).unwrap(), CHUNK_SIZE_NORMAL);
+        }
+
+        // Switching back to prefix_len = 1 must not resurrect the stale used_size for b"a".
+        config.prefix_len = 1;
+        {
+            let meta_store = MetaStore::open(&config).unwrap();
+            assert_eq!(meta_store.query_used_size(b"a").unwrap(), 0);
+            assert_eq!(meta_store.query_used_size(b"b").unwrap(), CHUNK_SIZE_NORMAL);
+
+            // Stale prefix_len = 0 key must also have been deleted.
+            assert!(meta_store
+                .rocksdb
+                .get(MetaKey::used_size_key(&[]))
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn test_query_chunks_by_timestamp_validates_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MetaStoreConfig {
+            rocksdb: RocksDBConfig {
+                path: dir.path().into(),
+                create: true,
+                ..Default::default()
+            },
+            prefix_len: 4,
+        };
+        let meta_store = MetaStore::open(&config).unwrap();
+
+        let chunk_id = b"abcd/1";
+        let meta = ChunkMeta {
+            pos: Position::new(GroupId::new(CHUNK_SIZE_SMALL, 0, 0), 0),
+            timestamp: 100,
+            ..Default::default()
+        };
+        meta_store.add_chunk(chunk_id, &meta, true).unwrap();
+
+        // A short timestamp key combined with an unvalidated short prefix would
+        // previously panic when slicing &key[1..1 + self.config.prefix_len].
+        meta_store
+            .rocksdb
+            .put([MetaKey::TIMESTAMP_KEY_PREFIX, b'a'], [], true)
+            .unwrap();
+
+        assert!(matches!(
+            meta_store.query_chunks_by_timestamp(&[], 0, u64::MAX, 10),
+            Err(Error::InvalidArg(_))
+        ));
+        assert!(matches!(
+            meta_store.query_chunks_by_timestamp(b"ab", 0, u64::MAX, 10),
+            Err(Error::InvalidArg(_))
+        ));
+        assert!(matches!(
+            meta_store.query_chunks_by_timestamp(b"abcde", 0, u64::MAX, 10),
+            Err(Error::InvalidArg(_))
+        ));
+
+        let found = meta_store
+            .query_chunks_by_timestamp(b"abcd", 0, u64::MAX, 10)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].as_ref(), chunk_id);
     }
 }
