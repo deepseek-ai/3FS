@@ -126,7 +126,8 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
                                                                               pid_t pid,
                                                                               const meta::UserInfo &ui,
                                                                               folly::Executor::KeepAlive<> exec,
-                                                                              storage::client::StorageClient &sc) {
+                                                                              storage::client::StorageClient &sc,
+                                                                              bool adviseHugePages) {
   static monitor::DistributionRecorder mapTimesCount("fuse.iov.times", monitor::TagSet{{"mount_name", mountName}});
   static monitor::DistributionRecorder mapBytesDist("fuse.iov.bytes", monitor::TagSet{{"mount_name", mountName}});
   static monitor::CountRecorder shmSizeCount("fuse.iov.total_bytes", monitor::TagSet{{"mount_name", mountName}}, false);
@@ -220,6 +221,9 @@ Result<std::pair<meta::Inode, std::shared_ptr<lib::ShmBuf>>> IovTable::addIov(co
     };
 
     if (!iovaRes->isIoRing) {  // io ring bufs don't need to be registered for ib io
+      if (adviseHugePages) {
+        shm->adviseHugePages();
+      }
       folly::coro::blockingWait(shm->registerForIO(exec, sc, recordMetrics));
     }
 

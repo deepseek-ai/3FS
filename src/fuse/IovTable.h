@@ -16,7 +16,8 @@ class IovTable {
                                                                       pid_t pid,
                                                                       const meta::UserInfo &ui,
                                                                       folly::Executor::KeepAlive<> exec,
-                                                                      storage::client::StorageClient &sc);
+                                                                      storage::client::StorageClient &sc,
+                                                                      bool adviseHugePages);
   Result<std::shared_ptr<lib::ShmBuf>> rmIov(const char *key, const meta::UserInfo &ui);
   Result<meta::Inode> lookupIov(const char *key, const meta::UserInfo &ui);
   std::optional<int> iovDesc(meta::InodeId iid);

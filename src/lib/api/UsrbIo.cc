@@ -143,6 +143,13 @@ int hf3fs_iovcreate_general(struct hf3fs_iov *iov,
     }
   };
 
+  // The FUSE daemon registers the iov in the background after the symlink is made, so pages
+  // the app writes first are faulted in through this mapping.
+  auto hugePages = getenv("HF3FS_USRBIO_IOV_HUGE_PAGES");
+  if (!is_io_ring && hugePages && !strcmp(hugePages, "yes")) {
+    shm->adviseHugePages();
+  }
+
   auto target = hf3fs::Path("/dev/shm") / p;
   auto link = fmt::format("{}/3fs-virt/iovs/{}{}{}{}{}{}",
                           hf3fs_mount_point,
