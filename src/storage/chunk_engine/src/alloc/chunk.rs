@@ -99,8 +99,10 @@ impl Chunk {
         metrics: &Metrics,
     ) -> Result<Chunk> {
         // 1. allocate new chunk.
-        let is_shrinking = truncate && data.is_empty() && offset < self.meta.len;
-        let new_len = if is_shrinking {
+        let is_shrinking = !is_syncing && truncate && data.is_empty() && offset < self.meta.len;
+        let new_len = if is_syncing {
+            offset + data.len() as u32
+        } else if is_shrinking {
             // Keep reporting shrinking truncates through the existing counter.
             metrics
                 .safe_write_truncate_shorten
@@ -155,28 +157,31 @@ impl Chunk {
             }
 
             // aligned write.
-            if skip_read && is_aligned_io(data, offset) {
-                let begin = std::time::Instant::now();
-                new_chunk.pwrite(data, offset)?;
-                let latency = std::time::Instant::now().duration_since(begin).as_micros() as _;
-                metrics.pwrite_times.fetch_add(1, Ordering::AcqRel);
-                metrics.pwrite_latency.fetch_add(latency, Ordering::AcqRel);
-            } else if new_len != 0 {
-                let len = new_len.next_multiple_of(ALIGN_SIZE.into());
-                if is_shrinking {
-                    vec[new_len as usize..len as usize].fill(0);
+            if new_len != 0 {
+                if skip_read && is_aligned_io(data, offset) {
+                    let begin = std::time::Instant::now();
+                    new_chunk.pwrite(data, offset)?;
+                    let latency = std::time::Instant::now().duration_since(begin).as_micros() as _;
+                    metrics.pwrite_times.fetch_add(1, Ordering::AcqRel);
+                    metrics.pwrite_latency.fetch_add(latency, Ordering::AcqRel);
                 } else {
-                    if self.meta.len < offset {
-                        vec[self.meta.len as usize..offset as usize].fill(0);
+                    let len = new_len.next_multiple_of(ALIGN_SIZE.into());
+                    if !is_shrinking {
+                        if !is_syncing && self.meta.len < offset {
+                            vec[self.meta.len as usize..offset as usize].fill(0);
+                        }
+                        vec[offset as usize..][..data.len()].copy_from_slice(data);
                     }
-                    vec[offset as usize..][..data.len()].copy_from_slice(data);
+                    // Zero the aligned tail so stale thread-local buffer bytes from
+                    // unrelated chunks are never flushed onto disk.
+                    vec[new_len as usize..len as usize].fill(0);
+                    let begin = std::time::Instant::now();
+                    new_chunk.pwrite(&vec[..len as usize], 0)?;
+                    let latency = std::time::Instant::now().duration_since(begin).as_micros() as _;
+                    metrics.pwrite_times.fetch_add(1, Ordering::AcqRel);
+                    metrics.pwrite_latency.fetch_add(latency, Ordering::AcqRel);
                 }
-                let begin = std::time::Instant::now();
-                new_chunk.pwrite(&vec[..len as usize], 0)?;
-                let latency = std::time::Instant::now().duration_since(begin).as_micros() as _;
-                metrics.pwrite_times.fetch_add(1, Ordering::AcqRel);
-                metrics.pwrite_latency.fetch_add(latency, Ordering::AcqRel);
-            };
+            }
 
             Result::Ok(if skip_read {
                 metrics.checksum_reuse.fetch_add(1, Ordering::AcqRel);
@@ -192,11 +197,7 @@ impl Chunk {
             .fetch_add(latency, Ordering::AcqRel);
 
         // 3. copy meta.
-        new_chunk.meta.len = if is_syncing {
-            offset + data.len() as u32
-        } else {
-            new_len
-        };
+        new_chunk.meta.len = new_len;
         new_chunk.meta.checksum = checksum;
 
         Ok(new_chunk)
@@ -274,11 +275,12 @@ impl Chunk {
                 }
                 vec[offset as usize..][..data.len()].copy_from_slice(data);
                 let new_len = offset as usize + data.len();
+                let aligned_end = new_len.next_multiple_of(ALIGN_SIZE.into());
+                // Zero the aligned tail so stale thread-local buffer bytes from
+                // unrelated chunks are never flushed onto disk.
+                vec[new_len..aligned_end].fill(0);
                 let begin = std::time::Instant::now();
-                self.pwrite(
-                    &vec[start as usize..new_len.next_multiple_of(ALIGN_SIZE.into())],
-                    start,
-                )?;
+                self.pwrite(&vec[start as usize..aligned_end], start)?;
                 let latency = std::time::Instant::now().duration_since(begin).as_micros() as _;
                 metrics.pwrite_times.fetch_add(1, Ordering::AcqRel);
                 metrics.pwrite_latency.fetch_add(latency, Ordering::AcqRel);
