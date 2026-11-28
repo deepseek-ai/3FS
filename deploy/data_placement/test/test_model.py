@@ -92,3 +92,55 @@ def test_solve_rebalance_model(placement_params):
     relax_lb=2,
     relax_ub=1,
   ).run(pyomo_solver="appsi_highs", max_timelimit=15, auto_relax=True)
+
+
+@pytest.mark.parametrize(
+  "chain_table_type, num_nodes, group_size, num_groups, num_targets_per_disk",
+  [
+    ("CR", 12, 3, 20, 5),
+    ("EC", 10, 5, 18, 9),
+    ("EC", 7, 4, 8, 5),
+  ],
+)
+def test_get_peer_traffic_matches_reference(
+  chain_table_type, num_nodes, group_size, num_groups, num_targets_per_disk
+):
+  import math
+  import pyomo.environ as po
+
+  model = DataPlacementModel(
+    chain_table_type=chain_table_type,
+    num_nodes=num_nodes,
+    group_size=group_size,
+    num_groups=num_groups,
+    num_targets_per_disk=num_targets_per_disk,
+    qlinearize=True,
+  )
+  inst = po.ConcreteModel()
+  inst.disks = po.RangeSet(1, num_nodes)
+  inst.groups = po.RangeSet(1, num_groups)
+  inst.disk_used_by_group = po.Var(inst.disks, inst.groups, initialize=0.0)
+  for g in range(1, num_groups + 1):
+    # Leave disk 1 isolated on the last topology to exercise zero-overlap pairs.
+    pool = range(2, num_nodes + 1) if (num_nodes == 12 and g <= 4) else range(1, num_nodes + 1)
+    pool_list = list(pool)
+    for offset in range(group_size):
+      d = pool_list[(g + offset * 2) % len(pool_list)]
+      inst.disk_used_by_group[d, g].value = 1.0
+
+  actual = model.get_peer_traffic(inst)
+  expected = {}
+  scale = model.recovery_traffic_factor / (model.group_size - 1)
+  for disk in inst.disks:
+    for peer in inst.disks:
+      if disk == peer:
+        continue
+      expected[(disk, peer)] = sum(
+        po.value(inst.disk_used_by_group[disk, group])
+        * po.value(inst.disk_used_by_group[peer, group])
+        for group in inst.groups
+      ) * scale
+
+  assert set(actual.keys()) == set(expected.keys())
+  for key, exp_val in expected.items():
+    assert math.isclose(actual[key], exp_val, abs_tol=1e-12)
